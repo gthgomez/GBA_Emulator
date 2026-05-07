@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "scope": "synthetic_no_rom_no_bios",
+  "metric": "median_ns_per_operation",
+  "baseline_source": "Phase 42 calibrated from Phase 41/pre-Phase 42 local benchmark runs, 2026-05-07",
+  "threshold_policy": {
+    "type": "local_synthetic_median_ns_per_operation_ceiling",
+    "calibration": "loose calibrated ceilings, roughly 2x-3x observed local medians depending on row volatility",
+    "intent": "catch material accidental regressions before broadening emulator scope"
+  },
+  "notes": [
+    "Local synthetic regression guard only; not a hardware, Android-device, thermal, battery, or production-readiness claim.",
+    "Thresholds are calibrated but intentionally tolerant to catch material slowdowns while allowing workstation noise.",
+    "Phase 54 updates core_session_state_hash checksum because CPU banked registers and scheduler HALT state are now part of modeled deterministic state.",
+    "Phase 57 updates core_session_state_hash checksum because scheduler prefetch-buffer state is now part of modeled deterministic state.",
+    "Phase 59 updates core_session_state_hash checksum because Flash command protocol state is now part of modeled deterministic state."
+  ],
+  "rows": [
+    {
+      "benchmark": "memory_bus_iwram_rw32_pair",
+      "expected_operations": 1000000,
+      "expected_checksum": "2779096485000000",
+      "baseline_ns_per_operation": 42.29,
+      "max_ns_per_operation": 95.0
+    },
+    {
+      "benchmark": "cpu_step_arm_add",
+      "expected_operations": 1000000,
+      "expected_checksum": "500001286432",
+      "baseline_ns_per_operation": 40.14,
+      "max_ns_per_operation": 95.0
+    },
+    {
+      "benchmark": "io_register_mixed_access",
+      "expected_operations": 2000000,
+      "expected_checksum": "2062129608",
+      "baseline_ns_per_operation": 7.05,
+      "max_ns_per_operation": 20.0
+    },
+    {
+      "benchmark": "dma_immediate_word_copy_units",
+      "expected_operations": 640000,
+      "expected_checksum": "6107955840000",
+      "baseline_ns_per_operation": 45.95,
+      "max_ns_per_operation": 110.0
+    },
+    {
+      "benchmark": "ppu_bg_obj_pixel_fetches",
+      "expected_operations": 1000000,
+      "expected_checksum": "513000000",
+      "baseline_ns_per_operation": 29.56,
+      "max_ns_per_operation": 80.0
+    },
+    {
+      "benchmark": "device_timer_ppu_apu_ticks",
+      "expected_operations": 1500000,
+      "expected_checksum": "32816251404",
+      "baseline_ns_per_operation": 6.37,
+      "max_ns_per_operation": 20.0
+    },
+    {
+      "benchmark": "scheduler_step_arm_add",
+      "expected_operations": 2000000,
+      "expected_checksum": "283071901200",
+      "baseline_ns_per_operation": 17.54,
+      "max_ns_per_operation": 45.0
+    },
+    {
+      "benchmark": "scheduler_fetch_loop_arm_add_branch",
+      "expected_operations": 500000,
+      "expected_checksum": "51648016",
+      "baseline_ns_per_operation": 91.50,
+      "max_ns_per_operation": 220.0
+    },
+    {
+      "benchmark": "scheduler_dispatch_thumb_add",
+      "expected_operations": 500000,
+      "expected_checksum": "25415824998992",
+      "baseline_ns_per_operation": 46.90,
+      "max_ns_per_operation": 120.0
+    },
+    {
+      "benchmark": "scheduler_prefetch_cart_loop",
+      "expected_operations": 200000,
+      "expected_checksum": "340574158753200",
+      "baseline_ns_per_operation": 218.10,
+      "max_ns_per_operation": 500.0
+    },
+    {
+      "benchmark": "memory_bus_waitcnt_timing_lookup",
+      "expected_operations": 500000,
+      "expected_checksum": "4371752796",
+      "baseline_ns_per_operation": 10.59,
+      "max_ns_per_operation": 30.0
+    },
+    {
+      "benchmark": "cpu_waitcnt_elapsed_estimate",
+      "expected_operations": 500000,
+      "expected_checksum": "4372252796",
+      "baseline_ns_per_operation": 25.89,
+      "max_ns_per_operation": 70.0
+    },
+    {
+      "benchmark": "core_session_state_hash",
+      "expected_operations": 10000,
+      "expected_checksum": "58128",
+      "baseline_ns_per_operation": 451015.20,
+      "max_ns_per_operation": 950000.0
+    }
+  ]
+}

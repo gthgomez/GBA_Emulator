@@ -1,0 +1,28 @@
+# Build and local test outputs
+build/
+out/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+
+# Local/editor state
+.vs/
+.vscode/
+*.log
+*.tmp
+
+# Legal boundary: do not add ROMs, BIOS dumps, saves, or packaged apps.
+*.gba
+*.gb
+*.gbc
+*.sav
+*.srm
+*.bin
+*.bios
+bios*.rom
+bios*.gba
+bios*.bin
+*.apk
+*.aab
