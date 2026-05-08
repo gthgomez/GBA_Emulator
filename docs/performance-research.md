@@ -1148,6 +1148,238 @@ Still deferred:
 - Compatibility reporting, public legal claims, and third-party fixture packs.
 - Broader expected-state scripting or trace comparison.
 
+## Phase 59 Save Protocol Choice
+
+Phase 59 keeps save behavior platform-neutral while moving beyond raw save buffers.
+
+Implemented behavior:
+
+- Flash64K and Flash128K saves use a bounded command-state machine for unlock, ID mode,
+  program, sector erase, chip erase, reset, and Flash128K bank select.
+- Flash writes preserve NOR-style bit clearing by ANDing programmed bytes.
+- EEPROM512 and EEPROM8K keep raw import/export backing and add explicit 8-byte block
+  read/write helpers for deterministic core tests.
+- ROM marker detection conservatively reports a save type only when exactly one known
+  SRAM/Flash/EEPROM marker is found.
+
+Still deferred:
+
+- EEPROM serial bitstream command timing and DMA-sized transfer behavior.
+- Save filesystem persistence, migration UX, Android SAF, and external save import.
+
+## Phase 60 DMA Trigger And Bus Stealing Choice
+
+Phase 60 adds scheduler-visible trigger custody without claiming exact bus arbitration.
+
+Implemented behavior:
+
+- DMA now exposes immediate, HBlank, VBlank, special, FIFO A, and FIFO B trigger APIs.
+- Transfer results include bus-cycle occupancy metadata.
+- `PpuTiming::tick` reports HBlank/VBlank entry events so `CoreScheduler` can run
+  matching triggered DMA.
+- Timer-driven Direct Sound FIFO refill requests can run special DMA into APU FIFO A/B.
+
+Still deferred:
+
+- Exact CPU stall arbitration, cartridge/FIFO restrictions, overlapping DMA contention,
+  and hardware edge-case timing.
+
+## Phase 61-62 Renderer Choice
+
+Phase 61 and 62 broaden framebuffer coverage while keeping Android/OpenGL out of scope.
+
+Implemented behavior:
+
+- Modes 0-2 select the allowed BG layers, compose multi-BG priority, apply scroll, and
+  keep OBJ priority integration.
+- Simple WIN0 masking can gate layers outside the configured window.
+- A bounded mosaic seed snaps BG coordinates to a two-pixel grid.
+- Modes 3, 4, and 5 render bitmap pixels into the fixed framebuffer, including mode 4
+  palette lookup and page selection.
+- Forced blank and brightness increase/decrease blending have deterministic seeds.
+
+Still deferred:
+
+- True affine matrix transforms, exact window in/out/object-window behavior, alpha
+  target selection, sprite overflow, full color effects, contention, and cycle timing.
+
+## Phase 63 APU PSG And Mixer Choice
+
+Phase 63 adds deterministic PSG output before any platform audio backend exists.
+
+Implemented behavior:
+
+- The APU exposes bounded configuration APIs for two square channels, one wave channel,
+  and one noise channel.
+- PSG generators advance at the existing fixed audio sample cadence and are included in
+  APU/core-session state hashing.
+- PSG output mixes with existing Direct Sound output into the fixed audio buffer.
+
+Still deferred:
+
+- Hardware register-accurate PSG control, sweep/length/envelope mutation, SOUNDBIAS
+  ramp behavior, Oboe/backend integration, and device audio underrun metrics.
+
+## Phase 64 Keypad And Input IO Choice
+
+Phase 64 models input in the core before Android maps touch or controllers.
+
+Implemented behavior:
+
+- `Keypad` stores the ten GBA buttons as a bounded mask and exposes active-low
+  `KEYINPUT` reads.
+- `KEYCNT` stores selected keys, IRQ enable, and OR/AND condition mode.
+- Polling requests `InterruptSource::keypad` only when the bounded condition is met.
+- `IoRegisters` routes `0x04000130`/`0x04000132`, keeps `KEYINPUT` read-only, and
+  includes keypad state in `CoreSession` hashing.
+
+Still deferred:
+
+- Android touch/gamepad mapping, input debouncing, serial/multiplayer input behavior,
+  and broader scheduler input snapshots.
+
+## Phase 65 Compatibility Corpus Choice
+
+Phase 65 adds a legal fixture gate before broader compatibility claims.
+
+Implemented behavior:
+
+- `CompatibilityFixture` requires explicit in-memory ROM bytes plus license and
+  redistributability metadata.
+- The corpus runner rejects empty, unlicensed, or non-redistributable fixtures before
+  executing them.
+- Accepted fixtures run through the existing legal-program harness and contribute to a
+  combined deterministic hash.
+
+Still deferred:
+
+- Checked-in external homebrew fixtures, filesystem loading, fixture-pack admission,
+  public compatibility reports, and renderer/audio/input-sensitive golden outputs.
+
+## Phase 66 Save-State Codec Choice
+
+Phase 66 introduces a versioned binary envelope without pretending all future hardware
+state is serialized.
+
+Implemented behavior:
+
+- `SaveStateCodec` writes magic, version, encoded hash, CPU registers/CPSR, WAITCNT,
+  keypad state, scheduler cycle/halt metadata, explicit ROM bytes, save type, and save
+  bytes.
+- Decode rejects bad magic, unsupported versions, truncated/corrupt payloads, invalid
+  button masks, rejected ROMs, and rejected save imports.
+- Current tests prove save, decode, and rerun determinism for the public restored subset.
+
+Still deferred:
+
+- Full timers/DMA/PPU/APU internal serialization, component section tables, version
+  migration, corruption recovery UX, and long-term on-disk compatibility guarantees.
+
+## Phase 67 Performance Architecture Choice
+
+Phase 67 creates a measurable predecode boundary before replacing dispatch paths.
+
+Implemented behavior:
+
+- `predecode_arm` and `predecode_thumb` classify supported operation families without
+  executing them.
+- `InstructionCache` stores bounded direct-mapped predecode entries with hit/miss
+  counters and stable width/address/raw metadata.
+- The regression gate confirms existing benchmark rows remain inside thresholds.
+
+Still deferred:
+
+- Threaded dispatch, block caches, flat hot memory path refactors, scheduler batching,
+  and before/after speedup claims.
+
+## Phase 68 Android Core Bridge Choice
+
+Phase 68 adds only the narrow bridge surface authorized by the roadmap.
+
+Implemented behavior:
+
+- `android_core_bridge` exposes an opaque handle with create/destroy/reset/load-ROM/run/
+  state-hash functions.
+- The bridge owns a `CoreSession`, locks operations with a mutex, loads explicit
+  caller-provided bytes only, and starts execution at `0x08000000`.
+- Null handles, empty ROMs, and rejected ROM byte vectors fail cleanly.
+
+Still deferred:
+
+- JNI headers, Gradle/CMake, Android UI, SAF import, lifecycle tests, native crash
+  scanning, OpenGL, Oboe, storage scanning, downloaders, BIOS handling, and bundled ROMs.
+
+## Phase 69 Android Runtime Integration Choice
+
+Phase 69 adds an Android-facing runtime layer without adding Android platform files.
+
+Implemented behavior:
+
+- `AndroidRuntime` owns a `CoreSession`, `PpuRenderer`, render control, and last audio
+  batch.
+- It loads explicit caller-provided ROM bytes, maps keypad masks into core input,
+  renders all 160 framebuffer scanlines, drains APU audio samples, and reports underruns.
+- Tests prove a legal in-memory program can step, render a framebuffer pixel, accept
+  input, drain produced audio, and report an underrun when the audio buffer is empty.
+
+Still deferred:
+
+- OpenGL ES texture upload, Oboe, Java/Kotlin UI, lifecycle pause/resume, rotation,
+  gamepad APIs, SAF import, native crash scans, and Android device execution evidence.
+
+## Phase 70 Android Performance And Power Gate Choice
+
+Phase 70 creates a repeatable local metric shape before real device profiling exists.
+
+Implemented behavior:
+
+- `run_android_performance_gate` runs a configured number of runtime frames and records
+  elapsed frame durations.
+- The summary reports average frame time, p95 frame time, missed-frame count, audio
+  underruns, final state hash, and nominal/elevated thermal observation based on
+  configured thresholds.
+- The existing synthetic benchmark and performance regression gates still pass.
+
+Still deferred:
+
+- Midrange-device runs, sustained thermal measurements, battery/power-per-watt data,
+  baseline profiles, Android instrumentation commands, and hardware-specific thresholds.
+
+## Phase 71 Release Governance Choice
+
+Phase 71 creates a local release-governance gate before any external beta wording exists.
+
+Implemented behavior:
+
+- `docs/release-governance-legal-review.md` records BIOS, ROM, fixture, trademark,
+  screenshot, compatibility-claim, privacy/data-safety, and telemetry controls.
+- `tools/check-release-readiness.ps1` validates required governance docs, scans for
+  review-required bundled asset extensions, and rejects common unsupported public-claim
+  wording.
+
+Still deferred:
+
+- Legal counsel review, store review, final public listing text, screenshots, telemetry
+  provider decisions, and real privacy/data-safety submission evidence.
+
+## Phase 72 Controlled Beta Readiness Choice
+
+Phase 72 makes beta status explicit instead of aspirational.
+
+Implemented behavior:
+
+- `docs/controlled-beta-readiness.md` records release-candidate gates, required
+  regression commands, rollback/recovery plans, known issues, high risks, and blockers.
+- `docs/roadmap-requirements-audit.md` checks every roadmap phase done-when line and the
+  production-readiness definition against current evidence.
+- The audit states production readiness is **NO** and controlled external beta is
+  **BLOCKED** until target Android device evidence exists.
+
+Still deferred:
+
+- At least one target Android device run with lifecycle, frame pacing, audio, input,
+  shutdown, thermal, and recovery evidence.
+
 ## Sources
 
 - ARM7TDMI Technical Reference Manual, ARM DDI 0029G, Chapter 6 instruction cycle

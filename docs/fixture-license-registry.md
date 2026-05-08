@@ -5,11 +5,28 @@ Date: 2026-05-07
 
 ## Current Fixtures
 
-No ROMs, BIOS images, copyrighted game assets, homebrew binaries, third-party emulator code, or downloaded compatibility fixtures are present.
+No ROMs, BIOS images, copyrighted game assets, homebrew binaries, third-party emulator
+code, or downloaded compatibility fixture binaries are present.
 
 Current tests use only hand-authored byte values inside source code. Phase 58 adds an
 in-memory legal-program harness, but it still does not admit checked-in ROM files or
 external fixtures.
+
+## Downloaded Source-Only Test Suites
+
+The mGBA Game Boy Advance Test Suite source has been downloaded locally for
+provenance and future reproducible benchmarking, but no generated `.gba` binary has
+been admitted as a fixture.
+
+| Suite | Local Path | Upstream | License | Commit | Binary Assets |
+| --- | --- | --- | --- | --- | --- |
+| mGBA GBA Test Suite | `external/test-suites/mgba-suite` | `https://github.com/mgba-emu/suite` | MIT | `aac98dca785eaec3932af217aa658275737a8ed8` | No `.gba`, `.gb`, `.gbc`, BIOS, save, or `.bin` files found at download time. |
+
+The suite contains source, headers, assembly, `.grit` metadata, and MIT-licensed BMP
+graphics source assets. It has been built with the official `devkitpro/devkitarm`
+Docker image into `build/test-suite-build/mgba-suite/suite.gba` with SHA-256
+`073AC37DB89B791A589EC93853074043B31D0C931F43F4A69AFA7319248EC8BB`. That generated
+ROM remains a local build artifact, not a checked-in fixture.
 
 ## Admission Rule
 

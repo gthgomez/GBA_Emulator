@@ -1,6 +1,6 @@
 # GBA Emulator Production Engine Roadmap
 
-Status: active reference roadmap after Phase 58
+Status: active reference roadmap after Phase 72
 Date: 2026-05-07
 Scope anchor: `Project_Android/GBA_Emulator`
 State anchor: `docs/ralph-state/gba-emulator-plan-2026-05-05.md`
@@ -18,7 +18,7 @@ emulators until accuracy, compatibility, device, thermal, and legal evidence exi
 
 ## Current Baseline
 
-The current Ralph state records Phase 58 complete. The core has:
+The current Ralph state records Phase 72 complete. The core has:
 
 - A portable C++17 core layout.
 - Focused ARM/Thumb, memory, timer, IRQ, DMA, PPU timing, renderer seed, APU Direct
@@ -34,6 +34,32 @@ The current Ralph state records Phase 58 complete. The core has:
   prefetch metadata, 128 KiB boundary timing, and a prefetch/cart-loop benchmark row.
 - A legal-program harness for explicit caller-provided in-memory byte blobs, expected
   state assertions, clean stop-reason reporting, and future fixture-admission rules.
+- Flash command protocol, Flash ID/program/erase/bank-switch behavior, EEPROM explicit
+  8-byte block read/write helpers, and conservative ROM-marker save-type detection.
+- Scheduled DMA trigger seeds for HBlank/VBlank, bus-occupancy metadata, and bounded
+  Direct Sound FIFO DMA refill routing through the scheduler.
+- Renderer seeds for multi-BG priority, simple WIN0 masking, mosaic snap, modes 3/4/5
+  bitmap pixels, forced blank, and brightness blending.
+- Deterministic PSG audio seeds for square, wave, and noise channels mixed alongside
+  Direct Sound into the fixed audio buffer.
+- Keypad state, KEYINPUT/KEYCNT IO routing, active-low button reads, and bounded keypad
+  interrupt behavior.
+- A legal fixture corpus runner that rejects missing or non-redistributable fixtures
+  before executing explicit in-memory legal bytes through the program harness.
+- A versioned binary save-state codec for the current public, restorable core-session
+  subset, with corruption/version/magic rejection.
+- A predecoded-instruction cache seed for measured hot-loop dispatch experiments.
+- A narrow thread-safe Android-facing opaque-handle bridge over explicit ROM bytes,
+  bounded stepping, reset, and state hashing.
+- An Android-facing runtime seed that maps explicit ROM bytes, keypad input, core
+  framebuffer rendering, audio sample draining, frame stepping, and underrun reporting
+  without Android platform dependencies.
+- A local Android performance/power gate seed that records average/p95 frame duration,
+  missed-frame count, audio underruns, final hash, and conservative thermal observation.
+- Release governance/legal review artifacts for BIOS, ROM, trademarks, screenshots,
+  compatibility language, fixture licensing, privacy/data safety, and telemetry.
+- Controlled beta readiness artifacts for RC gates, regression commands, rollback/
+  recovery, known issues, high risks, and a roadmap requirement audit.
 - Local synthetic benchmarks, output-shape gate, and regression thresholds.
 - No Android app, JNI, Gradle, CMake, ROM scanner, downloader, BIOS image, bundled ROM,
   app-store work, or public compatibility claim.
@@ -258,6 +284,13 @@ Done when:
 - SRAM, Flash, and EEPROM behavior can be tested through bus-visible operations and
   exported/imported through core-owned byte buffers.
 
+Status: complete for a bounded local save-protocol seed. Flash64K/Flash128K command
+unlock, ID, program, sector erase, chip erase, and bank-select behavior are covered;
+EEPROM exposes explicit 8-byte block read/write helpers over core-owned raw buffers;
+ROM marker detection can identify a single save type conservatively. Full EEPROM serial
+bitstream timing, DMA-sized EEPROM transfers, save migration, filesystem persistence,
+and Android SAF remain deferred.
+
 ### Phase 60: DMA Trigger And Bus Stealing Timing
 
 Goal: make DMA interact with the scheduler instead of acting as an immediate helper
@@ -274,6 +307,12 @@ Implement:
 Done when:
 
 - Scheduler traces show DMA occupying bus time and affecting CPU/device timing.
+
+Status: complete for a bounded local scheduled-trigger seed. DMA can now execute
+immediate, HBlank, VBlank, and special/FIFO trigger paths, report bus-cycle occupancy,
+and route Direct Sound FIFO refill requests from scheduler-observed timer overflows into
+APU FIFO writes. Exact DMA bus arbitration, cartridge restrictions, FIFO timing edge
+cases, and overlapping hardware contention remain deferred.
 
 ### Phase 61: PPU Mode 0-2 Renderer Core
 
@@ -293,6 +332,12 @@ Done when:
 - Synthetic frames cover BG priority, OBJ priority, transparency, scroll, and window
   behavior into a fixed framebuffer.
 
+Status: complete for a bounded local renderer seed. The fixed framebuffer now covers
+mode 0-2 text-layer selection, multi-BG priority composition, BG scroll, OBJ priority,
+simple WIN0 masking, and a two-pixel mosaic snap without Android/OpenGL integration.
+Affine transforms, full window matrix behavior, sprite overflow, access contention, and
+cycle-accurate render timing remain deferred.
+
 ### Phase 62: PPU Bitmap/Affine Renderer Core
 
 Goal: cover the remaining major video modes in the core framebuffer.
@@ -308,6 +353,13 @@ Implement:
 Done when:
 
 - Synthetic renderer tests cover all major display modes without Android/OpenGL code.
+
+Status: complete for a bounded local bitmap/affine-adjacent seed. Modes 3, 4, and 5
+render deterministic bitmap pixels into the core framebuffer, mode 4 palette lookup and
+page selection are modeled, forced blank renders a fixed white scanline, and brightness
+increase/decrease blending has a bounded seed. True affine BG matrices, alpha target
+selection, mosaic dimensions, mode-specific layer restrictions, and full color-effects
+hardware behavior remain deferred.
 
 ### Phase 63: APU PSG And Mixer Fidelity
 
@@ -326,6 +378,13 @@ Done when:
 - Synthetic APU tests can produce stable hashes for PSG, Direct Sound, and mixed output
   across frame boundaries.
 
+Status: complete for a bounded local PSG/mixer seed. The APU now exposes deterministic
+square, wave, and noise channel configuration APIs, advances PSG generator state on the
+fixed sample cadence, hashes PSG state, and mixes PSG output with existing Direct Sound
+samples into the fixed audio buffer. Hardware register-accurate PSG control, length/
+sweep/envelope mutation, SOUNDBIAS ramp behavior, DMA refill edge timing, and Android
+audio backend integration remain deferred.
+
 ### Phase 64: Core Keypad And Input IO
 
 Goal: model GBA input in the core before Android maps touch or gamepad controls.
@@ -342,6 +401,12 @@ Done when:
 
 - Legal program harnesses can drive input through core APIs and IO reads without Android
   dependencies.
+
+Status: complete for a bounded local input seed. Keypad state supports A/B/Select/Start,
+D-pad, L/R, active-low KEYINPUT reads, KEYCNT IRQ mode bits, OR/AND interrupt
+conditions, IO routing through `IoRegisters`, session state hashing, and negative masks.
+Serial input, multiplayer link behavior, debouncing, and Android touch/gamepad mapping
+remain deferred.
 
 ### Phase 65: Compatibility Test Corpus
 
@@ -361,6 +426,13 @@ Done when:
 - A curated legal fixture set runs in the local harness with reproducible state,
   framebuffer, audio, or input-sensitive hashes.
 
+Status: complete for a bounded local corpus seed. `CompatibilityFixture` records name,
+license, redistributability, explicit in-memory ROM bytes, and harness expectations;
+the runner rejects empty, unlicensed, or non-redistributable fixtures before execution
+and emits combined deterministic hashes for accepted fixtures. External fixture packs,
+filesystem ROM loading, public compatibility reporting, and broad corpus admission
+remain deferred.
+
 ### Phase 66: Deterministic Save-State Format
 
 Goal: turn the Phase 49 save-state seed into a production-grade core contract.
@@ -377,6 +449,14 @@ Done when:
 
 - Run N frames, save, restore, run N frames produces identical state hashes and rejects
   malformed state blobs cleanly.
+
+Status: complete for a bounded local save-state codec seed. The codec writes a
+versioned binary envelope with magic, version, encoded hash, CPU registers/CPSR,
+WAITCNT, keypad state, scheduler cycle/halt metadata, explicit ROM bytes, save type,
+and save bytes; decode rejects bad magic, unsupported version, corrupt payload, and
+restore failures. Full device serialization for timers/DMA/PPU/APU internals, portable
+cross-version migration, section tables, and on-disk compatibility guarantees remain
+deferred.
 
 ### Phase 67: Performance Architecture Pass
 
@@ -395,6 +475,12 @@ Done when:
 - Benchmarks improve or hold steady without weakening correctness tests, and each
   optimization has a before/after measurement artifact.
 
+Status: complete for a bounded local architecture seed. `InstructionCache` provides a
+small predecode/cache boundary for ARM and Thumb hot loops, with stable operation
+classification and hit/miss counters. It does not yet replace scheduler dispatch, use a
+threaded interpreter, add block caches, or claim speedup beyond the measured regression
+gate staying within thresholds.
+
 ### Phase 68: Android Core Bridge
 
 Goal: expose the verified core to Android with a narrow, safe boundary.
@@ -411,6 +497,12 @@ Done when:
 
 - Android can create a core, load explicit legal bytes, step deterministically, and
   release resources without leaks or races.
+
+Status: complete for a bounded local bridge seed. `android_core_bridge` exposes a
+thread-safe opaque handle with create/destroy/reset/load-explicit-ROM/run/state-hash
+functions. It deliberately avoids Android app code, Gradle/CMake scaffolding, JNI
+headers, SAF, scanners, downloaders, bundled BIOS/ROM, lifecycle tests, and platform
+storage permissions. Real Android integration remains deferred to Phase 69.
 
 ### Phase 69: Android Video, Input, And Audio Integration
 
@@ -429,6 +521,13 @@ Done when:
 - A legal test program can render frames, accept input, produce audio, pause, resume,
   and shut down cleanly on Android.
 
+Status: complete for a bounded local Android-facing runtime seed. `AndroidRuntime`
+loads explicit ROM bytes, maps core keypad masks, renders the core framebuffer through
+`PpuRenderer`, drains APU audio samples, reports audio underruns, steps the owned
+`CoreSession`, and exposes framebuffer/audio batches for platform upload. Real OpenGL
+ES texture upload, Oboe, Android lifecycle, pause/resume instrumentation, device
+rotation, gamepad APIs, SAF import, and Java/Kotlin app code remain deferred.
+
 ### Phase 70: Android Performance And Power Gate
 
 Goal: make performance-per-watt measurable instead of aspirational.
@@ -445,6 +544,13 @@ Done when:
 
 - Midrange Android hardware can run the selected legal fixture set at target pacing for
   sustained sessions, with recorded metrics and reproducible commands.
+
+Status: complete for a bounded local measurement seed. `run_android_performance_gate`
+records per-frame elapsed time, average frame time, p95 frame time, missed-frame count,
+audio underruns, final state hash, and a conservative nominal/elevated thermal
+observation based on configured thresholds. Real midrange-device evidence, sustained
+thermal runs, Android instrumentation, baseline profiles, power-per-watt data, and
+hardware-specific regression thresholds remain deferred.
 
 ### Phase 71: Release Governance And Legal Review
 
@@ -463,6 +569,12 @@ Done when:
 
 - Release-facing wording and fixture handling are reviewed and evidence-backed.
 
+Status: complete for a bounded local governance gate. `release-governance-legal-review`
+records BIOS/ROM/trademark/screenshot/compatibility/fixture/privacy/telemetry controls,
+and `check-release-readiness.ps1` validates required governance docs, scans for
+review-required bundled assets, and flags common unsupported public-claim wording. This
+is not legal advice and does not replace counsel or store review.
+
 ### Phase 72: Controlled Beta Readiness
 
 Goal: prove the engine and Android shell are ready for a controlled beta, not a broad
@@ -480,6 +592,12 @@ Done when:
 
 - No unresolved critical blockers remain, high risks are documented with owner and
   mitigation, and beta evidence exists on at least one target Android device.
+
+Status: complete for a bounded local readiness gate, but external beta remains blocked.
+`controlled-beta-readiness` records RC gates, regression commands, rollback/recovery,
+known issues, high risks, and current blockers. `roadmap-requirements-audit` confirms
+all phases have bounded local artifacts while production readiness remains **NO** and
+controlled external beta remains **BLOCKED** until target Android device evidence exists.
 
 ## Measurement Matrix
 
@@ -514,7 +632,15 @@ The engine should not be treated as production-ready until all of these are true
 
 ## Recommended Immediate Next Phase
 
-Phase 59 should be next: save protocols. The core now has an explicit in-memory program
-harness, so the next correctness blocker is making save behavior bus-realistic: Flash
-command state, chip ID, erase/program, bank switching, and EEPROM serial protocol while
-keeping persistence platform-neutral.
+All original roadmap phases now have bounded local implementation artifacts. The current
+engine-measurement track is the mGBA external-suite finish plan in
+`docs/mgba-suite-finish-roadmap.md`.
+
+Immediate implementation target: BIOS IRQ dispatch HLE, because the latest mGBA suite
+run reaches `0x00000018` with `0` unsupported instructions and then fetches from the
+unimplemented BIOS IRQ vector. After that, add runner automation/result capture so the
+suite can produce repeatable pass/fail data instead of only frontier stops.
+
+Controlled external beta remains blocked until the issues in
+`docs/roadmap-requirements-audit.md` are resolved, including target Android device
+evidence and platform integration outside the current C++ scaffold.

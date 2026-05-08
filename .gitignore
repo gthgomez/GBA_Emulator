@@ -1,6 +1,7 @@
 # Build and local test outputs
 build/
 out/
+external/test-suites/
 *.exe
 *.obj
 *.o

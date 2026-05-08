@@ -29,7 +29,15 @@ hardening verifier for unaligned word-read rotation, explicit unmodeled read pol
 video access-window hooks, and hard/soft reset semantics, first pipeline/prefetch timing
 seed for selected PC-visible reads, Game Pak prefetch metadata, 128 KiB boundary timing,
 and a prefetch benchmark row, first explicit in-memory legal-program harness verifier,
-and a local test runner.
+first Flash/EEPROM save-protocol seed, first scheduled DMA trigger and Direct Sound FIFO
+DMA refill seed, first multi-layer/bitmap/window/blend renderer seed, first deterministic
+PSG square/wave/noise mixer seed, first keypad/input IO seed, first legal fixture corpus
+runner seed, first versioned save-state codec seed, first predecoded-instruction cache
+seed, first narrow Android-facing core bridge seed, and a local test runner.
+It now also includes a first Android-facing runtime seed for video/input/audio flow and
+a local Android performance/power gate seed for frame pacing and underrun metrics.
+Release governance and controlled-beta readiness gates now document legal/privacy
+controls, rollback, known issues, and blocked production-readiness requirements.
 
 In scope for this scaffold:
 
@@ -130,6 +138,33 @@ In scope for this scaffold:
 - First legal-program harness verifier for explicit caller-provided in-memory byte
   blobs, expected-state assertions, clean unloaded/invalid/unsupported stop reporting,
   and future fixture-admission rules without checked-in ROM/BIOS fixtures.
+- First Flash/EEPROM save-protocol seed for Flash ID, program, sector erase, chip erase,
+  bank switching, explicit EEPROM block read/write, and conservative save marker
+  detection without filesystem persistence.
+- First scheduled DMA trigger seed for VBlank/HBlank/special trigger dispatch,
+  bus-cycle occupancy metadata, and Direct Sound FIFO refill routing into the APU.
+- First multi-layer/bitmap renderer seed for modes 0-5, multi-BG priority, simple WIN0
+  masking, mosaic snap, bitmap page selection, forced blank, and brightness blending
+  into the fixed framebuffer.
+- First deterministic PSG mixer seed for square, wave, and noise generators mixed with
+  Direct Sound and included in APU/core-session state hashing.
+- First keypad/input IO seed for active-low KEYINPUT reads, KEYCNT IRQ selection,
+  OR/AND keypad interrupt behavior, and core-session state hashing.
+- First legal fixture corpus runner seed for explicit in-memory ROM bytes, license/
+  redistributability gating, harness expectations, and combined deterministic hashes.
+- First versioned save-state codec seed for a binary envelope over the current public,
+  restorable core-session subset with magic/version/corruption rejection.
+- First predecoded-instruction cache seed for bounded ARM/Thumb operation classification
+  and hit/miss accounting before dispatch-table experiments.
+- First narrow Android-facing core bridge seed with an opaque thread-safe handle,
+  explicit ROM byte loading, bounded run, reset, and state hash APIs.
+- First Android-facing runtime seed for explicit ROM loading, keypad mapping,
+  framebuffer rendering, APU audio draining, frame stepping, and underrun reporting.
+- First Android performance/power gate seed for average/p95 frame duration,
+  missed-frame count, audio underruns, final hash, and conservative thermal observation.
+- First release governance and controlled-beta readiness gate for BIOS/ROM wording,
+  fixture licensing, unsupported-claim scanning, rollback planning, known issues, and
+  roadmap requirement auditing.
 - First explicit Game Pak ROM blob boundary verifier for caller-provided in-memory ROM
   bytes, read-only cartridge reads through Game Pak ROM windows, header metadata
   parsing, and scheduler fetch from `0x08000000`.
@@ -168,6 +203,11 @@ The production engine phase plan lives in
 the remaining work into CPU hardening, bus/timing accuracy, PPU/APU completeness,
 save-state productionization, performance architecture, legal fixture compatibility,
 Android integration, device measurement, and controlled beta readiness phases.
+
+The accuracy/performance comparison roadmap lives in
+`docs/benchmark-comparison-roadmap.md`. It defines the goal, purpose, green criteria,
+and phased benchmark matrix for comparing this engine against top open-source GBA
+emulators without separating speed claims from correctness evidence.
 
 ## Verify
 
@@ -218,6 +258,18 @@ without editing the checked-in baseline, run:
 
 ```powershell
 .\tools\calibrate-core-performance-thresholds.ps1
+```
+
+To collect the current accuracy/performance credibility matrix, run:
+
+```powershell
+.\tools\run-credibility-matrix.ps1
+```
+
+For the currently green public-suite frontier plus the synthetic performance gate:
+
+```powershell
+.\tools\run-credibility-matrix.ps1 -Suites memory,bios-math,dma -PerformanceRuns 3 -FailOnRed
 ```
 
 ## Performance Notes
