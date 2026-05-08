@@ -3,6 +3,7 @@
 #include "gba/core/state_hash.hpp"
 
 #include <algorithm>
+#include <cstddef>
 
 namespace gba::core {
 namespace {
@@ -15,6 +16,33 @@ constexpr std::uint16_t kWritableDispstatMask =
 constexpr std::uint16_t kVblankFlag = 0x0001;
 constexpr std::uint16_t kHblankFlag = 0x0002;
 constexpr std::uint16_t kVcountFlag = 0x0004;
+constexpr std::uint32_t kLcdControlStart = 0x04000000;
+constexpr std::uint32_t kLcdControlEnd = 0x04000054;
+constexpr std::uint32_t kDispstatAddress = 0x04000004;
+constexpr std::uint32_t kVcountAddress = 0x04000006;
+
+[[nodiscard]] constexpr bool is_lcd_control_address(std::uint32_t address) {
+  if ((address & 0x1U) != 0 || address < kLcdControlStart || address > kLcdControlEnd) {
+    return false;
+  }
+  if (address == kDispstatAddress || address == kVcountAddress) {
+    return false;
+  }
+  if (address <= 0x0400001EU) {
+    return true;
+  }
+  if (address >= 0x04000020U && address <= 0x0400003EU) {
+    return true;
+  }
+  if (address >= 0x04000040U && address <= kLcdControlEnd && address != 0x0400004EU) {
+    return true;
+  }
+  return false;
+}
+
+[[nodiscard]] constexpr std::size_t lcd_control_index(std::uint32_t address) {
+  return static_cast<std::size_t>((address - kLcdControlStart) / 2U);
+}
 
 }  // namespace
 
@@ -26,13 +54,30 @@ void PpuTiming::reset() {
   line_ = 0;
   line_cycle_ = 0;
   dispstat_control_ = 0;
+  lcd_control_.fill(0);
 }
 
 void PpuTiming::write_dispstat(std::uint16_t value) {
   dispstat_control_ = static_cast<std::uint16_t>(value & kWritableDispstatMask);
 }
 
-void PpuTiming::tick(std::uint32_t cycles, InterruptController& interrupts) {
+std::optional<std::uint16_t> PpuTiming::read_lcd_control(std::uint32_t address) const {
+  if (!is_lcd_control_address(address)) {
+    return std::nullopt;
+  }
+  return lcd_control_.at(lcd_control_index(address));
+}
+
+bool PpuTiming::write_lcd_control(std::uint32_t address, std::uint16_t value) {
+  if (!is_lcd_control_address(address)) {
+    return false;
+  }
+  lcd_control_.at(lcd_control_index(address)) = value;
+  return true;
+}
+
+PpuTickEvents PpuTiming::tick(std::uint32_t cycles, InterruptController& interrupts) {
+  PpuTickEvents events{};
   while (cycles > 0) {
     const std::uint16_t next_event_cycle =
         line_cycle_ < kVisibleCycles ? kVisibleCycles : kCyclesPerLine;
@@ -42,12 +87,13 @@ void PpuTiming::tick(std::uint32_t cycles, InterruptController& interrupts) {
     cycles -= step;
 
     if (line_cycle_ == kVisibleCycles) {
-      enter_hblank(interrupts);
+      enter_hblank(interrupts, events);
     }
     if (line_cycle_ == kCyclesPerLine) {
-      enter_next_line(interrupts);
+      enter_next_line(interrupts, events);
     }
   }
+  return events;
 }
 
 std::uint16_t PpuTiming::dispstat() const {
@@ -119,16 +165,22 @@ std::uint64_t PpuTiming::state_hash() const {
   hasher.add_u16(line_);
   hasher.add_u16(line_cycle_);
   hasher.add_u16(dispstat_control_);
+  for (const std::uint16_t value : lcd_control_) {
+    hasher.add_u16(value);
+  }
   return hasher.value();
 }
 
-void PpuTiming::enter_hblank(InterruptController& interrupts) {
+void PpuTiming::enter_hblank(InterruptController& interrupts, PpuTickEvents& events) {
+  if (line_ < kVisibleLines) {
+    ++events.hblank_entries;
+  }
   if (line_ < kVisibleLines && hblank_irq_enabled()) {
     interrupts.request(InterruptSource::hblank);
   }
 }
 
-void PpuTiming::enter_next_line(InterruptController& interrupts) {
+void PpuTiming::enter_next_line(InterruptController& interrupts, PpuTickEvents& events) {
   line_cycle_ = 0;
   ++line_;
   if (line_ == kTotalLines) {
@@ -138,8 +190,14 @@ void PpuTiming::enter_next_line(InterruptController& interrupts) {
   if (line_ == kVisibleLines && vblank_irq_enabled()) {
     interrupts.request(InterruptSource::vblank);
   }
+  if (line_ == kVisibleLines) {
+    ++events.vblank_entries;
+  }
   if (vcount_match() && vcount_irq_enabled()) {
     interrupts.request(InterruptSource::vcount);
+  }
+  if (vcount_match()) {
+    ++events.vcount_matches;
   }
 }
 

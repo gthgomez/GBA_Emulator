@@ -59,9 +59,9 @@ int main() {
 
   bios.set_mode(BiosExecutionMode::hle);
   const auto hle_known = bios.handle_swi(thumb_div);
-  expect(hle_known.status == BiosSwiStatus::unimplemented_service,
-         "HLE policy fails known service until implemented");
-  expect(!hle_known.handled, "HLE policy does not claim unimplemented service handled");
+  expect(hle_known.status == BiosSwiStatus::handled,
+         "HLE policy claims known service for scheduler dispatch");
+  expect(hle_known.handled, "HLE policy reports known service handled");
   expect(!hle_known.requires_bios_bytes, "HLE policy does not require BIOS bytes");
   const auto hle_unknown = bios.handle_swi(BiosController::decode_thumb_swi(thumb_swi_unknown));
   expect(hle_unknown.status == BiosSwiStatus::unimplemented_service,

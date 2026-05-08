@@ -2,9 +2,11 @@
 
 #include "gba/core/apu.hpp"
 #include "gba/core/arm7tdmi.hpp"
+#include "gba/core/bios.hpp"
 #include "gba/core/dma_controller.hpp"
 #include "gba/core/interrupt_controller.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -20,6 +22,7 @@ struct CoreDeviceTickResult {
   std::optional<ApuFrameStep> apu_frame_step = std::nullopt;
   std::uint32_t apu_timer_events = 0;
   DirectSoundTimerResult last_direct_sound = {};
+  DmaRunResult triggered_dma = {};
 };
 
 struct CoreSchedulerStepResult {
@@ -77,6 +80,10 @@ struct CoreSchedulerState {
   std::optional<std::uint8_t> last_fetch_width_bytes;
   std::optional<std::uint8_t> last_fetch_window;
   std::uint8_t prefetch_buffer_halfwords = 0;
+  std::optional<std::uint32_t> hle_irq_return_lr;
+  std::optional<std::array<std::uint32_t, 13>> hle_irq_saved_registers;
+  bool auto_irq_line_high = false;
+  std::uint8_t auto_irq_latency_cycles = 0;
 };
 
 class CoreScheduler {
@@ -86,6 +93,9 @@ class CoreScheduler {
   CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory, InterruptController& interrupts,
                 Timers& timers, DmaController& dma, PpuTiming& ppu, Apu& apu,
                 const WaitStateControl& waitcnt);
+  CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory, InterruptController& interrupts,
+                Timers& timers, DmaController& dma, PpuTiming& ppu, Apu& apu,
+                const WaitStateControl& waitcnt, BiosController& bios);
 
   [[nodiscard]] std::uint64_t scheduler_cycles() const;
   void reset_scheduler_cycles();
@@ -114,6 +124,7 @@ class CoreScheduler {
   DmaController& dma_;
   PpuTiming& ppu_;
   Apu& apu_;
+  BiosController* bios_;
   std::uint64_t scheduler_cycles_;
   bool halted_;
   const WaitStateControl* waitcnt_;
@@ -121,6 +132,10 @@ class CoreScheduler {
   std::optional<std::uint8_t> last_fetch_width_bytes_;
   std::optional<std::uint8_t> last_fetch_window_;
   std::uint8_t prefetch_buffer_halfwords_;
+  std::optional<std::uint32_t> hle_irq_return_lr_;
+  std::optional<std::array<std::uint32_t, 13>> hle_irq_saved_registers_;
+  bool auto_irq_line_high_;
+  std::uint8_t auto_irq_latency_cycles_;
 
   [[nodiscard]] std::uint32_t apply_fetch_timing(std::uint32_t fetch_address,
                                                  std::uint8_t width_bytes,
@@ -132,6 +147,21 @@ class CoreScheduler {
   void refill_prefetch_after_step(std::uint32_t fetch_address, std::uint8_t width_bytes,
                                   const CoreSchedulerStepResult& step);
   void reset_fetch_timing_sequence();
+  void update_auto_irq_latency(std::uint32_t elapsed_cycles);
+  [[nodiscard]] bool auto_irq_ready() const;
+  void reset_auto_irq_latency();
+  [[nodiscard]] bool bios_hle_enabled() const;
+  [[nodiscard]] std::optional<CoreSchedulerStepResult> dispatch_hle_irq_vector(
+      std::uint32_t fetch_address);
+  [[nodiscard]] std::optional<CoreSchedulerStepResult> dispatch_hle_irq_return(
+      std::uint32_t fetch_address);
+  [[nodiscard]] std::optional<ArmStepResult> execute_hle_arm_swi(
+      std::uint32_t instruction);
+  [[nodiscard]] std::optional<ArmStepResult> execute_hle_thumb_swi(
+      std::uint16_t instruction);
+  [[nodiscard]] ArmStepResult execute_hle_swi(BiosSwiCall call);
+  [[nodiscard]] bool wait_for_interrupt_mask(std::uint16_t mask, bool discard_old_flags);
+  [[nodiscard]] bool hle_cpu_set(bool fast);
 };
 
 }  // namespace gba::core

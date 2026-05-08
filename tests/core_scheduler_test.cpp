@@ -1,5 +1,6 @@
 #include "gba/core/apu.hpp"
 #include "gba/core/arm7tdmi.hpp"
+#include "gba/core/bios.hpp"
 #include "gba/core/core_scheduler.hpp"
 #include "gba/core/dma_controller.hpp"
 #include "gba/core/interrupt_controller.hpp"
@@ -184,12 +185,49 @@ int main() {
   const gba::core::CoreSchedulerStepResult irq_step = scheduler.step_arm(kAddR0R0Imm1);
   expect(interrupts.requested(InterruptSource::timer0),
          "scheduler device tick can request timer IRQ");
-  expect(irq_step.irq_serviced, "scheduler services pending IRQ after device tick");
+  expect(!irq_step.irq_serviced, "scheduler defers same-instruction timer IRQ service");
+  bool arm_irq_serviced = false;
+  for (int i = 0; i < 6 && !arm_irq_serviced; ++i) {
+    arm_irq_serviced = scheduler.step_arm(kAddR0R0Imm1).irq_serviced;
+  }
+  expect(arm_irq_serviced, "scheduler services pending ARM IRQ after recognition latency");
   expect(cpu.current_mode() == gba::core::CpuMode::irq,
          "scheduler IRQ service enters IRQ mode");
   expect(cpu.register_value(Arm7tdmi::kPc) == 0x18, "scheduler IRQ service vectors PC");
-  expect(cpu.register_value(Arm7tdmi::kLinkRegister) == 4,
-         "scheduler IRQ service writes IRQ-bank LR");
+  expect(cpu.register_value(Arm7tdmi::kLinkRegister) == 8,
+         "scheduler IRQ service writes IRQ-bank LR for the next ARM instruction");
+
+  cpu.reset();
+  scheduler.reset_scheduler_cycles();
+  timers.reset();
+  ppu.reset();
+  apu.reset();
+  dma.reset();
+  interrupts.reset();
+  expect(cpu.set_cpsr(0x00000030), "scheduler Thumb IRQ seed enters user Thumb mode");
+  cpu.set_register(Arm7tdmi::kPc, kGamePakProgramBase);
+  timers.write_reload(0, 0xFFFF);
+  timers.write_control(0, 0x00C0);
+  interrupts.write_interrupt_enable(irq_bit(InterruptSource::timer0));
+  interrupts.write_ime(1);
+  const gba::core::CoreSchedulerStepResult thumb_irq_step =
+      scheduler.step_thumb(0x1C40U);
+  expect(interrupts.requested(InterruptSource::timer0),
+         "scheduler Thumb device tick can request timer IRQ");
+  expect(!thumb_irq_step.irq_serviced,
+         "scheduler defers same-instruction Thumb timer IRQ service");
+  bool thumb_irq_serviced = false;
+  for (int i = 0; i < 6 && !thumb_irq_serviced; ++i) {
+    thumb_irq_serviced = scheduler.step_thumb(0x1C40U).irq_serviced;
+  }
+  expect(thumb_irq_serviced,
+         "scheduler services pending Thumb IRQ after recognition latency");
+  expect(cpu.current_mode() == gba::core::CpuMode::irq,
+         "scheduler Thumb IRQ service enters IRQ mode");
+  expect(cpu.register_value(Arm7tdmi::kPc) == 0x18,
+         "scheduler Thumb IRQ service vectors PC");
+  expect(cpu.register_value(Arm7tdmi::kLinkRegister) == kGamePakProgramBase + 6U,
+         "scheduler Thumb IRQ service writes LR for the next Thumb instruction");
 
   cpu.reset();
   scheduler.reset_scheduler_cycles();
@@ -208,6 +246,43 @@ int main() {
   expect(cpu.current_mode() == gba::core::CpuMode::irq,
          "woken HALT seed enters IRQ mode when CPSR I is clear");
   expect(cpu.register_value(Arm7tdmi::kPc) == 0x18, "woken HALT seed vectors PC");
+
+  cpu.reset();
+  memory.hard_reset();
+  scheduler.reset_scheduler_cycles();
+  timers.reset();
+  ppu.reset();
+  apu.reset();
+  dma.reset();
+  interrupts.reset();
+  gba::core::BiosController bios;
+  bios.set_mode(gba::core::BiosExecutionMode::hle);
+  WaitStateControl hle_waitcnt;
+  CoreScheduler hle_irq_scheduler(cpu, memory, interrupts, timers, dma, ppu, apu,
+                                  hle_waitcnt, bios);
+  std::vector<std::uint8_t> irq_rom(256);
+  write_rom_halfword(irq_rom, 0, 0x2701U);
+  write_rom_halfword(irq_rom, 2, 0x4770U);
+  expect(memory.load_game_pak_rom(irq_rom), "HLE IRQ handler ROM loads");
+  expect(memory.write32(0x03007FFCU, 0x08000001U), "HLE IRQ user handler pointer writes");
+  cpu.set_register(7, 0xDEADBEEFU);
+  cpu.set_register(Arm7tdmi::kPc, kGamePakProgramBase + 0x10U);
+  interrupts.write_interrupt_enable(irq_bit(InterruptSource::timer0));
+  interrupts.write_ime(1);
+  interrupts.request(InterruptSource::timer0);
+  expect(hle_irq_scheduler.service_pending_irq(), "HLE IRQ seed enters IRQ mode");
+  expect(cpu.register_value(Arm7tdmi::kPc) == 0x18, "HLE IRQ seed vectors to BIOS IRQ");
+  expect(hle_irq_scheduler.step_from_pc().step.has_value(),
+         "HLE IRQ seed dispatches to user handler");
+  expect(hle_irq_scheduler.step_from_pc().step.has_value(),
+         "HLE IRQ user handler executes clobber");
+  expect(cpu.register_value(7) == 1, "HLE IRQ user handler clobbers r7 before return");
+  expect(hle_irq_scheduler.step_from_pc().step.has_value(),
+         "HLE IRQ user handler branches to return sentinel");
+  expect(hle_irq_scheduler.step_from_pc().step.has_value(),
+         "HLE IRQ return sentinel restores interrupted context");
+  expect(cpu.register_value(7) == 0xDEADBEEFU,
+         "HLE IRQ return restores r7 along with caller-saved registers");
 
   cpu.reset();
   memory.reset();
@@ -299,14 +374,14 @@ int main() {
   cpu.reset();
   memory.reset();
   scheduler.reset_scheduler_cycles();
-  cpu.set_register(Arm7tdmi::kPc, 0x00000000U);
+  cpu.set_register(Arm7tdmi::kPc, 0x12000000U);
   const gba::core::CoreSchedulerRunResult fetch_failed_run = scheduler.run_arm_from_pc(4);
   expect(fetch_failed_run.stop_reason == gba::core::CoreRunStopReason::fetch_failed,
          "run stops on failed instruction fetch");
   expect(fetch_failed_run.attempted_steps == 0,
          "fetch failure does not count as attempted execution");
   expect(fetch_failed_run.fetch_failures == 1, "fetch failure count is recorded");
-  expect(fetch_failed_run.final_pc == 0x00000000U, "fetch failure preserves PC");
+  expect(fetch_failed_run.final_pc == 0x12000000U, "fetch failure preserves PC");
 
   cpu.reset();
   memory.reset();
@@ -405,20 +480,20 @@ int main() {
   cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
   expect(memory.write16(kSyntheticProgramBase, kThumbBranchPlusTwoHalfwords),
          "seed Thumb branch");
-  expect(memory.write16(kSyntheticProgramBase + 4U, kThumbMovR2Imm3),
+  expect(memory.write16(kSyntheticProgramBase + 8U, kThumbMovR2Imm3),
          "seed Thumb branch target");
   const gba::core::CoreSchedulerFetchStepResult thumb_branch = scheduler.step_from_pc();
   expect(thumb_branch.step.has_value(), "Thumb branch dispatch reports scheduler step");
   expect(thumb_branch.step->cpu_step.status == ExecuteStatus::executed,
          "Thumb branch dispatch executes branch");
   expect(!thumb_branch.pc_advanced, "Thumb branch dispatch preserves changed PC");
-  expect(cpu.register_value(Arm7tdmi::kPc) == kSyntheticProgramBase + 4U,
+  expect(cpu.register_value(Arm7tdmi::kPc) == kSyntheticProgramBase + 8U,
          "Thumb branch updates PC to target");
   const gba::core::CoreSchedulerRunResult thumb_branch_target = scheduler.run_from_pc(1);
   expect(thumb_branch_target.executed_steps == 1,
          "Thumb branch target run executes one step");
   expect(cpu.register_value(2) == 3, "Thumb branch target instruction executes");
-  expect(cpu.register_value(Arm7tdmi::kPc) == kSyntheticProgramBase + 6U,
+  expect(cpu.register_value(Arm7tdmi::kPc) == kSyntheticProgramBase + 10U,
          "Thumb branch target advances PC after target instruction");
 
   cpu.reset();
@@ -435,7 +510,7 @@ int main() {
          "ARM dispatch advances PC by four bytes");
 
   cpu.reset();
-  memory.reset();
+  memory.hard_reset();
   scheduler.reset_scheduler_cycles();
   cpu.set_register(Arm7tdmi::kPc, kGamePakProgramBase);
   const gba::core::CoreSchedulerFetchStepResult unloaded_cartridge_dispatch =
@@ -535,7 +610,7 @@ int main() {
   timed_scheduler.reset_scheduler_cycles();
   std::vector<std::uint8_t> timed_thumb_branch_rom(256);
   write_rom_halfword(timed_thumb_branch_rom, 0, kThumbBranchPlusOneHalfword);
-  write_rom_halfword(timed_thumb_branch_rom, 2, kThumbMovR2Imm3);
+  write_rom_halfword(timed_thumb_branch_rom, 6, kThumbMovR2Imm3);
   expect(memory.load_game_pak_rom(timed_thumb_branch_rom),
          "timed scheduler loads Thumb branch ROM blob");
   expect(cpu.set_cpsr(kThumbStateSupervisor), "timed scheduler enters Thumb state");
@@ -543,14 +618,14 @@ int main() {
   const gba::core::CoreSchedulerFetchStepResult timed_branch = timed_scheduler.step_from_pc();
   expect(timed_branch.fetch_cycles == 3, "timed Thumb branch charges first fetch");
   expect(!timed_branch.pc_advanced, "timed Thumb branch changes PC directly");
-  expect(cpu.register_value(Arm7tdmi::kPc) == kGamePakProgramBase + 2U,
-         "timed Thumb branch targets adjacent halfword");
+  expect(cpu.register_value(Arm7tdmi::kPc) == kGamePakProgramBase + 6U,
+         "timed Thumb branch targets PC-plus-four-relative halfword");
   const gba::core::CoreSchedulerFetchStepResult timed_branch_target =
       timed_scheduler.step_from_pc();
   expect(timed_branch_target.fetch_timing_applied,
          "timed Thumb branch target applies fetch timing");
   expect(!timed_branch_target.fetch_sequential,
-         "branch target fetch resets sequential tracking even when address is adjacent");
+         "branch target fetch resets sequential tracking after control-flow change");
   expect(timed_branch_target.fetch_cycles == 3,
          "branch target fetch is charged as non-sequential after control-flow change");
 

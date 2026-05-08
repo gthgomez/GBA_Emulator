@@ -18,6 +18,8 @@ constexpr std::uint16_t kSoundCntHStoredMask =
 constexpr std::uint16_t kMasterEnable = 0x0080;
 constexpr std::uint16_t kSoundBiasMask = 0xC3FF;
 constexpr std::int32_t kDirectSoundHalfScale = 128;
+constexpr std::array<std::uint8_t, 4> kSquareDutyHighSamples{{1, 2, 4, 6}};
+constexpr std::int32_t kPsgScale = 128;
 
 [[nodiscard]] constexpr std::size_t fifo_index(DirectSoundChannel channel) {
   return static_cast<std::size_t>(channel);
@@ -59,6 +61,11 @@ void Apu::reset() {
     state.size = 0;
   }
   direct_sound_latched_samples_.fill(0);
+  for (SquareChannel& square : square_channels_) {
+    square = {false, 0, 0, 1, 0};
+  }
+  wave_channel_ = {false, 0, 1, 0};
+  noise_channel_ = {false, 0, 1, 0, 0x7FFF, false};
   audio_buffer_.samples.fill({0, 0});
   audio_buffer_.head = 0;
   audio_buffer_.size = 0;
@@ -122,6 +129,57 @@ void Apu::write_fifo(DirectSoundChannel channel, std::uint32_t value) {
   }
   for (std::uint8_t byte = 0; byte < 4; ++byte) {
     push_fifo(channel, static_cast<std::int8_t>((value >> (byte * 8U)) & 0xFFU));
+  }
+}
+
+void Apu::configure_square_channel(std::uint8_t channel, std::uint8_t duty,
+                                   std::uint8_t volume,
+                                   std::uint16_t period_samples) {
+  if (!master_enabled() || channel >= square_channels_.size()) {
+    return;
+  }
+  square_channels_.at(channel) = {true,
+                                  static_cast<std::uint8_t>(duty & 0x3U),
+                                  static_cast<std::uint8_t>(std::min<std::uint8_t>(volume, 15U)),
+                                  static_cast<std::uint16_t>(std::max<std::uint16_t>(1U, period_samples)),
+                                  0};
+}
+
+void Apu::configure_wave_channel(std::uint8_t volume_shift,
+                                 std::uint16_t period_samples) {
+  if (!master_enabled()) {
+    return;
+  }
+  wave_channel_ = {true,
+                   static_cast<std::uint8_t>(std::min<std::uint8_t>(volume_shift, 4U)),
+                   static_cast<std::uint16_t>(std::max<std::uint16_t>(1U, period_samples)),
+                   0};
+}
+
+void Apu::configure_noise_channel(std::uint8_t volume, std::uint16_t period_samples,
+                                  bool narrow_lfsr) {
+  if (!master_enabled()) {
+    return;
+  }
+  noise_channel_ = {true,
+                    static_cast<std::uint8_t>(std::min<std::uint8_t>(volume, 15U)),
+                    static_cast<std::uint16_t>(std::max<std::uint16_t>(1U, period_samples)),
+                    0,
+                    0x7FFF,
+                    narrow_lfsr};
+}
+
+void Apu::disable_psg_channel(std::uint8_t channel) {
+  if (channel < square_channels_.size()) {
+    square_channels_.at(channel).enabled = false;
+    return;
+  }
+  if (channel == 2) {
+    wave_channel_.enabled = false;
+    return;
+  }
+  if (channel == 3) {
+    noise_channel_.enabled = false;
   }
 }
 
@@ -265,6 +323,19 @@ bool Apu::direct_sound_enabled(DirectSoundChannel channel) const {
   return (soundcnt_h_ & enable_mask) != 0;
 }
 
+bool Apu::psg_channel_enabled(std::uint8_t channel) const {
+  if (channel < square_channels_.size()) {
+    return square_channels_.at(channel).enabled;
+  }
+  if (channel == 2) {
+    return wave_channel_.enabled;
+  }
+  if (channel == 3) {
+    return noise_channel_.enabled;
+  }
+  return false;
+}
+
 std::uint64_t Apu::state_hash() const {
   StateHasher hasher;
   hasher.add_u16(soundcnt_l_);
@@ -280,6 +351,23 @@ std::uint64_t Apu::state_hash() const {
   for (const std::int8_t sample : direct_sound_latched_samples_) {
     hasher.add_u8(static_cast<std::uint8_t>(sample));
   }
+  for (const SquareChannel& square : square_channels_) {
+    hasher.add_bool(square.enabled);
+    hasher.add_u8(square.duty);
+    hasher.add_u8(square.volume);
+    hasher.add_u16(square.period_samples);
+    hasher.add_u16(square.phase);
+  }
+  hasher.add_bool(wave_channel_.enabled);
+  hasher.add_u8(wave_channel_.volume_shift);
+  hasher.add_u16(wave_channel_.period_samples);
+  hasher.add_u16(wave_channel_.phase);
+  hasher.add_bool(noise_channel_.enabled);
+  hasher.add_u8(noise_channel_.volume);
+  hasher.add_u16(noise_channel_.period_samples);
+  hasher.add_u16(noise_channel_.phase);
+  hasher.add_u16(noise_channel_.lfsr);
+  hasher.add_bool(noise_channel_.narrow_lfsr);
   for (const ApuMixedSample& sample : audio_buffer_.samples) {
     hasher.add_u16(static_cast<std::uint16_t>(sample.left));
     hasher.add_u16(static_cast<std::uint16_t>(sample.right));
@@ -336,6 +424,9 @@ DirectSoundSample Apu::pop_fifo(DirectSoundChannel channel) {
 ApuMixedSample Apu::mix_sample() const {
   std::int32_t left = 0;
   std::int32_t right = 0;
+  const std::int32_t psg = mix_psg_sample();
+  left += psg;
+  right += psg;
 
   const auto mix_direct_channel = [&](DirectSoundChannel channel) {
     if (!direct_sound_enabled(channel)) {
@@ -364,6 +455,36 @@ ApuMixedSample Apu::mix_sample() const {
   return {clamp_mixed_sample(left), clamp_mixed_sample(right)};
 }
 
+std::int32_t Apu::mix_psg_sample() const {
+  std::int32_t mixed = 0;
+  for (const SquareChannel& square : square_channels_) {
+    if (!square.enabled || square.volume == 0) {
+      continue;
+    }
+    const std::uint8_t duty_step =
+        static_cast<std::uint8_t>((square.phase * 8U) / square.period_samples);
+    const bool high = duty_step < kSquareDutyHighSamples.at(square.duty);
+    mixed += (high ? 1 : -1) * static_cast<std::int32_t>(square.volume) * kPsgScale;
+  }
+
+  if (wave_channel_.enabled && wave_channel_.volume_shift != 0) {
+    const std::uint8_t sample_index =
+        static_cast<std::uint8_t>((wave_channel_.phase * 32U) / wave_channel_.period_samples);
+    const std::uint16_t packed = wave_ram_.at(sample_index / 4U);
+    const std::uint8_t nibble_shift =
+        static_cast<std::uint8_t>((3U - (sample_index % 4U)) * 4U);
+    const std::int32_t sample =
+        static_cast<std::int32_t>((packed >> nibble_shift) & 0x0FU) - 8;
+    mixed += (sample * kPsgScale) >> (wave_channel_.volume_shift - 1U);
+  }
+
+  if (noise_channel_.enabled && noise_channel_.volume != 0) {
+    const bool high = (noise_channel_.lfsr & 0x1U) == 0;
+    mixed += (high ? 1 : -1) * static_cast<std::int32_t>(noise_channel_.volume) * kPsgScale;
+  }
+  return mixed;
+}
+
 void Apu::push_audio_sample(ApuMixedSample sample) {
   if (audio_buffer_.size == kAudioBufferCapacity) {
     audio_buffer_.head = (audio_buffer_.head + 1U) % kAudioBufferCapacity;
@@ -380,6 +501,33 @@ void Apu::generate_audio_sample() {
   last_mixed_sample_ = mix_sample();
   push_audio_sample(last_mixed_sample_);
   ++audio_sample_count_;
+  advance_psg_generators();
+}
+
+void Apu::advance_psg_generators() {
+  for (SquareChannel& square : square_channels_) {
+    if (!square.enabled) {
+      continue;
+    }
+    square.phase = static_cast<std::uint16_t>((square.phase + 1U) % square.period_samples);
+  }
+  if (wave_channel_.enabled) {
+    wave_channel_.phase =
+        static_cast<std::uint16_t>((wave_channel_.phase + 1U) % wave_channel_.period_samples);
+  }
+  if (noise_channel_.enabled) {
+    noise_channel_.phase =
+        static_cast<std::uint16_t>((noise_channel_.phase + 1U) % noise_channel_.period_samples);
+    if (noise_channel_.phase == 0) {
+      const std::uint16_t bit =
+          static_cast<std::uint16_t>((noise_channel_.lfsr ^ (noise_channel_.lfsr >> 1U)) & 0x1U);
+      noise_channel_.lfsr = static_cast<std::uint16_t>((noise_channel_.lfsr >> 1U) | (bit << 14U));
+      if (noise_channel_.narrow_lfsr) {
+        noise_channel_.lfsr =
+            static_cast<std::uint16_t>((noise_channel_.lfsr & ~(1U << 6U)) | (bit << 6U));
+      }
+    }
+  }
 }
 
 void Apu::clear_sound_circuit() {
@@ -394,6 +542,11 @@ void Apu::clear_sound_circuit() {
   last_mixed_sample_ = {0, 0};
   frame_step_ = 0;
   wave_ram_.fill(0);
+  for (SquareChannel& square : square_channels_) {
+    square = {false, 0, 0, 1, 0};
+  }
+  wave_channel_ = {false, 0, 1, 0};
+  noise_channel_ = {false, 0, 1, 0, 0x7FFF, false};
   clear_fifo(DirectSoundChannel::a);
   clear_fifo(DirectSoundChannel::b);
   clear_audio_buffer();

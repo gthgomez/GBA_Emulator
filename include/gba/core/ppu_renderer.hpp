@@ -14,6 +14,12 @@ struct PpuRenderControl {
   std::array<std::uint16_t, 4> bg_control;
   std::array<std::uint16_t, 4> bg_scroll_x;
   std::array<std::uint16_t, 4> bg_scroll_y;
+  std::uint16_t win0h = 0;
+  std::uint16_t win0v = 0;
+  std::uint16_t winin = 0x003F;
+  std::uint16_t bldcnt = 0;
+  std::uint16_t bldalpha = 0;
+  std::uint16_t bldy = 0;
 };
 
 struct PpuRenderStats {
@@ -21,6 +27,10 @@ struct PpuRenderStats {
   std::uint16_t bg_pixels;
   std::uint16_t obj_pixels;
   bool supported_mode;
+  bool forced_blank = false;
+  std::uint16_t bitmap_pixels = 0;
+  std::uint16_t window_masked_pixels = 0;
+  std::uint16_t blend_pixels = 0;
 };
 
 class PpuRenderer {

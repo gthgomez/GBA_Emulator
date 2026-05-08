@@ -175,9 +175,11 @@ int main() {
          "addresses outside the GBA internal banks stay out of scope");
   expect(MemoryBus::read_policy(0x02000000).readable,
          "read policy marks modeled RAM readable");
-  expect(MemoryBus::read_policy(0x00000000).failure ==
+  expect(MemoryBus::read_policy(0x00000000).readable,
+         "read policy exposes deterministic HLE BIOS vector bytes");
+  expect(MemoryBus::read_policy(0x00010000).failure ==
              MemoryReadFailure::protected_bios_open_bus_unmodeled,
-         "read policy marks BIOS open-bus behavior explicitly unmodeled");
+         "read policy reports protected BIOS open-bus region");
   expect(MemoryBus::read_policy(0x04000000).failure ==
              MemoryReadFailure::io_register_facade_required,
          "read policy routes IO reads to the IO facade");
@@ -205,8 +207,8 @@ int main() {
                 "IWRAM word timing metadata");
   expect_timing(MemoryBus::timing(0x06000000, AccessWidth::word), 2, 2, true, true,
                 "VRAM word timing metadata");
-  expect_timing(MemoryBus::timing(0x00000000, AccessWidth::word), 1, 1, false, false,
-                "BIOS timing metadata remains inaccessible without bundled data");
+  expect_timing(MemoryBus::timing(0x00000000, AccessWidth::word), 1, 1, true, false,
+                "BIOS timing metadata covers HLE vector reads");
   expect_timing(MemoryBus::timing(0x08000000, AccessWidth::word), 1, 1, false, false,
                 "cartridge timing remains inaccessible until ROM data and WAITCNT exist");
   expect_timing(MemoryBus::timing(0x0E000000, AccessWidth::byte), 1, 1, false, false,
@@ -243,7 +245,7 @@ int main() {
   expect(bus.write8(0x03000000, 0x56), "write IWRAM start");
   expect(bus.write8(0x05000000, 0x78), "write palette start");
   expect(bus.write8(0x06000000, 0x9A), "write VRAM start");
-  expect(bus.write8(0x07000000, 0xBC), "write OAM start");
+  expect(bus.write16(0x07000000, 0x00BC), "write OAM start");
 
   expect_read(bus, 0x02000000, 0x12, "read EWRAM start");
   expect_read(bus, 0x0203FFFF, 0x34, "read EWRAM end");
@@ -258,12 +260,20 @@ int main() {
   expect_read(bus, 0x03000000, 0xCB, "IWRAM mirror writes canonical byte");
   expect(bus.write16(0x05000400, 0x1357), "write palette mirror");
   expect_read16(bus, 0x05000000, 0x1357, "palette mirror writes canonical halfword");
-  expect(bus.write8(0x06018000, 0xD1), "write VRAM OBJ mirror");
+  expect(bus.write16(0x06018000, 0x00D1), "write VRAM OBJ mirror");
   expect_read(bus, 0x06010000, 0xD1, "VRAM OBJ mirror writes canonical byte");
   expect(bus.write8(0x06020000, 0xD2), "write VRAM repeat mirror");
   expect_read(bus, 0x06000000, 0xD2, "VRAM repeat mirror writes canonical byte");
-  expect(bus.write8(0x07000400, 0xD3), "write OAM mirror");
+  expect(bus.write16(0x07000400, 0x00D3), "write OAM mirror");
   expect_read(bus, 0x07000000, 0xD3, "OAM mirror writes canonical byte");
+  expect(bus.write8(0x05000002, 0xD8), "palette byte write duplicates into halfword");
+  expect_read16(bus, 0x05000002, 0xD8D8, "palette byte-store quirk duplicates byte");
+  expect(bus.write8(0x06000002, 0xD8), "VRAM BG byte write duplicates into halfword");
+  expect_read16(bus, 0x06000002, 0xD8D8, "VRAM BG byte-store quirk duplicates byte");
+  expect(bus.write8(0x06010000, 0xEE), "VRAM OBJ byte write is ignored");
+  expect_read(bus, 0x06010000, 0xD1, "VRAM OBJ byte-store quirk preserves data");
+  expect(bus.write8(0x07000000, 0xEE), "OAM byte write is ignored");
+  expect_read(bus, 0x07000000, 0xD3, "OAM byte-store quirk preserves data");
 
   expect(bus.write32(0x02000004, 0x12345678), "write32 EWRAM aligned");
   expect_read32(bus, 0x02000004, 0x12345678, "read32 EWRAM aligned");
@@ -292,8 +302,27 @@ int main() {
   expect(!bus.write8(0x00000000, 0xFF), "BIOS range is not writable");
   expect(!bus.write16(0x00000000, 0xFFFF), "write16 BIOS range is not writable");
   expect(!bus.write32(0x00000000, 0xFFFFFFFF), "write32 BIOS range is not writable");
-  expect(!bus.read8(0x00000000).has_value(), "BIOS range has no bundled data");
+  expect_read(bus, 0x00000000, 0x04, "HLE BIOS vector byte 0 is readable");
+  expect_read16(bus, 0x00000000, 0x2004, "HLE BIOS vector halfword is readable");
+  expect_read32(bus, 0x00000000, 0xE3A02004, "HLE BIOS vector word is readable");
+  expect(!bus.read8(0x00010000).has_value(),
+         "protected BIOS region does not fabricate bus data directly");
   expect(!bus.write8(0x04000000, 0xFF), "IO registers not implemented in Phase 1");
+  expect(bus.write16(0x04FFF780, 0xC0DE),
+         "unmapped address writes are ignored without mutating modeled memory");
+  expect_read16(bus, 0x04FFF780, 0x1DEA, "mGBA debug-enable probe read is modeled");
+  expect(bus.write8(0x04FFF600, 'O'), "mGBA debug string byte writes are captured");
+  expect(bus.write8(0x04FFF601, 'K'), "mGBA debug string second byte writes are captured");
+  expect(bus.write8(0x04FFF602, 0), "mGBA debug string terminator writes are captured");
+  expect(bus.write16(0x04FFF700, 0x0103), "mGBA debug flags flush captured string");
+  expect(bus.debug_output() == "OK\n", "mGBA debug flush appends string output");
+  bus.clear_debug_output();
+  expect(bus.debug_output().empty(), "debug output clear resets captured text");
+  expect_read32(bus, 0x04FFFA00, 0x67246F6E,
+                "no$gba debug ID prefix is readable");
+  expect_read16(bus, 0x04FFFA04, 0x6162, "no$gba debug ID middle is readable");
+  expect(!bus.read16(0x04FFF782).has_value(),
+         "unmapped address reads remain open-bus-unmodeled");
   expect(!bus.read8(0x08000000).has_value(), "cartridge ROM has no loaded data");
   expect(!bus.write8(0x08000000, 0xFF), "cartridge ROM remains read-only");
   expect(!bus.has_game_pak_rom(), "cartridge ROM starts unloaded");
@@ -346,9 +375,25 @@ int main() {
   expect_read32(bus, 0x08000000, 0x12345678, "loaded cartridge ROM reads little-endian word");
   expect_read16(bus, 0x0A000000, 0x5678, "wait1 ROM mirror reads loaded data");
   expect_read(bus, 0x0C000003, 0x12, "wait2 ROM mirror reads loaded data");
-  expect_read(bus, 0x08000100, 0x78, "small cartridge ROM wraps within wait0 window");
-  expect_read(bus, 0x0A000101, 0x56, "small cartridge ROM wraps within wait1 mirror");
-  expect(!bus.write8(0x08000000, 0xFF), "loaded cartridge ROM still rejects writes");
+  expect_read(bus, 0x08000100, 0x80, "ROM out-of-bounds byte reads use open bus");
+  expect_read(bus, 0x0A000101, 0x00, "ROM mirror out-of-bounds byte reads use open bus");
+  expect_read(bus, 0x092468AC, 0x56, "ROM out-of-bounds byte reads address bus low byte");
+  expect_read16(bus, 0x092468AC, 0x3456,
+                "ROM out-of-bounds halfword reads address bus halfword");
+  expect_read32(bus, 0x092468AC, 0x34573456,
+                "ROM out-of-bounds word reads adjacent address-bus halfwords");
+  expect_read32(bus, 0x092468AD, 0x56345734,
+                "ROM out-of-bounds unaligned word reads rotate open bus value");
+  expect(bus.write8(0x08000000, 0xFF), "loaded cartridge ROM accepts ignored byte writes");
+  expect(bus.write16(0x08000000, 0xFFFF),
+         "loaded cartridge ROM accepts ignored halfword writes");
+  expect(bus.write32(0x08000000, 0xFFFFFFFF),
+         "loaded cartridge ROM accepts ignored word writes");
+  expect(bus.write16(0x08000001, 0xFFFF),
+         "loaded cartridge ROM accepts ignored unaligned halfword writes");
+  expect(bus.write32(0x08000001, 0xFFFFFFFF),
+         "loaded cartridge ROM accepts ignored unaligned word writes");
+  expect_read32(bus, 0x08000000, 0x12345678, "ignored cartridge ROM writes do not mutate bytes");
   std::vector<std::uint8_t> oversized_rom(MemoryBus::kGamePakRomWindowSize + 1U);
   expect(!bus.load_game_pak_rom(oversized_rom), "oversized cartridge ROM blob is rejected");
   expect(bus.game_pak_rom_size() == tiny_rom.size(),
@@ -424,15 +469,22 @@ int main() {
   expect_read(bus, 0x0E000000, 0x34, "SRAM save mirror writes canonical byte");
   expect(bus.write8(0x0F000001, 0x56), "SRAM save backing accepts mirrored bank byte");
   expect_read(bus, 0x0E000001, 0x56, "SRAM save mirrored bank maps canonical byte");
+  expect_read16(bus, 0x0E000001, 0x5656, "SRAM halfword reads duplicate addressed byte");
+  expect_read32(bus, 0x0E000001, 0x56565656, "SRAM word reads duplicate addressed byte");
   const std::vector<std::uint8_t> exported_sram = bus.export_game_pak_save();
   expect(exported_sram.size() == MemoryBus::kSram32kSize,
          "SRAM save export exposes full backing bytes");
   expect(exported_sram.at(0) == 0x34 && exported_sram.at(1) == 0x56,
          "SRAM save export preserves written bytes");
-  expect(!bus.write16(0x0E000000, 0xBEEF),
-         "Phase 48 save aperture rejects direct halfword writes");
-  expect_read16(bus, 0x0E000000, 0x5634,
-                "Phase 48 save aperture can compose halfword reads from bytes");
+  expect(bus.write16(0x0E000000, 0xBEEF),
+         "SRAM save backing accepts low-byte halfword writes");
+  expect(bus.write32(0x0E000004, 0x11223344),
+         "SRAM save backing accepts low-byte word writes");
+  expect_read(bus, 0x0E000000, 0xEF, "SRAM halfword write stores only low byte");
+  expect_read(bus, 0x0E000004, 0x44, "SRAM save word write stores low byte");
+  expect_read(bus, 0x0E000007, 0xFF, "SRAM save word write leaves high byte erased");
+  expect_read16(bus, 0x0E000000, 0xEFEF,
+                "SRAM save aperture duplicates low-byte halfword write");
 
   std::vector<std::uint8_t> imported_flash(MemoryBus::kFlash64kSize, 0xA5);
   imported_flash.at(0x1234) = 0x5A;

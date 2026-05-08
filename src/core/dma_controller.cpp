@@ -19,6 +19,9 @@ constexpr std::uint16_t kEnableFlag = 0x8000;
 constexpr std::uint16_t kControlMask = kDestinationControlMask | kSourceControlMask |
                                        kRepeatFlag | kTransfer32Flag |
                                        kStartTimingMask | kIrqFlag | kEnableFlag;
+constexpr std::uint32_t kFifoAAddress = 0x040000A0;
+constexpr std::uint32_t kFifoBAddress = 0x040000A4;
+constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
 
 [[nodiscard]] constexpr InterruptSource dma_interrupt_source(std::size_t channel) {
   return static_cast<InterruptSource>(
@@ -40,6 +43,45 @@ constexpr std::uint16_t kControlMask = kDestinationControlMask | kSourceControlM
   return address;
 }
 
+[[nodiscard]] constexpr DmaStartTiming trigger_timing(DmaTrigger trigger) {
+  switch (trigger) {
+    case DmaTrigger::immediate:
+      return DmaStartTiming::immediate;
+    case DmaTrigger::vblank:
+      return DmaStartTiming::vblank;
+    case DmaTrigger::hblank:
+      return DmaStartTiming::hblank;
+    case DmaTrigger::special:
+    case DmaTrigger::fifo_a:
+    case DmaTrigger::fifo_b:
+      return DmaStartTiming::special;
+  }
+  return DmaStartTiming::immediate;
+}
+
+[[nodiscard]] constexpr DirectSoundChannel trigger_fifo(DmaTrigger trigger) {
+  return trigger == DmaTrigger::fifo_b ? DirectSoundChannel::b : DirectSoundChannel::a;
+}
+
+[[nodiscard]] constexpr std::uint32_t trigger_fifo_address(DmaTrigger trigger) {
+  return trigger == DmaTrigger::fifo_b ? kFifoBAddress : kFifoAAddress;
+}
+
+[[nodiscard]] bool dma_source_uses_latch(std::uint32_t address) {
+  return MemoryBus::describe(address).region == Region::bios;
+}
+
+[[nodiscard]] bool dma_source_steps_as_game_pak_stream(std::size_t channel,
+                                                       std::uint32_t address) {
+  return channel != 0 && MemoryBus::describe(address & 0x0FFFFFFFU).region ==
+                             Region::game_pak_rom;
+}
+
+[[nodiscard]] constexpr std::uint32_t duplicate_halfword(std::uint16_t value) {
+  return static_cast<std::uint32_t>(value) |
+         (static_cast<std::uint32_t>(value) << 16U);
+}
+
 }  // namespace
 
 DmaController::DmaController() {
@@ -55,6 +97,7 @@ void DmaController::reset() {
     channel.current_source = 0;
     channel.current_destination = 0;
     channel.current_count = 0;
+    channel.data_latch = 0;
   }
 }
 
@@ -143,18 +186,55 @@ std::uint64_t DmaController::state_hash() const {
     hasher.add_u32(channel.current_source);
     hasher.add_u32(channel.current_destination);
     hasher.add_u32(channel.current_count);
+    hasher.add_u32(channel.data_latch);
   }
   return hasher.value();
 }
 
 DmaRunResult DmaController::run_immediate(MemoryBus& memory,
                                           InterruptController& interrupts) {
-  DmaRunResult result{0, 0, false};
+  return run_trigger(DmaTrigger::immediate, memory, interrupts);
+}
+
+DmaRunResult DmaController::run_trigger(DmaTrigger trigger, MemoryBus& memory,
+                                        InterruptController& interrupts) {
+  DmaRunResult result{0, 0, false, 0};
+  const DmaStartTiming timing = trigger_timing(trigger);
+  if (trigger == DmaTrigger::fifo_a || trigger == DmaTrigger::fifo_b) {
+    result.unsupported_request = true;
+    return result;
+  }
   for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
-    if (!enabled(channel) || start_timing(channel) != DmaStartTiming::immediate) {
+    if (!enabled(channel) || start_timing(channel) != timing) {
       continue;
     }
-    if (!execute_channel(channel, memory, interrupts, result.units_transferred)) {
+    if (!execute_channel(channel, memory, interrupts, result.units_transferred,
+                         result.bus_cycles)) {
+      result.unsupported_request = true;
+      return result;
+    }
+    ++result.channels_executed;
+  }
+  return result;
+}
+
+DmaRunResult DmaController::run_sound_fifo(DmaTrigger trigger, MemoryBus& memory,
+                                           Apu& apu,
+                                           InterruptController& interrupts) {
+  DmaRunResult result{0, 0, false, 0};
+  if (trigger != DmaTrigger::fifo_a && trigger != DmaTrigger::fifo_b) {
+    result.unsupported_request = true;
+    return result;
+  }
+
+  for (std::size_t channel = 1; channel <= 2; ++channel) {
+    if (!enabled(channel) || start_timing(channel) != DmaStartTiming::special ||
+        destination(channel) != trigger_fifo_address(trigger)) {
+      continue;
+    }
+    if (!execute_sound_fifo_channel(channel, trigger_fifo(trigger), memory, apu,
+                                    interrupts, result.units_transferred,
+                                    result.bus_cycles)) {
       result.unsupported_request = true;
       return result;
     }
@@ -184,9 +264,22 @@ std::uint32_t DmaController::normalized_word_count(std::size_t channel) const {
   return count == 0 ? mask + 1U : count;
 }
 
+std::uint32_t DmaController::effective_source_address(std::size_t channel,
+                                                      std::uint32_t address) {
+  const std::uint32_t mask = channel == 0 ? 0x07FFFFFFU : 0x0FFFFFFFU;
+  return address & mask;
+}
+
+std::uint32_t DmaController::effective_destination_address(std::size_t channel,
+                                                           std::uint32_t address) {
+  const std::uint32_t mask = channel == 3 ? 0x0FFFFFFFU : 0x07FFFFFFU;
+  return address & mask;
+}
+
 bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
                                     InterruptController& interrupts,
-                                    std::uint32_t& units_transferred) {
+                                    std::uint32_t& units_transferred,
+                                    std::uint32_t& bus_cycles) {
   if (source_control(channel) == DmaAddressControl::increment_reload) {
     return false;
   }
@@ -198,23 +291,37 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
   std::uint32_t destination_address = state.current_destination;
 
   for (std::uint32_t unit = 0; unit < state.current_count; ++unit) {
+    const std::uint32_t aligned_source =
+        effective_source_address(channel, source_address) & ~(unit_size - 1U);
+    const std::uint32_t aligned_destination =
+        effective_destination_address(channel, destination_address) & ~(unit_size - 1U);
     if (word_transfer) {
-      const std::optional<std::uint32_t> value = memory.read32(source_address);
-      if (!value.has_value() || !memory.write32(destination_address, value.value())) {
-        return false;
-      }
+      const std::optional<std::uint32_t> read_value =
+          dma_source_uses_latch(aligned_source) ? std::nullopt : memory.read32(aligned_source);
+      const std::uint32_t value = read_value.value_or(state.data_latch);
+      state.data_latch = value;
+      [[maybe_unused]] const bool written = memory.write32(aligned_destination, value);
     } else {
-      const std::optional<std::uint16_t> value = memory.read16(source_address);
-      if (!value.has_value() || !memory.write16(destination_address, value.value())) {
-        return false;
+      const std::optional<std::uint16_t> read_value =
+          dma_source_uses_latch(aligned_source) ? std::nullopt : memory.read16(aligned_source);
+      const std::uint16_t value = read_value.value_or(
+          static_cast<std::uint16_t>(state.data_latch & 0xFFFFU));
+      if (read_value.has_value()) {
+        state.data_latch = duplicate_halfword(value);
       }
+      [[maybe_unused]] const bool written = memory.write16(aligned_destination, value);
     }
-    source_address = step_address(source_address, source_control(channel), unit_size);
+    const DmaAddressControl source_step_control =
+        dma_source_steps_as_game_pak_stream(channel, source_address)
+            ? DmaAddressControl::increment
+            : source_control(channel);
+    source_address = step_address(source_address, source_step_control, unit_size);
     destination_address =
         step_address(destination_address, destination_control(channel), unit_size);
   }
 
   units_transferred += state.current_count;
+  bus_cycles += state.current_count * (word_transfer ? 2U : 1U);
   state.current_source = source_address;
   state.current_destination = destination_address;
   state.current_count = 0;
@@ -232,6 +339,45 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
   }
 
   state.control = static_cast<std::uint16_t>(state.control & ~kEnableFlag);
+  return true;
+}
+
+bool DmaController::execute_sound_fifo_channel(std::size_t channel,
+                                               DirectSoundChannel fifo,
+                                               MemoryBus& memory, Apu& apu,
+                                               InterruptController& interrupts,
+                                               std::uint32_t& units_transferred,
+                                               std::uint32_t& bus_cycles) {
+  if (!transfer_32bit(channel) || source_control(channel) == DmaAddressControl::increment_reload ||
+      destination_control(channel) != DmaAddressControl::fixed) {
+    return false;
+  }
+
+  Channel& state = checked_channel(channel);
+  std::uint32_t source_address = state.current_source;
+  for (std::uint32_t unit = 0; unit < kSoundFifoWordsPerRequest; ++unit) {
+    const std::optional<std::uint32_t> value =
+        memory.read32(effective_source_address(channel, source_address) & ~0x3U);
+    if (!value.has_value()) {
+      return false;
+    }
+    state.data_latch = value.value();
+    apu.write_fifo(fifo, value.value());
+    source_address = step_address(source_address, source_control(channel), 4U);
+  }
+
+  units_transferred += kSoundFifoWordsPerRequest;
+  bus_cycles += kSoundFifoWordsPerRequest * 2U;
+  state.current_source = source_address;
+  state.current_destination = destination(channel);
+  state.current_count = repeat(channel) ? normalized_word_count(channel) : 0;
+
+  if (irq_on_completion(channel)) {
+    interrupts.request(dma_interrupt_source(channel));
+  }
+  if (!repeat(channel)) {
+    state.control = static_cast<std::uint16_t>(state.control & ~kEnableFlag);
+  }
   return true;
 }
 

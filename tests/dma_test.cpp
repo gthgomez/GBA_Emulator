@@ -6,6 +6,7 @@
 #include <iostream>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -32,6 +33,14 @@ void expect_read32(const gba::core::MemoryBus& bus, std::uint32_t address,
 
 constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
   return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
+}
+
+void put_rom_word(std::vector<std::uint8_t>& rom, std::size_t offset,
+                  std::uint32_t value) {
+  rom.at(offset + 0) = static_cast<std::uint8_t>(value & 0xFFU);
+  rom.at(offset + 1) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+  rom.at(offset + 2) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
+  rom.at(offset + 3) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
 }
 
 }  // namespace
@@ -74,6 +83,7 @@ int main() {
   expect(dma0_result.channels_executed == 1, "DMA0 immediate run executes one channel");
   expect(dma0_result.units_transferred == 3, "DMA0 immediate run copies three halfwords");
   expect(!dma0_result.unsupported_request, "DMA0 immediate run is supported");
+  expect(dma0_result.bus_cycles == 3, "DMA0 halfword transfer reports bus occupancy");
   expect_read16(memory, 0x03000000, 0x1111, "DMA0 copied halfword 0");
   expect_read16(memory, 0x03000002, 0x2222, "DMA0 copied halfword 1");
   expect_read16(memory, 0x03000004, 0x3333, "DMA0 copied halfword 2");
@@ -94,9 +104,121 @@ int main() {
   const gba::core::DmaRunResult dma1_result = dma.run_immediate(memory, interrupts);
   expect(dma1_result.channels_executed == 1, "DMA1 immediate run executes one channel");
   expect(dma1_result.units_transferred == 2, "DMA1 immediate run copies two words");
+  expect(dma1_result.bus_cycles == 4, "DMA1 word transfer reports doubled bus occupancy");
   expect_read32(memory, 0x03000020, 0xAABBCCDD, "DMA1 copied first word to initial dest");
   expect_read32(memory, 0x0300001C, 0x11223344, "DMA1 decremented destination for second word");
   expect(!dma.enabled(1), "DMA1 one-shot transfer clears enable bit");
+
+  std::vector<std::uint8_t> rom(256, 0);
+  put_rom_word(rom, 0, 0xDEADBEEF);
+  put_rom_word(rom, 0x0C, 0xDEADBEEF);
+  put_rom_word(rom, 0x10, 0xDEADBEF0);
+  put_rom_word(rom, 0x14, 0xDEADBEF1);
+  put_rom_word(rom, 0x18, 0xDEADBEF2);
+  expect(memory.load_game_pak_rom(rom), "DMA test ROM loads");
+  dma.write_source(1, 0x08000001);
+  dma.write_destination(1, 0x03000024);
+  dma.write_word_count(1, 1);
+  dma.write_control(1, 0x8400);
+  const gba::core::DmaRunResult dma1_unaligned_source = dma.run_immediate(memory, interrupts);
+  expect(dma1_unaligned_source.channels_executed == 1,
+         "DMA1 unaligned word source still runs");
+  expect_read32(memory, 0x03000024, 0xDEADBEEF,
+                "DMA word source aligns instead of rotating like CPU LDR");
+
+  dma.write_source(1, 0x0800000C);
+  dma.write_destination(1, 0x03000028);
+  dma.write_word_count(1, 4);
+  dma.write_control(1, 0x8540);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA1 fixed ROM word source transfer runs");
+  expect_read32(memory, 0x03000028, 0xDEADBEF2,
+                "DMA1 ROM word source streams forward even when fixed");
+
+  dma.write_source(1, 0x0800000C);
+  dma.write_destination(1, 0x0300002C);
+  dma.write_word_count(1, 4);
+  dma.write_control(1, 0x84C0);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA1 decrement ROM word source transfer runs");
+  expect_read32(memory, 0x0300002C, 0xDEADBEF2,
+                "DMA1 ROM word source streams forward even when decrementing");
+
+  expect(memory.write32(0x02000200, 0xFEEDFACE), "seed DMA0 latch source");
+  dma.write_source(0, 0x02000200);
+  dma.write_destination(0, 0x03000200);
+  dma.write_word_count(0, 1);
+  dma.write_control(0, 0x8400);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA0 latch seed transfer runs");
+  dma.write_source(0, 0x08000000);
+  dma.write_destination(0, 0x03000204);
+  dma.write_word_count(0, 1);
+  dma.write_control(0, 0x8000);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA0 masked ROM halfword transfer runs from BIOS latch");
+  expect_read16(memory, 0x03000204, 0xFACE,
+                "DMA0 source mask redirects ROM source into BIOS latch/open bus");
+  dma.write_source(0, 0x00000000);
+  dma.write_destination(0, 0x03000206);
+  dma.write_word_count(0, 1);
+  dma.write_control(0, 0x8400);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA0 BIOS word transfer runs after latch halfword read");
+  expect_read32(memory, 0x03000204, 0xFEEDFACE,
+                "DMA halfword latch source read preserves full word latch");
+
+  expect(memory.write32(0x02000208, 0xCAFEBABE), "seed DMA1 BIOS latch source");
+  dma.write_source(1, 0x02000208);
+  dma.write_destination(1, 0x03000208);
+  dma.write_word_count(1, 4);
+  dma.write_control(1, 0x8140);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA1 halfword latch seed transfer runs");
+  dma.write_source(1, 0x00000010);
+  dma.write_destination(1, 0x0300020C);
+  dma.write_word_count(1, 1);
+  dma.write_control(1, 0x8400);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA1 BIOS word source reuses latch");
+  expect_read32(memory, 0x0300020C, 0xBABEBABE,
+                "DMA1 BIOS word source uses duplicated halfword latch");
+
+  dma.write_source(1, 0x0800000C);
+  dma.write_destination(1, 0x03000210);
+  dma.write_word_count(1, 4);
+  dma.write_control(1, 0x8000);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA1 ROM halfword latch seed transfer runs");
+  dma.write_source(1, 0x0000001C);
+  dma.write_destination(1, 0x03000214);
+  dma.write_word_count(1, 4);
+  dma.write_control(1, 0x8400);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA1 BIOS word source after ROM seed transfer runs");
+  expect_read32(memory, 0x03000214, 0xDEADDEAD,
+                "DMA1 BIOS word source preserves duplicated ROM halfword latch");
+  expect_read32(memory, 0x03000218, 0xDEADDEAD,
+                "DMA1 BIOS word source writes duplicated latch while incrementing");
+
+  dma.write_source(1, 0x02000005);
+  dma.write_destination(1, 0x03000207);
+  dma.write_word_count(1, 1);
+  dma.write_control(1, 0x8000);
+  expect(dma.run_immediate(memory, interrupts).channels_executed == 1,
+         "DMA unaligned halfword destination still runs");
+  expect_read16(memory, 0x03000206, 0x3333,
+                "DMA halfword destination aligns down before write");
+  dma.write_source(2, 0x02000000);
+  dma.write_destination(2, 0x08000003);
+  dma.write_word_count(2, 1);
+  dma.write_control(2, 0x8400);
+  const gba::core::DmaRunResult dma_to_rom = dma.run_immediate(memory, interrupts);
+  expect(dma_to_rom.channels_executed == 1,
+         "DMA to read-only/protected destination still completes");
+  expect(!dma.enabled(2), "ignored DMA destination write clears one-shot enable");
+  expect_read32(memory, 0x08000000, 0xDEADBEEF,
+                "ignored DMA destination write does not mutate ROM");
 
   dma.write_word_count(0, 0);
   dma.write_control(0, 0x8000);
@@ -120,6 +242,23 @@ int main() {
   expect(!memory.read16(0x03000030).has_value() ||
              memory.read16(0x03000030).value() != 0x4444,
          "non-immediate DMA leaves destination unchanged");
+  const gba::core::DmaRunResult vblank_result =
+      dma.run_trigger(gba::core::DmaTrigger::vblank, memory, interrupts);
+  expect(vblank_result.channels_executed == 1, "VBlank DMA runs on VBlank trigger");
+  expect(vblank_result.units_transferred == 1, "VBlank DMA copies one unit");
+  expect(vblank_result.bus_cycles == 1, "VBlank DMA reports bus occupancy");
+  expect_read16(memory, 0x03000030, 0x4444, "VBlank DMA copied delayed value");
+  dma.write_control(2, 0);
+
+  expect(memory.write16(0x02000034, 0x7777), "seed DMA2 HBlank source");
+  dma.write_source(2, 0x02000034);
+  dma.write_destination(2, 0x03000034);
+  dma.write_word_count(2, 1);
+  dma.write_control(2, 0xA000);
+  const gba::core::DmaRunResult hblank_result =
+      dma.run_trigger(gba::core::DmaTrigger::hblank, memory, interrupts);
+  expect(hblank_result.channels_executed == 1, "HBlank DMA runs on HBlank trigger");
+  expect_read16(memory, 0x03000034, 0x7777, "HBlank DMA copied delayed value");
   dma.write_control(2, 0);
 
   expect(memory.write16(0x02000040, 0x5555), "seed DMA3 repeat source 0");
@@ -149,6 +288,25 @@ int main() {
   expect(unsupported_result.units_transferred == 0, "unsupported DMA copies no units");
   expect(unsupported_result.unsupported_request, "unsupported DMA reports unsupported request");
   expect(dma.enabled(0), "unsupported DMA remains enabled for caller handling");
+
+  gba::core::Apu apu;
+  apu.write_soundcnt_x(0x0080);
+  expect(memory.write32(0x02000100, 0x04030201), "seed FIFO DMA word 0");
+  expect(memory.write32(0x02000104, 0x08070605), "seed FIFO DMA word 1");
+  expect(memory.write32(0x02000108, 0x0C0B0A09), "seed FIFO DMA word 2");
+  expect(memory.write32(0x0200010C, 0x100F0E0D), "seed FIFO DMA word 3");
+  dma.write_source(1, 0x02000100);
+  dma.write_destination(1, 0x040000A0);
+  dma.write_word_count(1, 4);
+  dma.write_control(1, 0xB640);
+  const gba::core::DmaRunResult fifo_result =
+      dma.run_sound_fifo(gba::core::DmaTrigger::fifo_a, memory, apu, interrupts);
+  expect(fifo_result.channels_executed == 1, "FIFO DMA runs one sound channel");
+  expect(fifo_result.units_transferred == 4, "FIFO DMA transfers four words");
+  expect(fifo_result.bus_cycles == 8, "FIFO DMA reports word bus occupancy");
+  expect(apu.fifo_size(gba::core::DirectSoundChannel::a) == 16,
+         "FIFO DMA pushes sixteen bytes into Direct Sound FIFO A");
+  expect(dma.enabled(1), "repeat FIFO DMA stays enabled for next refill");
 
   std::cout << "dma_test: PASS\n";
   return 0;

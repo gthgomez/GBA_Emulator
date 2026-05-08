@@ -56,6 +56,12 @@ class Apu {
   void write_soundbias(std::uint16_t value);
   void write_wave_ram(std::size_t index, std::uint16_t value);
   void write_fifo(DirectSoundChannel channel, std::uint32_t value);
+  void configure_square_channel(std::uint8_t channel, std::uint8_t duty,
+                                std::uint8_t volume, std::uint16_t period_samples);
+  void configure_wave_channel(std::uint8_t volume_shift, std::uint16_t period_samples);
+  void configure_noise_channel(std::uint8_t volume, std::uint16_t period_samples,
+                               bool narrow_lfsr);
+  void disable_psg_channel(std::uint8_t channel);
   [[nodiscard]] std::optional<ApuFrameStep> tick(std::uint32_t cpu_cycles);
   [[nodiscard]] DirectSoundTimerResult timer_overflow(std::uint8_t timer_index);
   [[nodiscard]] std::optional<ApuMixedSample> pop_audio_sample();
@@ -79,6 +85,7 @@ class Apu {
   [[nodiscard]] bool direct_sound_uses_timer(DirectSoundChannel channel,
                                              std::uint8_t timer_index) const;
   [[nodiscard]] bool direct_sound_enabled(DirectSoundChannel channel) const;
+  [[nodiscard]] bool psg_channel_enabled(std::uint8_t channel) const;
   [[nodiscard]] std::uint64_t state_hash() const;
 
  private:
@@ -94,6 +101,30 @@ class Apu {
     std::size_t size;
   };
 
+  struct SquareChannel {
+    bool enabled;
+    std::uint8_t duty;
+    std::uint8_t volume;
+    std::uint16_t period_samples;
+    std::uint16_t phase;
+  };
+
+  struct WaveChannel {
+    bool enabled;
+    std::uint8_t volume_shift;
+    std::uint16_t period_samples;
+    std::uint16_t phase;
+  };
+
+  struct NoiseChannel {
+    bool enabled;
+    std::uint8_t volume;
+    std::uint16_t period_samples;
+    std::uint16_t phase;
+    std::uint16_t lfsr;
+    bool narrow_lfsr;
+  };
+
   std::uint16_t soundcnt_l_;
   std::uint16_t soundcnt_h_;
   std::uint16_t soundcnt_x_status_;
@@ -101,6 +132,9 @@ class Apu {
   std::array<std::uint16_t, kWaveRamHalfwords> wave_ram_;
   std::array<Fifo, 2> fifos_;
   std::array<std::int8_t, 2> direct_sound_latched_samples_;
+  std::array<SquareChannel, 2> square_channels_;
+  WaveChannel wave_channel_;
+  NoiseChannel noise_channel_;
   AudioBuffer audio_buffer_;
   std::uint64_t frame_step_count_;
   std::uint64_t audio_sample_count_;
@@ -115,8 +149,10 @@ class Apu {
   void push_fifo(DirectSoundChannel channel, std::int8_t sample);
   [[nodiscard]] DirectSoundSample pop_fifo(DirectSoundChannel channel);
   [[nodiscard]] ApuMixedSample mix_sample() const;
+  [[nodiscard]] std::int32_t mix_psg_sample() const;
   void push_audio_sample(ApuMixedSample sample);
   void generate_audio_sample();
+  void advance_psg_generators();
   void clear_sound_circuit();
 };
 

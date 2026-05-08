@@ -1,5 +1,7 @@
 #include "gba/core/io_registers.hpp"
 
+#include "gba/core/state_hash.hpp"
+
 #include <cstddef>
 
 namespace gba::core {
@@ -9,6 +11,10 @@ constexpr std::uint32_t kDmaChannelStride = 12;
 constexpr std::uint32_t kDmaRegisterBytes = kDmaChannelStride * DmaController::kChannelCount;
 constexpr std::uint32_t kTimerStride = 4;
 constexpr std::uint32_t kTimerRegisterBytes = kTimerStride * Timers::kTimerCount;
+constexpr std::array<std::uint32_t, 7> kSerialRegisterAddresses = {
+    0x04000120U, 0x04000122U, 0x04000124U, 0x04000126U,
+    0x04000128U, 0x0400012AU, IoRegisters::kRcnt,
+};
 
 [[nodiscard]] constexpr bool is_halfword_aligned(std::uint32_t address) {
   return (address & 0x1U) == 0;
@@ -16,6 +22,22 @@ constexpr std::uint32_t kTimerRegisterBytes = kTimerStride * Timers::kTimerCount
 
 [[nodiscard]] constexpr bool is_word_aligned(std::uint32_t address) {
   return (address & 0x3U) == 0;
+}
+
+[[nodiscard]] constexpr bool is_lcd_control_address(std::uint32_t address) {
+  if (!is_halfword_aligned(address)) {
+    return false;
+  }
+  if (address <= 0x0400001EU) {
+    return address != IoRegisters::kDispstat && address != IoRegisters::kVcount;
+  }
+  if (address >= 0x04000020U && address <= 0x0400003EU) {
+    return true;
+  }
+  if (address >= 0x04000040U && address <= 0x04000054U) {
+    return address != 0x0400004EU;
+  }
+  return false;
 }
 
 [[nodiscard]] constexpr bool dma_index(std::uint32_t address, std::size_t& channel,
@@ -40,6 +62,16 @@ constexpr std::uint32_t kTimerRegisterBytes = kTimerStride * Timers::kTimerCount
   index = relative / kTimerStride;
   offset = relative % kTimerStride;
   return true;
+}
+
+[[nodiscard]] constexpr bool serial_index(std::uint32_t address, std::size_t& index) {
+  for (std::size_t i = 0; i < kSerialRegisterAddresses.size(); ++i) {
+    if (address == kSerialRegisterAddresses.at(i)) {
+      index = i;
+      return true;
+    }
+  }
+  return false;
 }
 
 [[nodiscard]] constexpr std::uint16_t low16(std::uint32_t value) {
@@ -75,6 +107,7 @@ constexpr std::uint32_t kTimerRegisterBytes = kTimerStride * Timers::kTimerCount
     case IoRegisters::kSoundcntH:
     case IoRegisters::kSoundcntX:
     case IoRegisters::kSoundbias:
+    case IoRegisters::kKeycnt:
     case IoRegisters::kIe:
     case IoRegisters::kIf:
     case IoRegisters::kWaitcnt:
@@ -86,10 +119,17 @@ constexpr std::uint32_t kTimerRegisterBytes = kTimerStride * Timers::kTimerCount
       break;
   }
 
+  if (is_lcd_control_address(address)) {
+    return true;
+  }
+
   std::size_t index = 0;
   std::uint32_t offset = 0;
   if (timer_index(address, index, offset)) {
     return offset == 0 || offset == 2;
+  }
+  if (serial_index(address, index)) {
+    return true;
   }
   if (dma_index(address, index, offset)) {
     return offset == 0 || offset == 2 || offset == 4 || offset == 6 || offset == 8 ||
@@ -102,13 +142,35 @@ constexpr std::uint32_t kTimerRegisterBytes = kTimerStride * Timers::kTimerCount
 
 IoRegisters::IoRegisters(InterruptController& interrupts, Timers& timers,
                          DmaController& dma, PpuTiming& ppu, Apu& apu,
-                         WaitStateControl& waitcnt)
+                         WaitStateControl& waitcnt, Keypad& keypad)
     : interrupts_(interrupts),
       timers_(timers),
       dma_(dma),
       ppu_(ppu),
       apu_(apu),
-      waitcnt_(waitcnt) {}
+      waitcnt_(waitcnt),
+      keypad_(keypad),
+      serial_{} {}
+
+void IoRegisters::reset() {
+  serial_.fill(0);
+}
+
+IoRegistersState IoRegisters::save_state() const {
+  return {serial_};
+}
+
+void IoRegisters::load_state(const IoRegistersState& state) {
+  serial_ = state.serial;
+}
+
+std::uint64_t IoRegisters::state_hash() const {
+  StateHasher hasher;
+  for (const std::uint16_t value : serial_) {
+    hasher.add_u16(value);
+  }
+  return hasher.value();
+}
 
 std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
   if (!is_halfword_aligned(address)) {
@@ -128,6 +190,10 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
       return apu_.soundcnt_x();
     case kSoundbias:
       return apu_.soundbias();
+    case kKeyinput:
+      return keypad_.keyinput();
+    case kKeycnt:
+      return keypad_.keycnt();
     case kIe:
       return interrupts_.interrupt_enable();
     case kIf:
@@ -140,6 +206,11 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
       break;
   }
 
+  if (const std::optional<std::uint16_t> value = ppu_.read_lcd_control(address);
+      value.has_value()) {
+    return value;
+  }
+
   std::size_t timer = 0;
   std::uint32_t timer_offset = 0;
   if (timer_index(address, timer, timer_offset)) {
@@ -150,6 +221,11 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
       return timers_.control(timer);
     }
     return std::nullopt;
+  }
+
+  std::size_t serial = 0;
+  if (serial_index(address, serial)) {
+    return serial_.at(serial);
   }
 
   std::size_t channel = 0;
@@ -179,6 +255,9 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
 std::optional<std::uint32_t> IoRegisters::read32(std::uint32_t address) const {
   if (!is_word_aligned(address)) {
     return std::nullopt;
+  }
+  if (address == kIme) {
+    return read16(address);
   }
   const std::optional<std::uint16_t> low = read16(address);
   const std::optional<std::uint16_t> high = read16(address + 2U);
@@ -211,6 +290,12 @@ bool IoRegisters::write16(std::uint32_t address, std::uint16_t value) {
     case kSoundbias:
       apu_.write_soundbias(value);
       return true;
+    case kKeyinput:
+      return false;
+    case kKeycnt:
+      keypad_.write_keycnt(value);
+      keypad_.poll_interrupt(interrupts_);
+      return true;
     case kIe:
       interrupts_.write_interrupt_enable(value);
       return true;
@@ -227,6 +312,10 @@ bool IoRegisters::write16(std::uint32_t address, std::uint16_t value) {
       break;
   }
 
+  if (ppu_.write_lcd_control(address, value)) {
+    return true;
+  }
+
   std::size_t timer = 0;
   std::uint32_t timer_offset = 0;
   if (timer_index(address, timer, timer_offset)) {
@@ -239,6 +328,12 @@ bool IoRegisters::write16(std::uint32_t address, std::uint16_t value) {
       return true;
     }
     return false;
+  }
+
+  std::size_t serial = 0;
+  if (serial_index(address, serial)) {
+    serial_.at(serial) = value;
+    return true;
   }
 
   std::size_t channel = 0;
@@ -274,6 +369,13 @@ bool IoRegisters::write16(std::uint32_t address, std::uint16_t value) {
 bool IoRegisters::write32(std::uint32_t address, std::uint32_t value) {
   if (!is_word_aligned(address)) {
     return false;
+  }
+
+  if (address == kIme) {
+    return write16(address, low16(value));
+  }
+  if (address == kWaitcnt) {
+    return write16(address, low16(value));
   }
 
   if (address == kFifoA) {

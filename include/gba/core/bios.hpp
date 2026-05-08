@@ -17,6 +17,7 @@ enum class BiosSwiSource : std::uint8_t {
 
 enum class BiosSwiStatus : std::uint8_t {
   trap_to_vector,
+  handled,
   unimplemented_service,
 };
 

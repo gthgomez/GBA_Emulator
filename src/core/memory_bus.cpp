@@ -3,6 +3,7 @@
 #include "gba/core/wait_state_control.hpp"
 
 #include <algorithm>
+#include <array>
 #include <string_view>
 
 namespace gba::core {
@@ -10,6 +11,7 @@ namespace {
 
 constexpr std::uint32_t kBiosStart = 0x00000000;
 constexpr std::uint32_t kBiosEnd = 0x00003FFF;
+constexpr std::uint32_t kBiosProtectedEnd = 0x01FFFFFF;
 constexpr std::uint32_t kEwramStart = 0x02000000;
 constexpr std::uint32_t kEwramEnd = 0x0203FFFF;
 constexpr std::uint32_t kIwramStart = 0x03000000;
@@ -31,6 +33,15 @@ constexpr std::uint32_t kGamePakRomWait2End = 0x0DFFFFFF;
 constexpr std::uint32_t kGamePakEepromLargeRomStart = 0x0DFFFF00;
 constexpr std::uint32_t kGamePakSaveStart = 0x0E000000;
 constexpr std::uint32_t kGamePakSaveEnd = 0x0FFFFFFF;
+constexpr std::uint32_t kMgbaDebugEnable = 0x04FFF780;
+constexpr std::uint16_t kMgbaDebugEnableMagic = 0x1DEA;
+constexpr std::uint32_t kMgbaDebugStringStart = 0x04FFF600;
+constexpr std::uint32_t kMgbaDebugStringEnd = 0x04FFF6FF;
+constexpr std::uint32_t kMgbaDebugFlags = 0x04FFF700;
+constexpr std::uint32_t kNoCashGbaDebugIdStart = 0x04FFFA00;
+constexpr std::string_view kNoCashGbaDebugId = "no$gba ";
+constexpr std::uint32_t kNoCashGbaDebugOut = 0x04FFFA10;
+constexpr std::uint32_t kNoCashGbaDebugChar = 0x04FFFA1C;
 constexpr std::uint32_t kBankMask = 0xFF000000;
 constexpr std::uint32_t kBankOffsetMask = 0x00FFFFFF;
 constexpr std::uint32_t kVramMirrorStep = 128 * 1024;
@@ -60,6 +71,10 @@ constexpr std::size_t kFlashSectorSize = 4 * 1024;
 constexpr std::uint8_t kFlashManufacturerId = 0xC2;
 constexpr std::uint8_t kFlash64DeviceId = 0x1C;
 constexpr std::uint8_t kFlash128DeviceId = 0x09;
+constexpr std::array<std::uint8_t, 16> kHleBiosVectorBytes{
+    0x04, 0x20, 0xA0, 0xE3, 0x01, 0x02, 0x03, 0x04,
+    0x05, 0x20, 0xA0, 0xE3, 0x07, 0x20, 0xA0, 0xE3,
+};
 
 [[nodiscard]] bool in_range(std::uint32_t value, std::uint32_t start, std::uint32_t end) {
   return value >= start && value <= end;
@@ -87,6 +102,31 @@ constexpr std::uint8_t kFlash128DeviceId = 0x09;
     return value;
   }
   return (value >> shift) | (value << (32U - shift));
+}
+
+[[nodiscard]] constexpr std::uint16_t repeat_byte16(std::uint8_t value) {
+  return static_cast<std::uint16_t>(value) |
+         (static_cast<std::uint16_t>(value) << 8U);
+}
+
+[[nodiscard]] constexpr std::uint32_t repeat_byte32(std::uint8_t value) {
+  return static_cast<std::uint32_t>(value) |
+         (static_cast<std::uint32_t>(value) << 8U) |
+         (static_cast<std::uint32_t>(value) << 16U) |
+         (static_cast<std::uint32_t>(value) << 24U);
+}
+
+[[nodiscard]] std::uint32_t game_pak_open_bus_aligned_word(std::uint32_t address) {
+  const std::uint32_t aligned = align_word(address);
+  const std::uint16_t low =
+      static_cast<std::uint16_t>((aligned >> 1U) & 0xFFFFU);
+  const std::uint16_t high = static_cast<std::uint16_t>(low + 1U);
+  return static_cast<std::uint32_t>(low) | (static_cast<std::uint32_t>(high) << 16U);
+}
+
+[[nodiscard]] std::uint32_t game_pak_open_bus_word(std::uint32_t address) {
+  const std::uint32_t aligned_value = game_pak_open_bus_aligned_word(address);
+  return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
 }
 
 [[nodiscard]] std::uint32_t mirrored_offset(std::uint32_t address, std::uint32_t size) {
@@ -132,10 +172,13 @@ constexpr std::uint8_t kFlash128DeviceId = 0x09;
 }  // namespace
 
 MemoryBus::MemoryBus()
-    : game_pak_save_type_(GamePakSaveType::none),
+    : mgba_debug_string_{},
+      debug_output_(),
+      game_pak_save_type_(GamePakSaveType::none),
       flash_command_state_(FlashCommandState::idle),
       flash_id_mode_(false),
-      flash_bank_(0) {
+      flash_bank_(0),
+      io_callbacks_() {
   reset();
   clear_game_pak_save();
 }
@@ -143,6 +186,9 @@ MemoryBus::MemoryBus()
 AddressInfo MemoryBus::describe(std::uint32_t address) {
   if (in_range(address, kBiosStart, kBiosEnd)) {
     return {Region::bios, address - kBiosStart, false, false};
+  }
+  if (address <= kBiosProtectedEnd) {
+    return {Region::bios, address - kBiosStart, false, true};
   }
   if (bank_matches(address, kEwramStart)) {
     return {Region::ewram, mirrored_offset(address, kEwramSize), true,
@@ -189,7 +235,9 @@ MemoryReadPolicy MemoryBus::read_policy(std::uint32_t address) {
     case Region::oam:
       return {info.region, true, MemoryReadFailure::none};
     case Region::bios:
-      return {info.region, false, MemoryReadFailure::protected_bios_open_bus_unmodeled};
+      return {info.region, info.offset <= kBiosEnd,
+              info.offset <= kBiosEnd ? MemoryReadFailure::none
+                                      : MemoryReadFailure::protected_bios_open_bus_unmodeled};
     case Region::io:
       return {info.region, false, MemoryReadFailure::io_register_facade_required};
     case Region::game_pak_rom:
@@ -253,7 +301,7 @@ MemoryAccessTiming MemoryBus::timing(std::uint32_t address, AccessWidth width) {
   const AddressInfo info = describe(address);
   switch (info.region) {
     case Region::bios:
-      return {1, 1, false, false};
+      return {1, 1, info.offset <= kBiosEnd, false};
     case Region::ewram:
       return {static_cast<std::uint8_t>(is_word(width) ? 6U : 3U),
               static_cast<std::uint8_t>(is_word(width) ? 6U : 3U), true, true};
@@ -290,6 +338,15 @@ MemoryAccessTiming MemoryBus::timing(std::uint32_t address, AccessWidth width,
 }
 
 std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
+  if (address >= kNoCashGbaDebugIdStart &&
+      address < kNoCashGbaDebugIdStart + kNoCashGbaDebugId.size()) {
+    return static_cast<std::uint8_t>(
+        kNoCashGbaDebugId.at(address - kNoCashGbaDebugIdStart));
+  }
+  if (address >= kMgbaDebugStringStart && address <= kMgbaDebugStringEnd) {
+    return mgba_debug_string_.at(address - kMgbaDebugStringStart);
+  }
+
   const AddressInfo info = describe(address);
   switch (info.region) {
     case Region::ewram:
@@ -302,20 +359,25 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
       return vram_.at(info.offset);
     case Region::oam:
       return oam_.at(info.offset);
+    case Region::bios:
+      if (info.offset > kBiosEnd) {
+        return std::nullopt;
+      }
+      if (info.offset < kHleBiosVectorBytes.size()) {
+        return kHleBiosVectorBytes.at(info.offset);
+      }
+      return 0;
     case Region::game_pak_rom:
       if (game_pak_rom_.empty()) {
         return std::nullopt;
       }
-      return game_pak_rom_.at(info.offset % game_pak_rom_.size());
+      if (info.offset >= game_pak_rom_.size()) {
+        const std::uint32_t open_bus = game_pak_open_bus_aligned_word(address);
+        return static_cast<std::uint8_t>((open_bus >> ((address & 0x3U) * 8U)) & 0xFFU);
+      }
+      return game_pak_rom_.at(info.offset);
     case Region::game_pak_save:
-      if (!game_pak_save_supports_memory_aperture()) {
-        return std::nullopt;
-      }
-      if (is_flash_save()) {
-        return read_flash_byte(info.offset);
-      }
-      return game_pak_save_.at(info.offset % game_pak_save_.size());
-    case Region::bios:
+      return read_game_pak_save_byte(info.offset);
     case Region::io:
     case Region::unknown:
       return std::nullopt;
@@ -324,8 +386,24 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
 }
 
 std::optional<std::uint16_t> MemoryBus::read16(std::uint32_t address) const {
+  const AddressInfo info = describe(address);
+  if (info.region == Region::game_pak_save) {
+    const std::optional<std::uint8_t> byte = read_game_pak_save_byte(info.offset);
+    if (!byte.has_value()) {
+      return std::nullopt;
+    }
+    return repeat_byte16(byte.value());
+  }
+
   if ((address % 2) != 0) {
     return std::nullopt;
+  }
+
+  if (info.region == Region::io && io_callbacks_.read16 != nullptr) {
+    return io_callbacks_.read16(io_callbacks_.context, address);
+  }
+  if (address == kMgbaDebugEnable) {
+    return kMgbaDebugEnableMagic;
   }
 
   const std::optional<std::uint8_t> b0 = read8(address);
@@ -339,6 +417,25 @@ std::optional<std::uint16_t> MemoryBus::read16(std::uint32_t address) const {
 }
 
 std::optional<std::uint32_t> MemoryBus::read32(std::uint32_t address) const {
+  const AddressInfo direct_info = describe(address);
+  if (direct_info.region == Region::game_pak_save) {
+    const std::optional<std::uint8_t> byte = read_game_pak_save_byte(direct_info.offset);
+    if (!byte.has_value()) {
+      return std::nullopt;
+    }
+    return repeat_byte32(byte.value());
+  }
+  if (direct_info.region == Region::game_pak_rom && !game_pak_rom_.empty() &&
+      direct_info.offset >= game_pak_rom_.size()) {
+    return game_pak_open_bus_word(address);
+  }
+
+  if ((address % 4) == 0) {
+    if (direct_info.region == Region::io && io_callbacks_.read32 != nullptr) {
+      return io_callbacks_.read32(io_callbacks_.context, address);
+    }
+  }
+
   const std::uint32_t aligned_address = align_word(address);
   const std::optional<std::uint8_t> b0 = read8(aligned_address);
   const std::optional<std::uint8_t> b1 = read8(aligned_address + 1);
@@ -354,6 +451,14 @@ std::optional<std::uint32_t> MemoryBus::read32(std::uint32_t address) const {
       (static_cast<std::uint32_t>(b2.value()) << 16) |
       (static_cast<std::uint32_t>(b3.value()) << 24);
   return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+}
+
+void MemoryBus::set_io_callbacks(MemoryBusIoCallbacks callbacks) {
+  io_callbacks_ = callbacks;
+}
+
+void MemoryBus::clear_io_callbacks() {
+  io_callbacks_ = {};
 }
 
 bool MemoryBus::load_game_pak_rom(const std::vector<std::uint8_t>& data) {
@@ -375,6 +480,10 @@ bool MemoryBus::has_game_pak_rom() const {
 
 std::size_t MemoryBus::game_pak_rom_size() const {
   return game_pak_rom_.size();
+}
+
+std::vector<std::uint8_t> MemoryBus::export_game_pak_rom() const {
+  return game_pak_rom_;
 }
 
 std::optional<CartridgeHeader> MemoryBus::game_pak_header() const {
@@ -508,6 +617,15 @@ std::vector<std::uint8_t> MemoryBus::export_game_pak_save() const {
   return game_pak_save_;
 }
 
+std::string MemoryBus::debug_output() const {
+  return debug_output_;
+}
+
+void MemoryBus::clear_debug_output() {
+  debug_output_.clear();
+  mgba_debug_string_.fill(0);
+}
+
 std::uint64_t MemoryBus::state_hash() const {
   StateHasher hasher;
   hasher.add_bytes(ewram_);
@@ -521,20 +639,25 @@ std::uint64_t MemoryBus::state_hash() const {
   hasher.add_u8(flash_id_mode_ ? 1U : 0U);
   hasher.add_u8(flash_bank_);
   hasher.add_bytes(game_pak_save_);
+  hasher.add_bytes(mgba_debug_string_);
+  hasher.add_bytes(debug_output_);
   return hasher.value();
 }
 
 bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
-  const AddressInfo info = describe(address);
-  if (info.region == Region::game_pak_save) {
-    if (!game_pak_save_supports_memory_aperture()) {
-      return false;
-    }
-    if (is_flash_save()) {
-      return write_flash_byte(info.offset, value);
-    }
-    game_pak_save_.at(info.offset % game_pak_save_.size()) = value;
+  if (write_debug8(address, value)) {
     return true;
+  }
+
+  const AddressInfo info = describe(address);
+  if (info.region == Region::unknown) {
+    return true;
+  }
+  if (info.region == Region::game_pak_save) {
+    return write_game_pak_save_byte(info.offset, value);
+  }
+  if (info.region == Region::game_pak_rom) {
+    return has_game_pak_rom();
   }
 
   if (!info.writable) {
@@ -549,13 +672,17 @@ bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
       iwram_.at(info.offset) = value;
       return true;
     case Region::palette:
-      palette_.at(info.offset) = value;
+      palette_.at(info.offset & ~1U) = value;
+      palette_.at((info.offset & ~1U) + 1U) = value;
       return true;
     case Region::vram:
-      vram_.at(info.offset) = value;
+      if (info.offset >= 0x10000U) {
+        return true;
+      }
+      vram_.at(info.offset & ~1U) = value;
+      vram_.at((info.offset & ~1U) + 1U) = value;
       return true;
     case Region::oam:
-      oam_.at(info.offset) = value;
       return true;
     case Region::bios:
     case Region::io:
@@ -568,8 +695,33 @@ bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
 }
 
 bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
+  const AddressInfo direct_info = describe(address);
+  if (direct_info.region == Region::game_pak_rom) {
+    return has_game_pak_rom();
+  }
+  if (direct_info.region == Region::game_pak_save) {
+    return write_game_pak_save_byte(direct_info.offset,
+                                    static_cast<std::uint8_t>(value & 0xFFU));
+  }
   if ((address % 2) != 0) {
     return false;
+  }
+  if (write_debug16(address, value)) {
+    return true;
+  }
+
+  const AddressInfo info = describe(address);
+  if (info.region == Region::io && io_callbacks_.write16 != nullptr) {
+    return io_callbacks_.write16(io_callbacks_.context, address, value);
+  }
+  if (info.region == Region::unknown) {
+    return true;
+  }
+  if (info.region == Region::game_pak_save) {
+    return write_game_pak_save_byte(info.offset, static_cast<std::uint8_t>(value & 0xFFU));
+  }
+  if (info.region == Region::game_pak_rom) {
+    return has_game_pak_rom() && describe(address + 1).region == Region::game_pak_rom;
   }
 
   const AddressInfo b0 = describe(address);
@@ -578,13 +730,56 @@ bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
     return false;
   }
 
+  if (b0.region == Region::palette && b1.region == Region::palette) {
+    palette_.at(b0.offset) = static_cast<std::uint8_t>(value & 0xFFU);
+    palette_.at(b1.offset) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+    return true;
+  }
+  if (b0.region == Region::vram && b1.region == Region::vram) {
+    vram_.at(b0.offset) = static_cast<std::uint8_t>(value & 0xFFU);
+    vram_.at(b1.offset) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+    return true;
+  }
+  if (b0.region == Region::oam && b1.region == Region::oam) {
+    oam_.at(b0.offset) = static_cast<std::uint8_t>(value & 0xFFU);
+    oam_.at(b1.offset) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+    return true;
+  }
+
   return write8(address, static_cast<std::uint8_t>(value & 0xFFU)) &&
          write8(address + 1, static_cast<std::uint8_t>((value >> 8) & 0xFFU));
 }
 
 bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
+  const AddressInfo direct_info = describe(address);
+  if (direct_info.region == Region::game_pak_rom) {
+    return has_game_pak_rom();
+  }
+  if (direct_info.region == Region::game_pak_save) {
+    return write_game_pak_save_byte(direct_info.offset,
+                                    static_cast<std::uint8_t>(value & 0xFFU));
+  }
   if ((address % 4) != 0) {
     return false;
+  }
+  if (write_debug32(address, value)) {
+    return true;
+  }
+
+  const AddressInfo info = describe(address);
+  if (info.region == Region::io && io_callbacks_.write32 != nullptr) {
+    return io_callbacks_.write32(io_callbacks_.context, address, value);
+  }
+  if (info.region == Region::unknown) {
+    return true;
+  }
+  if (info.region == Region::game_pak_save) {
+    return write_game_pak_save_byte(info.offset, static_cast<std::uint8_t>(value & 0xFFU));
+  }
+  if (info.region == Region::game_pak_rom) {
+    return has_game_pak_rom() && describe(address + 1).region == Region::game_pak_rom &&
+           describe(address + 2).region == Region::game_pak_rom &&
+           describe(address + 3).region == Region::game_pak_rom;
   }
 
   const AddressInfo b0 = describe(address);
@@ -593,6 +788,31 @@ bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
   const AddressInfo b3 = describe(address + 3);
   if (!b0.writable || !b1.writable || !b2.writable || !b3.writable) {
     return false;
+  }
+
+  if (b0.region == Region::palette && b1.region == Region::palette &&
+      b2.region == Region::palette && b3.region == Region::palette) {
+    palette_.at(b0.offset) = static_cast<std::uint8_t>(value & 0xFFU);
+    palette_.at(b1.offset) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+    palette_.at(b2.offset) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
+    palette_.at(b3.offset) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
+    return true;
+  }
+  if (b0.region == Region::vram && b1.region == Region::vram &&
+      b2.region == Region::vram && b3.region == Region::vram) {
+    vram_.at(b0.offset) = static_cast<std::uint8_t>(value & 0xFFU);
+    vram_.at(b1.offset) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+    vram_.at(b2.offset) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
+    vram_.at(b3.offset) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
+    return true;
+  }
+  if (b0.region == Region::oam && b1.region == Region::oam &&
+      b2.region == Region::oam && b3.region == Region::oam) {
+    oam_.at(b0.offset) = static_cast<std::uint8_t>(value & 0xFFU);
+    oam_.at(b1.offset) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
+    oam_.at(b2.offset) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
+    oam_.at(b3.offset) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
+    return true;
   }
 
   return write8(address, static_cast<std::uint8_t>(value & 0xFFU)) &&
@@ -611,6 +831,7 @@ void MemoryBus::soft_reset() {
   palette_.fill(0);
   vram_.fill(0);
   oam_.fill(0);
+  clear_debug_output();
   reset_flash_protocol();
 }
 
@@ -654,6 +875,29 @@ std::size_t MemoryBus::flash_effective_offset(std::uint32_t aperture_offset) con
   const std::size_t bank_base =
       game_pak_save_type_ == GamePakSaveType::flash128k ? flash_bank_ * kFlashBankSize : 0U;
   return bank_base + (aperture_offset % kFlashBankSize);
+}
+
+std::optional<std::uint8_t> MemoryBus::read_game_pak_save_byte(
+    std::uint32_t aperture_offset) const {
+  if (!game_pak_save_supports_memory_aperture()) {
+    return std::nullopt;
+  }
+  if (is_flash_save()) {
+    return read_flash_byte(aperture_offset);
+  }
+  return game_pak_save_.at(aperture_offset % game_pak_save_.size());
+}
+
+bool MemoryBus::write_game_pak_save_byte(std::uint32_t aperture_offset,
+                                         std::uint8_t value) {
+  if (!game_pak_save_supports_memory_aperture()) {
+    return false;
+  }
+  if (is_flash_save()) {
+    return write_flash_byte(aperture_offset, value);
+  }
+  game_pak_save_.at(aperture_offset % game_pak_save_.size()) = value;
+  return true;
 }
 
 std::optional<std::uint8_t> MemoryBus::read_flash_byte(
@@ -782,6 +1026,77 @@ bool MemoryBus::write_flash_byte(std::uint32_t aperture_offset, std::uint8_t val
   }
   reset_flash_protocol();
   return false;
+}
+
+bool MemoryBus::write_debug8(std::uint32_t address, std::uint8_t value) {
+  if (address >= kMgbaDebugStringStart && address <= kMgbaDebugStringEnd) {
+    mgba_debug_string_.at(address - kMgbaDebugStringStart) = value;
+    return true;
+  }
+  if (address == kNoCashGbaDebugChar) {
+    debug_output_.push_back(static_cast<char>(value));
+    return true;
+  }
+  return false;
+}
+
+bool MemoryBus::write_debug16(std::uint32_t address, std::uint16_t value) {
+  if (address == kMgbaDebugFlags) {
+    flush_mgba_debug_string(value);
+    return true;
+  }
+  if (address >= kMgbaDebugStringStart && address < kMgbaDebugStringEnd) {
+    return write_debug8(address, static_cast<std::uint8_t>(value & 0xFFU)) &&
+           write_debug8(address + 1, static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
+  }
+  if (address == kNoCashGbaDebugChar) {
+    debug_output_.push_back(static_cast<char>(value & 0xFFU));
+    debug_output_.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+    return true;
+  }
+  return false;
+}
+
+bool MemoryBus::write_debug32(std::uint32_t address, std::uint32_t value) {
+  if (address >= kMgbaDebugStringStart && address <= kMgbaDebugStringEnd - 3U) {
+    return write_debug8(address, static_cast<std::uint8_t>(value & 0xFFU)) &&
+           write_debug8(address + 1, static_cast<std::uint8_t>((value >> 8U) & 0xFFU)) &&
+           write_debug8(address + 2, static_cast<std::uint8_t>((value >> 16U) & 0xFFU)) &&
+           write_debug8(address + 3, static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
+  }
+  if (address == kNoCashGbaDebugChar) {
+    debug_output_.push_back(static_cast<char>(value & 0xFFU));
+    debug_output_.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+    debug_output_.push_back(static_cast<char>((value >> 16U) & 0xFFU));
+    debug_output_.push_back(static_cast<char>((value >> 24U) & 0xFFU));
+    return true;
+  }
+  if (address == kNoCashGbaDebugOut) {
+    for (std::uint32_t offset = 0; offset < 256U; ++offset) {
+      const std::optional<std::uint8_t> byte = read8(value + offset);
+      if (!byte.has_value() || byte.value() == 0) {
+        break;
+      }
+      debug_output_.push_back(static_cast<char>(byte.value()));
+    }
+    return true;
+  }
+  return false;
+}
+
+void MemoryBus::flush_mgba_debug_string(std::uint16_t flags) {
+  if ((flags & 0x0100U) == 0) {
+    return;
+  }
+  for (const std::uint8_t byte : mgba_debug_string_) {
+    if (byte == 0) {
+      break;
+    }
+    debug_output_.push_back(static_cast<char>(byte));
+  }
+  if (debug_output_.empty() || debug_output_.back() != '\n') {
+    debug_output_.push_back('\n');
+  }
 }
 
 void MemoryBus::reset_flash_protocol() {

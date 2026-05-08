@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace gba::core {
@@ -136,6 +137,14 @@ struct FlashProtocolStatus {
   FlashCommandState command_state;
 };
 
+struct MemoryBusIoCallbacks {
+  void* context = nullptr;
+  std::optional<std::uint16_t> (*read16)(void* context, std::uint32_t address) = nullptr;
+  std::optional<std::uint32_t> (*read32)(void* context, std::uint32_t address) = nullptr;
+  bool (*write16)(void* context, std::uint32_t address, std::uint16_t value) = nullptr;
+  bool (*write32)(void* context, std::uint32_t address, std::uint32_t value) = nullptr;
+};
+
 class MemoryBus {
  public:
   static constexpr std::size_t kEwramSize = 256 * 1024;
@@ -163,10 +172,13 @@ class MemoryBus {
   [[nodiscard]] std::optional<std::uint8_t> read8(std::uint32_t address) const;
   [[nodiscard]] std::optional<std::uint16_t> read16(std::uint32_t address) const;
   [[nodiscard]] std::optional<std::uint32_t> read32(std::uint32_t address) const;
+  void set_io_callbacks(MemoryBusIoCallbacks callbacks);
+  void clear_io_callbacks();
   [[nodiscard]] bool load_game_pak_rom(const std::vector<std::uint8_t>& data);
   void clear_game_pak_rom();
   [[nodiscard]] bool has_game_pak_rom() const;
   [[nodiscard]] std::size_t game_pak_rom_size() const;
+  [[nodiscard]] std::vector<std::uint8_t> export_game_pak_rom() const;
   [[nodiscard]] std::optional<CartridgeHeader> game_pak_header() const;
   [[nodiscard]] std::optional<GamePakSaveType> detect_game_pak_save_type() const;
   [[nodiscard]] bool configure_game_pak_save(GamePakSaveType type);
@@ -183,6 +195,8 @@ class MemoryBus {
   [[nodiscard]] bool import_game_pak_save(GamePakSaveType type,
                                           const std::vector<std::uint8_t>& data);
   [[nodiscard]] std::vector<std::uint8_t> export_game_pak_save() const;
+  [[nodiscard]] std::string debug_output() const;
+  void clear_debug_output();
   [[nodiscard]] std::uint64_t state_hash() const;
   [[nodiscard]] bool write8(std::uint32_t address, std::uint8_t value);
   [[nodiscard]] bool write16(std::uint32_t address, std::uint16_t value);
@@ -199,18 +213,29 @@ class MemoryBus {
   std::array<std::uint8_t, kOamSize> oam_;
   std::vector<std::uint8_t> game_pak_rom_;
   std::vector<std::uint8_t> game_pak_save_;
+  std::array<std::uint8_t, 256> mgba_debug_string_;
+  std::string debug_output_;
   GamePakSaveType game_pak_save_type_;
   FlashCommandState flash_command_state_;
   bool flash_id_mode_;
   std::uint8_t flash_bank_;
+  MemoryBusIoCallbacks io_callbacks_;
 
   [[nodiscard]] static std::size_t save_size_for_type(GamePakSaveType type);
   [[nodiscard]] bool game_pak_save_supports_memory_aperture() const;
   [[nodiscard]] bool is_flash_save() const;
   [[nodiscard]] std::size_t flash_effective_offset(std::uint32_t aperture_offset) const;
+  [[nodiscard]] std::optional<std::uint8_t> read_game_pak_save_byte(
+      std::uint32_t aperture_offset) const;
+  [[nodiscard]] bool write_game_pak_save_byte(std::uint32_t aperture_offset,
+                                              std::uint8_t value);
   [[nodiscard]] std::optional<std::uint8_t> read_flash_byte(
       std::uint32_t aperture_offset) const;
   [[nodiscard]] bool write_flash_byte(std::uint32_t aperture_offset, std::uint8_t value);
+  [[nodiscard]] bool write_debug8(std::uint32_t address, std::uint8_t value);
+  [[nodiscard]] bool write_debug16(std::uint32_t address, std::uint16_t value);
+  [[nodiscard]] bool write_debug32(std::uint32_t address, std::uint32_t value);
+  void flush_mgba_debug_string(std::uint16_t flags);
   void reset_flash_protocol();
 };
 

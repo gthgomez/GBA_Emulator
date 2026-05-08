@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gba/core/apu.hpp"
 #include "gba/core/interrupt_controller.hpp"
 
 #include <array>
@@ -24,10 +25,20 @@ enum class DmaStartTiming : std::uint8_t {
   special = 3,
 };
 
+enum class DmaTrigger : std::uint8_t {
+  immediate,
+  vblank,
+  hblank,
+  special,
+  fifo_a,
+  fifo_b,
+};
+
 struct DmaRunResult {
   std::uint8_t channels_executed;
   std::uint32_t units_transferred;
   bool unsupported_request;
+  std::uint32_t bus_cycles;
 };
 
 class DmaController {
@@ -59,6 +70,11 @@ class DmaController {
 
   [[nodiscard]] DmaRunResult run_immediate(MemoryBus& memory,
                                            InterruptController& interrupts);
+  [[nodiscard]] DmaRunResult run_trigger(DmaTrigger trigger, MemoryBus& memory,
+                                         InterruptController& interrupts);
+  [[nodiscard]] DmaRunResult run_sound_fifo(DmaTrigger trigger, MemoryBus& memory,
+                                            Apu& apu,
+                                            InterruptController& interrupts);
 
  private:
   struct Channel {
@@ -69,6 +85,7 @@ class DmaController {
     std::uint32_t current_source;
     std::uint32_t current_destination;
     std::uint32_t current_count;
+    std::uint32_t data_latch;
   };
 
   std::array<Channel, kChannelCount> channels_;
@@ -76,9 +93,20 @@ class DmaController {
   [[nodiscard]] Channel& checked_channel(std::size_t channel);
   [[nodiscard]] const Channel& checked_channel(std::size_t channel) const;
   [[nodiscard]] std::uint32_t normalized_word_count(std::size_t channel) const;
+  [[nodiscard]] static std::uint32_t effective_source_address(std::size_t channel,
+                                                              std::uint32_t address);
+  [[nodiscard]] static std::uint32_t effective_destination_address(std::size_t channel,
+                                                                   std::uint32_t address);
   [[nodiscard]] bool execute_channel(std::size_t channel, MemoryBus& memory,
                                      InterruptController& interrupts,
-                                     std::uint32_t& units_transferred);
+                                     std::uint32_t& units_transferred,
+                                     std::uint32_t& bus_cycles);
+  [[nodiscard]] bool execute_sound_fifo_channel(std::size_t channel,
+                                                DirectSoundChannel fifo,
+                                                MemoryBus& memory, Apu& apu,
+                                                InterruptController& interrupts,
+                                                std::uint32_t& units_transferred,
+                                                std::uint32_t& bus_cycles);
 };
 
 }  // namespace gba::core

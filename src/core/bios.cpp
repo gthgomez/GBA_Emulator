@@ -25,7 +25,9 @@ BiosSwiResult BiosController::handle_swi(BiosSwiCall call) const {
     case BiosExecutionMode::caller_provided_bios:
       return {mode_, BiosSwiStatus::trap_to_vector, call, false, true};
     case BiosExecutionMode::hle:
-      return {mode_, BiosSwiStatus::unimplemented_service, call, false, false};
+      return {mode_, known_gba_service(call.service) ? BiosSwiStatus::handled
+                                                     : BiosSwiStatus::unimplemented_service,
+              call, known_gba_service(call.service), false};
   }
   return {mode_, BiosSwiStatus::unimplemented_service, call, false, false};
 }

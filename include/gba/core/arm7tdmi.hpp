@@ -68,6 +68,25 @@ enum class ThumbHighRegisterOpcode : std::uint8_t {
   bx,
 };
 
+enum class ThumbAluOpcode : std::uint8_t {
+  and_,
+  eor,
+  lsl,
+  lsr,
+  asr,
+  adc,
+  sbc,
+  ror,
+  tst,
+  neg,
+  cmp,
+  cmn,
+  orr,
+  mul,
+  bic,
+  mvn,
+};
+
 enum class ThumbMemoryTransferKind : std::uint8_t {
   word,
   byte,
@@ -155,6 +174,11 @@ struct DecodedBranchInstruction {
   std::int32_t offset;
 };
 
+struct DecodedBranchExchangeInstruction {
+  ArmCondition condition;
+  std::uint8_t rm;
+};
+
 struct DecodedMultiplyInstruction {
   ArmCondition condition;
   bool accumulate;
@@ -237,9 +261,27 @@ struct DecodedThumbInstruction {
   bool operand_is_register;
 };
 
+struct DecodedThumbShiftInstruction {
+  ArmShiftType type;
+  std::uint8_t rd;
+  std::uint8_t rs;
+  std::uint8_t amount;
+};
+
+struct DecodedThumbAluInstruction {
+  ThumbAluOpcode opcode;
+  std::uint8_t rd;
+  std::uint8_t rs;
+};
+
 struct DecodedThumbBranchInstruction {
   bool conditional;
   ArmCondition condition;
+  std::int32_t offset;
+};
+
+struct DecodedThumbLongBranchLinkInstruction {
+  bool second_half;
   std::int32_t offset;
 };
 
@@ -258,10 +300,27 @@ struct DecodedThumbMemoryTransferInstruction {
   bool offset_is_register;
 };
 
+struct DecodedThumbBlockTransferInstruction {
+  bool load;
+  std::uint8_t rb;
+  std::uint8_t register_list;
+};
+
 struct DecodedThumbStackInstruction {
   bool load;
   bool extra_register;
   std::uint8_t register_list;
+};
+
+struct DecodedThumbStackPointerInstruction {
+  bool subtract;
+  std::uint32_t offset;
+};
+
+struct DecodedThumbLoadAddressInstruction {
+  bool base_is_sp;
+  std::uint8_t rd;
+  std::uint32_t offset;
 };
 
 class Arm7tdmi {
@@ -291,6 +350,9 @@ class Arm7tdmi {
       std::uint32_t instruction);
   [[nodiscard]] static bool can_decode_branch(std::uint32_t instruction);
   [[nodiscard]] static DecodedBranchInstruction decode_branch(std::uint32_t instruction);
+  [[nodiscard]] static bool can_decode_branch_exchange(std::uint32_t instruction);
+  [[nodiscard]] static DecodedBranchExchangeInstruction decode_branch_exchange(
+      std::uint32_t instruction);
   [[nodiscard]] static bool can_decode_single_data_transfer_immediate(
       std::uint32_t instruction);
   [[nodiscard]] static DecodedSingleDataTransferInstruction decode_single_data_transfer_immediate(
@@ -318,6 +380,12 @@ class Arm7tdmi {
   [[nodiscard]] static bool can_decode_block_data_transfer(std::uint32_t instruction);
   [[nodiscard]] static DecodedBlockDataTransferInstruction decode_block_data_transfer(
       std::uint32_t instruction);
+  [[nodiscard]] static bool can_decode_thumb_shift_immediate(std::uint16_t instruction);
+  [[nodiscard]] static DecodedThumbShiftInstruction decode_thumb_shift_immediate(
+      std::uint16_t instruction);
+  [[nodiscard]] static bool can_decode_thumb_alu(std::uint16_t instruction);
+  [[nodiscard]] static DecodedThumbAluInstruction decode_thumb_alu(
+      std::uint16_t instruction);
   [[nodiscard]] static bool can_decode_thumb_add_subtract(std::uint16_t instruction);
   [[nodiscard]] static DecodedThumbInstruction decode_thumb_add_subtract(
       std::uint16_t instruction);
@@ -332,14 +400,27 @@ class Arm7tdmi {
       std::uint16_t instruction);
   [[nodiscard]] static DecodedThumbBranchInstruction decode_thumb_conditional_branch(
       std::uint16_t instruction);
+  [[nodiscard]] static bool can_decode_thumb_long_branch_link(std::uint16_t instruction);
+  [[nodiscard]] static DecodedThumbLongBranchLinkInstruction decode_thumb_long_branch_link(
+      std::uint16_t instruction);
   [[nodiscard]] static bool can_decode_thumb_high_register(std::uint16_t instruction);
   [[nodiscard]] static DecodedThumbHighRegisterInstruction decode_thumb_high_register(
       std::uint16_t instruction);
   [[nodiscard]] static bool can_decode_thumb_memory_transfer(std::uint16_t instruction);
   [[nodiscard]] static DecodedThumbMemoryTransferInstruction decode_thumb_memory_transfer(
       std::uint16_t instruction);
+  [[nodiscard]] static bool can_decode_thumb_block_transfer(std::uint16_t instruction);
+  [[nodiscard]] static DecodedThumbBlockTransferInstruction decode_thumb_block_transfer(
+      std::uint16_t instruction);
   [[nodiscard]] static bool can_decode_thumb_stack_transfer(std::uint16_t instruction);
   [[nodiscard]] static DecodedThumbStackInstruction decode_thumb_stack_transfer(
+      std::uint16_t instruction);
+  [[nodiscard]] static bool can_decode_thumb_stack_pointer_adjust(
+      std::uint16_t instruction);
+  [[nodiscard]] static DecodedThumbStackPointerInstruction
+  decode_thumb_stack_pointer_adjust(std::uint16_t instruction);
+  [[nodiscard]] static bool can_decode_thumb_load_address(std::uint16_t instruction);
+  [[nodiscard]] static DecodedThumbLoadAddressInstruction decode_thumb_load_address(
       std::uint16_t instruction);
   [[nodiscard]] static bool can_decode_thumb_software_interrupt(std::uint16_t instruction);
   [[nodiscard]] static ExceptionVector exception_vector(ExceptionKind kind);
@@ -417,23 +498,35 @@ class Arm7tdmi {
   std::uint32_t undefined_spsr_;
 
   [[nodiscard]] bool condition_passed(ArmCondition condition) const;
-  [[nodiscard]] ExecuteStatus execute_data_processing(const DecodedArmInstruction& decoded);
+  [[nodiscard]] ExecuteStatus execute_data_processing(const DecodedArmInstruction& decoded,
+                                                      std::uint32_t pc_offset = 8U);
   [[nodiscard]] ExecuteStatus execute_psr_transfer(const DecodedPsrTransferInstruction& decoded);
   [[nodiscard]] ExecuteStatus execute_swap(const DecodedSwapInstruction& decoded,
                                            MemoryBus& memory);
   [[nodiscard]] ExecuteStatus execute_multiply(const DecodedMultiplyInstruction& decoded);
   [[nodiscard]] ExecuteStatus execute_multiply_long(
       const DecodedMultiplyLongInstruction& decoded);
+  [[nodiscard]] ExecuteStatus execute_thumb_shift(
+      const DecodedThumbShiftInstruction& decoded);
+  [[nodiscard]] ExecuteStatus execute_thumb_alu(const DecodedThumbAluInstruction& decoded);
   [[nodiscard]] ExecuteStatus execute_thumb_data_processing(
       const DecodedThumbInstruction& decoded);
   [[nodiscard]] ExecuteStatus execute_thumb_branch(
       const DecodedThumbBranchInstruction& decoded);
+  [[nodiscard]] ExecuteStatus execute_thumb_long_branch_link(
+      const DecodedThumbLongBranchLinkInstruction& decoded);
   [[nodiscard]] ExecuteStatus execute_thumb_high_register(
       const DecodedThumbHighRegisterInstruction& decoded);
   [[nodiscard]] ExecuteStatus execute_thumb_memory_transfer(
       const DecodedThumbMemoryTransferInstruction& decoded, MemoryBus& memory);
+  [[nodiscard]] ExecuteStatus execute_thumb_block_transfer(
+      const DecodedThumbBlockTransferInstruction& decoded, MemoryBus& memory);
   [[nodiscard]] ExecuteStatus execute_thumb_stack_transfer(
       const DecodedThumbStackInstruction& decoded, MemoryBus& memory);
+  [[nodiscard]] ExecuteStatus execute_thumb_stack_pointer_adjust(
+      const DecodedThumbStackPointerInstruction& decoded);
+  [[nodiscard]] ExecuteStatus execute_thumb_load_address(
+      const DecodedThumbLoadAddressInstruction& decoded);
   void set_spsr_for_mode(CpuMode mode, std::uint32_t value);
   void save_banked_registers(CpuMode mode);
   void load_banked_registers(CpuMode mode);

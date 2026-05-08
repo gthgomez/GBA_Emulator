@@ -20,6 +20,31 @@ struct BlockTransferAddress {
   std::uint32_t write_back;
 };
 
+struct CarrySaveAdderOutput {
+  std::uint64_t output;
+  std::uint64_t carry;
+};
+
+struct BoothRecodingOutput {
+  std::uint64_t output;
+  bool carry;
+};
+
+struct U128Pair {
+  std::uint64_t lo;
+  std::uint64_t hi;
+};
+
+struct Adder32Output {
+  std::uint32_t output;
+  bool carry;
+};
+
+struct MultiplyHardwareOutput {
+  std::uint64_t output;
+  bool carry;
+};
+
 constexpr std::uint32_t kNegativeFlag = 0x80000000;
 constexpr std::uint32_t kZeroFlag = 0x40000000;
 constexpr std::uint32_t kCarryFlag = 0x20000000;
@@ -39,6 +64,196 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
     return value;
   }
   return (value >> shift) | (value << (32 - shift));
+}
+
+[[nodiscard]] bool bit64(std::uint64_t value, std::uint8_t bit) {
+  return ((value >> bit) & 1ULL) != 0;
+}
+
+[[nodiscard]] std::uint64_t mask64_range(std::uint8_t low, std::uint8_t high) {
+  if (high <= low) {
+    return 0;
+  }
+  if (high >= 64) {
+    return low == 0 ? ~0ULL : (~0ULL << low);
+  }
+  return ((1ULL << (high - low)) - 1ULL) << low;
+}
+
+[[nodiscard]] std::uint64_t sign_extend64(std::uint64_t value,
+                                          std::uint8_t from_bits,
+                                          std::uint8_t to_bits) {
+  if (bit64(value, static_cast<std::uint8_t>(from_bits - 1U))) {
+    value |= mask64_range(from_bits, to_bits);
+  }
+  return to_bits >= 64 ? value : value & mask64_range(0, to_bits);
+}
+
+[[nodiscard]] std::uint64_t arithmetic_shift_right(std::uint64_t value,
+                                                   std::uint8_t shift,
+                                                   std::uint8_t width) {
+  const std::uint64_t extended = sign_extend64(value, width, 64);
+  const auto signed_value = static_cast<std::int64_t>(extended);
+  return static_cast<std::uint64_t>(signed_value >> shift) & mask64_range(0, width);
+}
+
+[[nodiscard]] U128Pair rotate_right_128(U128Pair value, std::uint8_t shift) {
+  return {
+      (value.lo >> shift) | (value.hi << (64U - shift)),
+      (value.hi >> shift) | (value.lo << (64U - shift)),
+  };
+}
+
+[[nodiscard]] Adder32Output add32(std::uint64_t left, std::uint64_t right, bool carry_in) {
+  const std::uint64_t sum = (left & 0xFFFFFFFFULL) + (right & 0xFFFFFFFFULL) +
+                            (carry_in ? 1ULL : 0ULL);
+  return {static_cast<std::uint32_t>(sum), sum > 0xFFFFFFFFULL};
+}
+
+[[nodiscard]] BoothRecodingOutput booth_recode(std::uint64_t input,
+                                               std::uint8_t booth_chunk) {
+  BoothRecodingOutput output{};
+  switch (booth_chunk) {
+    case 0:
+    case 7:
+      output = {0, false};
+      break;
+    case 1:
+    case 2:
+      output = {input, false};
+      break;
+    case 3:
+      output = {2ULL * input, false};
+      break;
+    case 4:
+      output = {~(2ULL * input), true};
+      break;
+    case 5:
+    case 6:
+      output = {~input, true};
+      break;
+    default:
+      output = {0, false};
+      break;
+  }
+  output.output &= 0x3FFFFFFFFULL;
+  return output;
+}
+
+[[nodiscard]] CarrySaveAdderOutput carry_save_add(std::uint64_t a,
+                                                  std::uint64_t b,
+                                                  std::uint64_t c) {
+  return {a ^ b ^ c, (a & b) | (b & c) | (c & a)};
+}
+
+[[nodiscard]] CarrySaveAdderOutput multiply_csa_cycle(CarrySaveAdderOutput previous,
+                                                       std::uint64_t multiplicand,
+                                                       std::uint64_t multiplier,
+                                                       std::uint64_t& acc_shift) {
+  CarrySaveAdderOutput csa = previous;
+  CarrySaveAdderOutput final{};
+  for (std::uint8_t i = 0; i < 4; ++i) {
+    csa.output &= 0x1FFFFFFFFULL;
+    csa.carry &= 0x1FFFFFFFFULL;
+    const BoothRecodingOutput addend =
+        booth_recode(multiplicand, static_cast<std::uint8_t>((multiplier >> (2U * i)) & 0x7ULL));
+    CarrySaveAdderOutput result =
+        carry_save_add(csa.output, addend.output & 0x1FFFFFFFFULL, csa.carry);
+
+    result.carry <<= 1;
+    result.carry |= addend.carry ? 1ULL : 0ULL;
+    final.output |= (result.output & 0x3ULL) << (2U * i);
+    final.carry |= (result.carry & 0x3ULL) << (2U * i);
+
+    result.output >>= 2;
+    result.carry >>= 2;
+    const std::uint64_t sign_extension_fix =
+        (bit64(acc_shift, 0) ? 1ULL : 0ULL) +
+        (bit64(csa.carry, 32) ? 0ULL : 1ULL) +
+        (bit64(addend.output, 33) ? 0ULL : 1ULL);
+    result.output |= sign_extension_fix << 31;
+    result.carry |= (bit64(acc_shift, 1) ? 0ULL : 1ULL) << 32;
+    acc_shift >>= 2;
+    csa = result;
+  }
+
+  return {final.output | (csa.output << 8), final.carry | (csa.carry << 8)};
+}
+
+[[nodiscard]] bool multiply_should_terminate(std::uint64_t multiplier, bool signed_multiply) {
+  return signed_multiply ? (multiplier == 0x1FFFFFFFFULL || multiplier == 0)
+                         : multiplier == 0;
+}
+
+[[nodiscard]] MultiplyHardwareOutput arm7tdmi_multiply_long_output(
+    bool signed_multiply,
+    std::uint32_t rm,
+    std::uint32_t rs,
+    std::uint64_t accumulator) {
+  std::uint64_t multiplier = rs;
+  std::uint64_t multiplicand = rm;
+  CarrySaveAdderOutput csa{};
+  const bool alu_carry_in = (multiplier & 1ULL) != 0;
+
+  if (signed_multiply) {
+    multiplier = sign_extend64(multiplier, 32, 34);
+    multiplicand = sign_extend64(multiplicand, 32, 34);
+  } else {
+    multiplier &= 0x1FFFFFFFFULL;
+    multiplicand &= 0x1FFFFFFFFULL;
+  }
+
+  csa.carry = (multiplier & 1ULL) != 0 ? ~multiplicand : 0;
+  csa.output = accumulator;
+  std::uint64_t acc_shift = accumulator >> 34;
+
+  U128Pair partial_sum{csa.output & 1ULL, 0};
+  U128Pair partial_carry{csa.carry & 1ULL, 0};
+  csa.output >>= 1;
+  csa.carry >>= 1;
+  partial_sum = rotate_right_128(partial_sum, 1);
+  partial_carry = rotate_right_128(partial_carry, 1);
+
+  std::uint8_t iterations = 0;
+  do {
+    csa = multiply_csa_cycle(csa, multiplicand, multiplier, acc_shift);
+    partial_sum.lo |= csa.output & 0xFFULL;
+    partial_carry.lo |= csa.carry & 0xFFULL;
+    csa.output >>= 8;
+    csa.carry >>= 8;
+    partial_sum = rotate_right_128(partial_sum, 8);
+    partial_carry = rotate_right_128(partial_carry, 8);
+    multiplier = arithmetic_shift_right(multiplier, 8, 33);
+    ++iterations;
+  } while (!multiply_should_terminate(multiplier, signed_multiply));
+
+  partial_sum.lo |= csa.output;
+  partial_carry.lo |= csa.carry;
+
+  const std::uint8_t correction_ror =
+      iterations == 1 ? 23 : (iterations == 2 ? 15 : (iterations == 3 ? 7 : 31));
+  partial_sum = rotate_right_128(partial_sum, correction_ror);
+  partial_carry = rotate_right_128(partial_carry, correction_ror);
+
+  if (iterations == 4) {
+    const Adder32Output lo = add32(partial_sum.hi, partial_carry.hi, alu_carry_in);
+    const Adder32Output hi = add32(partial_sum.hi >> 32, partial_carry.hi >> 32, lo.carry);
+    return {(static_cast<std::uint64_t>(hi.output) << 32) | lo.output,
+            bit64(partial_carry.hi, 63)};
+  }
+
+  const Adder32Output lo =
+      add32(partial_sum.hi >> 32, partial_carry.hi >> 32, alu_carry_in);
+  const std::uint8_t shift_amount = static_cast<std::uint8_t>(2U + 8U * iterations);
+  partial_carry.lo = sign_extend64(partial_carry.lo, shift_amount, 64);
+  partial_sum.lo |= acc_shift << shift_amount;
+  const Adder32Output hi = add32(partial_sum.lo, partial_carry.lo, lo.carry);
+  return {(static_cast<std::uint64_t>(hi.output) << 32) | lo.output,
+          bit64(partial_carry.hi, 63)};
+}
+
+[[nodiscard]] std::uint32_t align_word(std::uint32_t value) {
+  return value & ~0x3U;
 }
 
 [[nodiscard]] bool supported_condition(std::uint8_t condition) {
@@ -84,6 +299,14 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
   return static_cast<std::int32_t>(extended) * 2;
 }
 
+[[nodiscard]] std::int32_t sign_extend_thumb_bl_prefix(std::uint16_t raw) {
+  std::int32_t extended = raw & 0x07FFU;
+  if ((extended & 0x0400) != 0) {
+    extended |= ~0x07FF;
+  }
+  return extended * 4096;
+}
+
 [[nodiscard]] bool supported_data_processing_opcode(std::uint8_t opcode) {
   return opcode == static_cast<std::uint8_t>(ArmOpcode::and_) ||
          opcode == static_cast<std::uint8_t>(ArmOpcode::eor) ||
@@ -104,8 +327,7 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
 }
 
 [[nodiscard]] bool supported_thumb_branch_condition(std::uint8_t condition) {
-  return condition == static_cast<std::uint8_t>(ArmCondition::eq) ||
-         condition == static_cast<std::uint8_t>(ArmCondition::ne);
+  return condition <= static_cast<std::uint8_t>(ArmCondition::le);
 }
 
 [[nodiscard]] ShifterResult apply_immediate_shift(std::uint32_t value, ArmShiftType type,
@@ -346,12 +568,62 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
   if (timing.readable || timing.writable) {
     return true;
   }
+
+  const Region region = MemoryBus::describe(address).region;
+  if (region == Region::io && timing.nonsequential != 0 && timing.sequential != 0) {
+    return true;
+  }
   if (!waitcnt_aware || timing.nonsequential == 0 || timing.sequential == 0) {
     return false;
   }
 
-  const Region region = MemoryBus::describe(address).region;
-  return region == Region::game_pak_rom || region == Region::game_pak_save;
+  return region == Region::bios || region == Region::game_pak_rom ||
+         region == Region::game_pak_save;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> read_pipeline_open_bus_word(
+    const MemoryBus& memory, std::uint32_t pc) {
+  return memory.read32(pc + 8U);
+}
+
+[[nodiscard]] std::optional<std::uint8_t> read8_or_pipeline_open_bus(
+    const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
+  const std::optional<std::uint8_t> value = memory.read8(address);
+  if (value.has_value()) {
+    return value;
+  }
+  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  if (!open_bus.has_value()) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint8_t>((open_bus.value() >> ((address & 0x3U) * 8U)) & 0xFFU);
+}
+
+[[nodiscard]] std::optional<std::uint16_t> read16_or_pipeline_open_bus(
+    const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
+  const std::optional<std::uint16_t> value = memory.read16(address);
+  if (value.has_value()) {
+    return value;
+  }
+  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  if (!open_bus.has_value()) {
+    return std::nullopt;
+  }
+  const std::uint8_t shift = static_cast<std::uint8_t>((address & 0x2U) * 8U);
+  return static_cast<std::uint16_t>((open_bus.value() >> shift) & 0xFFFFU);
+}
+
+[[nodiscard]] std::optional<std::uint32_t> read32_or_pipeline_open_bus(
+    const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
+  const std::optional<std::uint32_t> value = memory.read32(address);
+  if (value.has_value()) {
+    return value;
+  }
+  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  if (!open_bus.has_value()) {
+    return std::nullopt;
+  }
+  return rotate_right(open_bus.value(), static_cast<std::uint8_t>((address & 0x3U) * 8U));
 }
 
 [[nodiscard]] std::optional<ArmElapsedCycleEstimate> estimate_arm_elapsed_cycles_with_timing(
@@ -552,6 +824,23 @@ DecodedBranchInstruction Arm7tdmi::decode_branch(std::uint32_t instruction) {
       static_cast<ArmCondition>(bits(instruction, 28, 0xFU)),
       ((instruction >> 24) & 0x1U) == 1,
       sign_extend_branch_offset(instruction),
+  };
+}
+
+bool Arm7tdmi::can_decode_branch_exchange(std::uint32_t instruction) {
+  return (instruction & 0x0FFFFFF0U) == 0x012FFF10U &&
+         supported_condition(bits(instruction, 28, 0xFU));
+}
+
+DecodedBranchExchangeInstruction Arm7tdmi::decode_branch_exchange(
+    std::uint32_t instruction) {
+  if (!can_decode_branch_exchange(instruction)) {
+    throw std::invalid_argument("unsupported ARM branch-exchange instruction");
+  }
+
+  return {
+      static_cast<ArmCondition>(bits(instruction, 28, 0xFU)),
+      bits(instruction, 0, 0xFU),
   };
 }
 
@@ -830,6 +1119,230 @@ bool Arm7tdmi::can_decode_thumb_add_subtract(std::uint16_t instruction) {
   return ((instruction >> 11) & 0x1FU) == 0x3U;
 }
 
+bool Arm7tdmi::can_decode_thumb_shift_immediate(std::uint16_t instruction) {
+  return ((instruction >> 13) & 0x7U) == 0x0U &&
+         ((instruction >> 11) & 0x3U) != 0x3U;
+}
+
+DecodedThumbShiftInstruction Arm7tdmi::decode_thumb_shift_immediate(
+    std::uint16_t instruction) {
+  if (!can_decode_thumb_shift_immediate(instruction)) {
+    throw std::invalid_argument("unsupported Thumb shift-immediate instruction");
+  }
+
+  const std::uint8_t opcode = bits(instruction, 11, 0x3U);
+  ArmShiftType type = ArmShiftType::lsl;
+  switch (opcode) {
+    case 0x0:
+      type = ArmShiftType::lsl;
+      break;
+    case 0x1:
+      type = ArmShiftType::lsr;
+      break;
+    case 0x2:
+      type = ArmShiftType::asr;
+      break;
+  }
+
+  return {
+      type,
+      bits(instruction, 0, 0x7U),
+      bits(instruction, 3, 0x7U),
+      bits(instruction, 6, 0x1FU),
+  };
+}
+
+bool Arm7tdmi::can_decode_thumb_alu(std::uint16_t instruction) {
+  return ((instruction >> 10) & 0x3FU) == 0x10U;
+}
+
+DecodedThumbAluInstruction Arm7tdmi::decode_thumb_alu(std::uint16_t instruction) {
+  if (!can_decode_thumb_alu(instruction)) {
+    throw std::invalid_argument("unsupported Thumb ALU instruction");
+  }
+
+  return {
+      static_cast<ThumbAluOpcode>(bits(instruction, 6, 0xFU)),
+      bits(instruction, 0, 0x7U),
+      bits(instruction, 3, 0x7U),
+  };
+}
+
+ExecuteStatus Arm7tdmi::execute_thumb_shift(
+    const DecodedThumbShiftInstruction& decoded) {
+  const std::uint32_t value = registers_.at(decoded.rs);
+  std::uint32_t result = value;
+  bool carry_out = carry_;
+  bool update_carry = true;
+
+  switch (decoded.type) {
+    case ArmShiftType::lsl:
+      if (decoded.amount == 0) {
+        update_carry = false;
+        result = value;
+      } else {
+        carry_out = ((value >> (32U - decoded.amount)) & 0x1U) != 0;
+        result = value << decoded.amount;
+      }
+      break;
+    case ArmShiftType::lsr: {
+      const std::uint8_t amount = decoded.amount == 0 ? 32U : decoded.amount;
+      carry_out = ((value >> (amount - 1U)) & 0x1U) != 0;
+      result = amount == 32U ? 0U : value >> amount;
+      break;
+    }
+    case ArmShiftType::asr: {
+      const std::uint8_t amount = decoded.amount == 0 ? 32U : decoded.amount;
+      carry_out = ((value >> (amount - 1U)) & 0x1U) != 0;
+      if (amount == 32U) {
+        result = (value & 0x80000000U) != 0 ? 0xFFFFFFFFU : 0U;
+      } else {
+        result = static_cast<std::uint32_t>(static_cast<std::int32_t>(value) >> amount);
+      }
+      break;
+    }
+    case ArmShiftType::ror:
+      return ExecuteStatus::unsupported;
+  }
+
+  registers_.at(decoded.rd) = result;
+  set_nz(result);
+  if (update_carry) {
+    carry_ = carry_out;
+  }
+  return ExecuteStatus::executed;
+}
+
+ExecuteStatus Arm7tdmi::execute_thumb_alu(const DecodedThumbAluInstruction& decoded) {
+  const std::uint32_t left = registers_.at(decoded.rd);
+  const std::uint32_t right = registers_.at(decoded.rs);
+  const std::uint8_t amount = static_cast<std::uint8_t>(right & 0xFFU);
+  std::uint32_t result = left;
+  bool write_result = true;
+  bool logical_result = true;
+  bool carry_out = carry_;
+  bool update_carry = false;
+
+  switch (decoded.opcode) {
+    case ThumbAluOpcode::and_:
+      result = left & right;
+      break;
+    case ThumbAluOpcode::eor:
+      result = left ^ right;
+      break;
+    case ThumbAluOpcode::lsl:
+      update_carry = amount != 0;
+      if (amount == 0) {
+        result = left;
+      } else if (amount < 32) {
+        carry_out = ((left >> (32U - amount)) & 0x1U) != 0;
+        result = left << amount;
+      } else if (amount == 32) {
+        carry_out = (left & 0x1U) != 0;
+        result = 0;
+      } else {
+        carry_out = false;
+        result = 0;
+      }
+      break;
+    case ThumbAluOpcode::lsr:
+      update_carry = amount != 0;
+      if (amount == 0) {
+        result = left;
+      } else if (amount < 32) {
+        carry_out = ((left >> (amount - 1U)) & 0x1U) != 0;
+        result = left >> amount;
+      } else if (amount == 32) {
+        carry_out = (left & 0x80000000U) != 0;
+        result = 0;
+      } else {
+        carry_out = false;
+        result = 0;
+      }
+      break;
+    case ThumbAluOpcode::asr:
+      update_carry = amount != 0;
+      if (amount == 0) {
+        result = left;
+      } else if (amount < 32) {
+        carry_out = ((left >> (amount - 1U)) & 0x1U) != 0;
+        result = static_cast<std::uint32_t>(static_cast<std::int32_t>(left) >> amount);
+      } else {
+        carry_out = (left & 0x80000000U) != 0;
+        result = carry_out ? 0xFFFFFFFFU : 0U;
+      }
+      break;
+    case ThumbAluOpcode::adc: {
+      logical_result = false;
+      const std::uint32_t carry_value = carry_ ? 1U : 0U;
+      result = left + right + carry_value;
+      set_adc_flags(left, right, carry_, result);
+      break;
+    }
+    case ThumbAluOpcode::sbc: {
+      logical_result = false;
+      const std::uint32_t borrow = carry_ ? 0U : 1U;
+      result = left - right - borrow;
+      set_sbc_flags(left, right, carry_, result);
+      break;
+    }
+    case ThumbAluOpcode::ror:
+      update_carry = amount != 0;
+      if (amount == 0) {
+        result = left;
+      } else {
+        const std::uint8_t shift = static_cast<std::uint8_t>(amount % 32U);
+        result = shift == 0 ? left : rotate_right(left, shift);
+        carry_out = (result & 0x80000000U) != 0;
+      }
+      break;
+    case ThumbAluOpcode::tst:
+      result = left & right;
+      write_result = false;
+      break;
+    case ThumbAluOpcode::neg:
+      logical_result = false;
+      result = 0U - right;
+      set_sub_flags(0, right, result);
+      break;
+    case ThumbAluOpcode::cmp:
+      logical_result = false;
+      result = left - right;
+      write_result = false;
+      set_sub_flags(left, right, result);
+      break;
+    case ThumbAluOpcode::cmn:
+      logical_result = false;
+      result = left + right;
+      write_result = false;
+      set_add_flags(left, right, result);
+      break;
+    case ThumbAluOpcode::orr:
+      result = left | right;
+      break;
+    case ThumbAluOpcode::mul:
+      result = left * right;
+      break;
+    case ThumbAluOpcode::bic:
+      result = left & ~right;
+      break;
+    case ThumbAluOpcode::mvn:
+      result = ~right;
+      break;
+  }
+
+  if (write_result) {
+    registers_.at(decoded.rd) = result;
+  }
+  if (logical_result) {
+    set_nz(result);
+  }
+  if (update_carry) {
+    carry_ = carry_out;
+  }
+  return ExecuteStatus::executed;
+}
+
 DecodedThumbInstruction Arm7tdmi::decode_thumb_add_subtract(std::uint16_t instruction) {
   if (!can_decode_thumb_add_subtract(instruction)) {
     throw std::invalid_argument("unsupported Thumb add/subtract instruction");
@@ -909,6 +1422,24 @@ DecodedThumbBranchInstruction Arm7tdmi::decode_thumb_conditional_branch(
           sign_extend_thumb_offset(static_cast<std::uint16_t>(instruction & 0xFFU), 8)};
 }
 
+bool Arm7tdmi::can_decode_thumb_long_branch_link(std::uint16_t instruction) {
+  return (instruction & 0xF800U) == 0xF000U || (instruction & 0xF800U) == 0xF800U;
+}
+
+DecodedThumbLongBranchLinkInstruction Arm7tdmi::decode_thumb_long_branch_link(
+    std::uint16_t instruction) {
+  if (!can_decode_thumb_long_branch_link(instruction)) {
+    throw std::invalid_argument("unsupported Thumb long-branch-link instruction");
+  }
+
+  const bool second_half = (instruction & 0x0800U) != 0;
+  const std::uint16_t raw = static_cast<std::uint16_t>(instruction & 0x07FFU);
+  return {
+      second_half,
+      second_half ? static_cast<std::int32_t>(raw) * 2 : sign_extend_thumb_bl_prefix(raw),
+  };
+}
+
 bool Arm7tdmi::can_decode_thumb_high_register(std::uint16_t instruction) {
   if (((instruction >> 10) & 0x3FU) != 0x11U) {
     return false;
@@ -953,6 +1484,9 @@ DecodedThumbHighRegisterInstruction Arm7tdmi::decode_thumb_high_register(
 
 bool Arm7tdmi::can_decode_thumb_memory_transfer(std::uint16_t instruction) {
   const std::uint8_t top_nibble = bits(instruction, 12, 0xFU);
+  if (((instruction >> 11) & 0x1FU) == 0x9U) {
+    return true;
+  }
   if (top_nibble == 0x5U) {
     return true;
   }
@@ -972,6 +1506,17 @@ DecodedThumbMemoryTransferInstruction Arm7tdmi::decode_thumb_memory_transfer(
   }
 
   const std::uint8_t top_nibble = bits(instruction, 12, 0xFU);
+  if (((instruction >> 11) & 0x1FU) == 0x9U) {
+    return {
+        true,
+        ThumbMemoryTransferKind::word,
+        bits(instruction, 8, 0x7U),
+        kPc,
+        static_cast<std::uint32_t>(instruction & 0xFFU) * 4U,
+        false,
+    };
+  }
+
   if (top_nibble == 0x5U) {
     const std::uint8_t op = bits(instruction, 9, 0x7U);
     ThumbMemoryTransferKind kind = ThumbMemoryTransferKind::word;
@@ -1046,6 +1591,24 @@ DecodedThumbMemoryTransferInstruction Arm7tdmi::decode_thumb_memory_transfer(
   };
 }
 
+bool Arm7tdmi::can_decode_thumb_block_transfer(std::uint16_t instruction) {
+  return ((instruction >> 12) & 0xFU) == 0xCU &&
+         static_cast<std::uint8_t>(instruction & 0xFFU) != 0;
+}
+
+DecodedThumbBlockTransferInstruction Arm7tdmi::decode_thumb_block_transfer(
+    std::uint16_t instruction) {
+  if (!can_decode_thumb_block_transfer(instruction)) {
+    throw std::invalid_argument("unsupported Thumb block-transfer instruction");
+  }
+
+  return {
+      ((instruction >> 11) & 0x1U) == 1,
+      bits(instruction, 8, 0x7U),
+      static_cast<std::uint8_t>(instruction & 0xFFU),
+  };
+}
+
 bool Arm7tdmi::can_decode_thumb_stack_transfer(std::uint16_t instruction) {
   return (instruction & 0xFE00U) == 0xB400U || (instruction & 0xFE00U) == 0xBC00U;
 }
@@ -1060,6 +1623,39 @@ DecodedThumbStackInstruction Arm7tdmi::decode_thumb_stack_transfer(
       (instruction & 0x0800U) != 0,
       (instruction & 0x0100U) != 0,
       static_cast<std::uint8_t>(instruction & 0x00FFU),
+  };
+}
+
+bool Arm7tdmi::can_decode_thumb_stack_pointer_adjust(std::uint16_t instruction) {
+  return (instruction & 0xFF00U) == 0xB000U;
+}
+
+DecodedThumbStackPointerInstruction Arm7tdmi::decode_thumb_stack_pointer_adjust(
+    std::uint16_t instruction) {
+  if (!can_decode_thumb_stack_pointer_adjust(instruction)) {
+    throw std::invalid_argument("unsupported Thumb stack-pointer adjust instruction");
+  }
+
+  return {
+      (instruction & 0x0080U) != 0,
+      static_cast<std::uint32_t>(instruction & 0x007FU) * 4U,
+  };
+}
+
+bool Arm7tdmi::can_decode_thumb_load_address(std::uint16_t instruction) {
+  return (instruction & 0xF000U) == 0xA000U;
+}
+
+DecodedThumbLoadAddressInstruction Arm7tdmi::decode_thumb_load_address(
+    std::uint16_t instruction) {
+  if (!can_decode_thumb_load_address(instruction)) {
+    throw std::invalid_argument("unsupported Thumb load-address instruction");
+  }
+
+  return {
+      (instruction & 0x0800U) != 0,
+      bits(instruction, 8, 0x7U),
+      static_cast<std::uint32_t>(instruction & 0x00FFU) * 4U,
   };
 }
 
@@ -1101,6 +1697,10 @@ std::optional<ArmCycleEstimate> Arm7tdmi::estimate_arm_cycles(std::uint32_t inst
   }
 
   if (can_decode_branch(instruction)) {
+    return branch_cycle_estimate();
+  }
+
+  if (can_decode_branch_exchange(instruction)) {
     return branch_cycle_estimate();
   }
 
@@ -1514,6 +2114,18 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
     return ExecuteStatus::executed;
   }
 
+  if (can_decode_branch_exchange(instruction)) {
+    const DecodedBranchExchangeInstruction decoded = decode_branch_exchange(instruction);
+    if (!condition_passed(decoded.condition)) {
+      return ExecuteStatus::skipped_condition;
+    }
+
+    const std::uint32_t target = registers_.at(decoded.rm);
+    thumb_state_ = (target & 0x1U) != 0;
+    registers_.at(kPc) = target & ~1U;
+    return ExecuteStatus::executed;
+  }
+
   if (can_decode_multiply_long(instruction)) {
     const DecodedMultiplyLongInstruction decoded = decode_multiply_long(instruction);
     if (!condition_passed(decoded.condition)) {
@@ -1538,10 +2150,15 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
     const std::uint8_t rm = bits(instruction, 0, 0xFU);
     const bool register_shift = ((instruction >> 4) & 0x1U) == 1 &&
                                 ((instruction >> 7) & 0x1U) == 0;
+    const auto register_shift_visible_value = [this](std::uint8_t index) {
+      const std::uint32_t value = registers_.at(index);
+      return index == kPc ? value + 12U : value;
+    };
     const DecodedArmInstruction decoded = register_shift
                                              ? decode_data_processing_register_shift(
-                                                   instruction, arm_visible_register_value(rm),
-                                                   arm_visible_register_value(
+                                                   instruction,
+                                                   register_shift_visible_value(rm),
+                                                   register_shift_visible_value(
                                                        bits(instruction, 8, 0xFU)))
                                              : decode_data_processing_register_shift(
                                                    instruction, arm_visible_register_value(rm),
@@ -1549,7 +2166,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
     if (!condition_passed(decoded.condition)) {
       return ExecuteStatus::skipped_condition;
     }
-    return execute_data_processing(decoded);
+    return execute_data_processing(decoded, register_shift ? 12U : 8U);
   }
 
   const DecodedArmInstruction decoded = decode_data_processing_immediate(instruction);
@@ -1560,8 +2177,10 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
   return execute_data_processing(decoded);
 }
 
-ExecuteStatus Arm7tdmi::execute_data_processing(const DecodedArmInstruction& decoded) {
-  const std::uint32_t left = arm_visible_register_value(decoded.rn);
+ExecuteStatus Arm7tdmi::execute_data_processing(const DecodedArmInstruction& decoded,
+                                                std::uint32_t pc_offset) {
+  const std::uint32_t left =
+      decoded.rn == kPc ? registers_.at(kPc) + pc_offset : registers_.at(decoded.rn);
   switch (decoded.opcode) {
     case ArmOpcode::and_: {
       const std::uint32_t result = left & decoded.operand2;
@@ -1740,20 +2359,20 @@ ExecuteStatus Arm7tdmi::execute_multiply(const DecodedMultiplyInstruction& decod
 
 ExecuteStatus Arm7tdmi::execute_multiply_long(
     const DecodedMultiplyLongInstruction& decoded) {
+  const std::uint32_t rm = registers_.at(decoded.rm);
+  const std::uint32_t rs = registers_.at(decoded.rs);
+  std::uint64_t accumulator = 0;
   std::uint64_t result = 0;
   if (decoded.signed_multiply) {
-    const auto left = static_cast<std::int64_t>(
-        static_cast<std::int32_t>(registers_.at(decoded.rm)));
-    const auto right = static_cast<std::int64_t>(
-        static_cast<std::int32_t>(registers_.at(decoded.rs)));
+    const auto left = static_cast<std::int64_t>(static_cast<std::int32_t>(rm));
+    const auto right = static_cast<std::int64_t>(static_cast<std::int32_t>(rs));
     result = static_cast<std::uint64_t>(left * right);
   } else {
-    result = static_cast<std::uint64_t>(registers_.at(decoded.rm)) *
-             static_cast<std::uint64_t>(registers_.at(decoded.rs));
+    result = static_cast<std::uint64_t>(rm) * static_cast<std::uint64_t>(rs);
   }
 
   if (decoded.accumulate) {
-    const std::uint64_t accumulator =
+    accumulator =
         (static_cast<std::uint64_t>(registers_.at(decoded.rd_hi)) << 32) |
         static_cast<std::uint64_t>(registers_.at(decoded.rd_lo));
     result += accumulator;
@@ -1763,6 +2382,7 @@ ExecuteStatus Arm7tdmi::execute_multiply_long(
   registers_.at(decoded.rd_hi) = static_cast<std::uint32_t>(result >> 32);
   if (decoded.set_flags) {
     set_nz64(result);
+    carry_ = arm7tdmi_multiply_long_output(decoded.signed_multiply, rm, rs, accumulator).carry;
   }
   return ExecuteStatus::executed;
 }
@@ -1784,6 +2404,26 @@ ExecuteStatus Arm7tdmi::execute_thumb(std::uint16_t instruction) {
     return execute_thumb_branch(decode_thumb_unconditional_branch(instruction));
   }
 
+  if (can_decode_thumb_long_branch_link(instruction)) {
+    return execute_thumb_long_branch_link(decode_thumb_long_branch_link(instruction));
+  }
+
+  if (can_decode_thumb_shift_immediate(instruction)) {
+    return execute_thumb_shift(decode_thumb_shift_immediate(instruction));
+  }
+
+  if (can_decode_thumb_alu(instruction)) {
+    return execute_thumb_alu(decode_thumb_alu(instruction));
+  }
+
+  if (can_decode_thumb_stack_pointer_adjust(instruction)) {
+    return execute_thumb_stack_pointer_adjust(decode_thumb_stack_pointer_adjust(instruction));
+  }
+
+  if (can_decode_thumb_load_address(instruction)) {
+    return execute_thumb_load_address(decode_thumb_load_address(instruction));
+  }
+
   if (can_decode_thumb_add_subtract(instruction)) {
     return execute_thumb_data_processing(decode_thumb_add_subtract(instruction));
   }
@@ -1796,6 +2436,10 @@ ExecuteStatus Arm7tdmi::execute_thumb(std::uint16_t instruction) {
 }
 
 ExecuteStatus Arm7tdmi::execute_thumb(std::uint16_t instruction, MemoryBus& memory) {
+  if (can_decode_thumb_block_transfer(instruction)) {
+    return execute_thumb_block_transfer(decode_thumb_block_transfer(instruction), memory);
+  }
+
   if (can_decode_thumb_stack_transfer(instruction)) {
     return execute_thumb_stack_transfer(decode_thumb_stack_transfer(instruction), memory);
   }
@@ -1813,7 +2457,24 @@ ExecuteStatus Arm7tdmi::execute_thumb_branch(
     return ExecuteStatus::skipped_condition;
   }
 
-  registers_.at(kPc) = registers_.at(kPc) + static_cast<std::uint32_t>(decoded.offset);
+  registers_.at(kPc) = thumb_visible_register_value(kPc) +
+                       static_cast<std::uint32_t>(decoded.offset);
+  return ExecuteStatus::executed;
+}
+
+ExecuteStatus Arm7tdmi::execute_thumb_long_branch_link(
+    const DecodedThumbLongBranchLinkInstruction& decoded) {
+  if (!decoded.second_half) {
+    registers_.at(kLinkRegister) =
+        thumb_visible_register_value(kPc) + static_cast<std::uint32_t>(decoded.offset);
+    return ExecuteStatus::executed;
+  }
+
+  const std::uint32_t target =
+      registers_.at(kLinkRegister) + static_cast<std::uint32_t>(decoded.offset);
+  registers_.at(kLinkRegister) = (registers_.at(kPc) + 2U) | 0x1U;
+  registers_.at(kPc) = target & ~1U;
+  thumb_state_ = true;
   return ExecuteStatus::executed;
 }
 
@@ -1846,7 +2507,8 @@ ExecuteStatus Arm7tdmi::execute_thumb_high_register(
 
 ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
     const DecodedThumbMemoryTransferInstruction& decoded, MemoryBus& memory) {
-  const std::uint32_t base = registers_.at(decoded.rb);
+  const std::uint32_t base = decoded.rb == kPc ? align_word(registers_.at(kPc) + 4U)
+                                               : registers_.at(decoded.rb);
   const std::uint32_t offset =
       decoded.offset_is_register ? registers_.at(decoded.offset) : decoded.offset;
   const std::uint32_t address = base + offset;
@@ -1898,14 +2560,20 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
 
   switch (decoded.kind) {
     case ThumbMemoryTransferKind::word:
-      return memory.write32(address, registers_.at(decoded.rd)) ? ExecuteStatus::executed
-                                                                : ExecuteStatus::unsupported;
+      return memory.write32(MemoryBus::describe(address).region == Region::game_pak_save
+                                ? address
+                                : (address & ~0x3U),
+                            registers_.at(decoded.rd))
+                 ? ExecuteStatus::executed
+                 : ExecuteStatus::unsupported;
     case ThumbMemoryTransferKind::byte:
       return memory.write8(address, static_cast<std::uint8_t>(registers_.at(decoded.rd) & 0xFFU))
                  ? ExecuteStatus::executed
                  : ExecuteStatus::unsupported;
     case ThumbMemoryTransferKind::halfword:
-      return memory.write16(address,
+      return memory.write16(MemoryBus::describe(address).region == Region::game_pak_save
+                                ? address
+                                : (address & ~0x1U),
                             static_cast<std::uint16_t>(registers_.at(decoded.rd) & 0xFFFFU))
                  ? ExecuteStatus::executed
                  : ExecuteStatus::unsupported;
@@ -1915,6 +2583,49 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
   }
 
   return ExecuteStatus::unsupported;
+}
+
+ExecuteStatus Arm7tdmi::execute_thumb_block_transfer(
+    const DecodedThumbBlockTransferInstruction& decoded, MemoryBus& memory) {
+  const std::uint8_t register_count = count_registers(decoded.register_list);
+  if (register_count == 0) {
+    return ExecuteStatus::unsupported;
+  }
+
+  const std::uint32_t old_base = registers_.at(decoded.rb);
+  std::uint32_t address = old_base;
+  if (decoded.load) {
+    std::array<std::uint32_t, 8> loaded{};
+    for (std::uint8_t index = 0; index < 8; ++index) {
+      if (!register_list_contains(decoded.register_list, index)) {
+        continue;
+      }
+      const std::optional<std::uint32_t> value = memory.read32(address);
+      if (!value.has_value()) {
+        return ExecuteStatus::unsupported;
+      }
+      loaded.at(index) = value.value();
+      address += 4U;
+    }
+    for (std::uint8_t index = 0; index < 8; ++index) {
+      if (register_list_contains(decoded.register_list, index)) {
+        registers_.at(index) = loaded.at(index);
+      }
+    }
+  } else {
+    for (std::uint8_t index = 0; index < 8; ++index) {
+      if (!register_list_contains(decoded.register_list, index)) {
+        continue;
+      }
+      if (!memory.write32(address, registers_.at(index))) {
+        return ExecuteStatus::unsupported;
+      }
+      address += 4U;
+    }
+  }
+
+  registers_.at(decoded.rb) = old_base + static_cast<std::uint32_t>(register_count) * 4U;
+  return ExecuteStatus::executed;
 }
 
 ExecuteStatus Arm7tdmi::execute_thumb_stack_transfer(
@@ -1981,6 +2692,25 @@ ExecuteStatus Arm7tdmi::execute_thumb_stack_transfer(
     registers_.at(kPc) = loaded.at(read_index) & ~1U;
   }
   registers_.at(13) = old_sp + static_cast<std::uint32_t>(register_count) * 4U;
+  return ExecuteStatus::executed;
+}
+
+ExecuteStatus Arm7tdmi::execute_thumb_stack_pointer_adjust(
+    const DecodedThumbStackPointerInstruction& decoded) {
+  if (decoded.subtract) {
+    registers_.at(13) -= decoded.offset;
+  } else {
+    registers_.at(13) += decoded.offset;
+  }
+  return ExecuteStatus::executed;
+}
+
+ExecuteStatus Arm7tdmi::execute_thumb_load_address(
+    const DecodedThumbLoadAddressInstruction& decoded) {
+  const std::uint32_t base = decoded.base_is_sp
+                                 ? registers_.at(13)
+                                 : align_word(thumb_visible_register_value(kPc));
+  registers_.at(decoded.rd) = base + decoded.offset;
   return ExecuteStatus::executed;
 }
 
@@ -2097,7 +2827,8 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
       return ExecuteStatus::skipped_condition;
     }
 
-    if (decoded.write_back && register_list_contains(decoded.register_list, decoded.rn)) {
+    if (decoded.load && decoded.write_back &&
+        register_list_contains(decoded.register_list, decoded.rn)) {
       return ExecuteStatus::unsupported;
     }
 
@@ -2172,7 +2903,8 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
 
     if (decoded.load) {
       if (decoded.signed_transfer && !decoded.halfword) {
-        const std::optional<std::uint8_t> value = memory.read8(address);
+        const std::optional<std::uint8_t> value =
+            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -2183,12 +2915,33 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
         return ExecuteStatus::executed;
       }
 
-      const std::optional<std::uint16_t> value = memory.read16(address);
+      if (decoded.signed_transfer && (address & 0x1U) != 0) {
+        const std::optional<std::uint8_t> value =
+            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+        if (!value.has_value()) {
+          return ExecuteStatus::unsupported;
+        }
+        registers_.at(decoded.rd) = sign_extend8(value.value());
+        if (needs_write_back) {
+          registers_.at(decoded.rn) = write_back_address;
+        }
+        return ExecuteStatus::executed;
+      }
+
+      const std::uint32_t halfword_address =
+          MemoryBus::describe(address).region == Region::game_pak_save ? address
+                                                                       : (address & ~0x1U);
+      const std::optional<std::uint16_t> value =
+          read16_or_pipeline_open_bus(memory, halfword_address, registers_.at(kPc));
       if (!value.has_value()) {
         return ExecuteStatus::unsupported;
       }
       registers_.at(decoded.rd) =
-          decoded.signed_transfer ? sign_extend16(value.value()) : value.value();
+          decoded.signed_transfer
+              ? sign_extend16(value.value())
+              : ((address & 0x1U) != 0
+                     ? rotate_right(static_cast<std::uint32_t>(value.value()), 8)
+                     : static_cast<std::uint32_t>(value.value()));
       if (needs_write_back) {
         registers_.at(decoded.rn) = write_back_address;
       }
@@ -2199,7 +2952,9 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
       return ExecuteStatus::unsupported;
     }
 
-    if (!memory.write16(address,
+    if (!memory.write16(MemoryBus::describe(address).region == Region::game_pak_save
+                            ? address
+                            : (address & ~0x1U),
                         static_cast<std::uint16_t>(registers_.at(decoded.rd) & 0xFFFFU))) {
       return ExecuteStatus::unsupported;
     }
@@ -2241,7 +2996,8 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
 
   if (decoded.load) {
     if (decoded.byte) {
-      const std::optional<std::uint8_t> value = memory.read8(address);
+      const std::optional<std::uint8_t> value =
+          read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
       if (!value.has_value()) {
         return ExecuteStatus::unsupported;
       }
@@ -2252,7 +3008,8 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
       return ExecuteStatus::executed;
     }
 
-    const std::optional<std::uint32_t> value = memory.read32(address);
+    const std::optional<std::uint32_t> value =
+        read32_or_pipeline_open_bus(memory, address, registers_.at(kPc));
     if (!value.has_value()) {
       return ExecuteStatus::unsupported;
     }
@@ -2274,7 +3031,10 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
     return ExecuteStatus::executed;
   }
 
-  if (!memory.write32(address, registers_.at(decoded.rd))) {
+  if (!memory.write32(MemoryBus::describe(address).region == Region::game_pak_save
+                          ? address
+                          : (address & ~0x3U),
+                      registers_.at(decoded.rd))) {
     return ExecuteStatus::unsupported;
   }
   if (needs_write_back) {

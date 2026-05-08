@@ -1,6 +1,7 @@
 #include "gba/core/memory_bus.hpp"
 #include "gba/core/ppu_sprites.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
@@ -21,6 +22,14 @@ void expect_pixel(const std::optional<gba::core::SpritePixel>& pixel,
   expect(pixel.has_value(), message);
   expect(pixel->color_index == color_index, message);
   expect(pixel->color == color, message);
+}
+
+bool write_obj_vram_byte(gba::core::MemoryBus& memory, std::uint32_t address,
+                         std::uint8_t value) {
+  const std::uint32_t aligned = address & ~1U;
+  const std::uint16_t halfword =
+      (address & 1U) != 0 ? static_cast<std::uint16_t>(value << 8U) : value;
+  return memory.write16(aligned, halfword);
 }
 
 }  // namespace
@@ -54,7 +63,8 @@ int main() {
   expect(obj0->color_mode == SpriteColorMode::bpp4, "OBJ0 defaults to 4bpp");
   expect(!obj0->disabled, "OBJ0 is enabled");
 
-  expect(memory.write8(0x06010000 + 5U * 32U, 0x09), "seed OBJ0 tile pixel");
+  expect(write_obj_vram_byte(memory, 0x06010000 + 5U * 32U, 0x09),
+         "seed OBJ0 tile pixel");
   expect(memory.write16(0x05000200 + 4U * 32U + 9U * 2U, 0x7FFF),
          "seed OBJ0 palette color");
   const std::optional<gba::core::SpritePixel> obj0_pixel =
@@ -72,7 +82,7 @@ int main() {
   expect(obj1.has_value(), "OBJ1 decodes");
   expect(obj1->color_mode == SpriteColorMode::bpp8, "OBJ1 8bpp mode decodes");
   expect(obj1->width == 16 && obj1->height == 16, "OBJ1 16x16 dimensions decode");
-  expect(memory.write8(0x06010000 + 12U * 32U + 2U * 8U + 3U, 0x55),
+  expect(write_obj_vram_byte(memory, 0x06010000 + 12U * 32U + 2U * 8U + 3U, 0x55),
          "seed OBJ1 8bpp tile pixel");
   expect(memory.write16(0x05000200 + 0x55U * 2U, 0x03E0), "seed OBJ1 palette color");
   expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj1.value(), 3, 2), 0x55,
@@ -89,7 +99,8 @@ int main() {
   expect(obj2.has_value(), "OBJ2 decodes");
   expect(obj2->hflip, "OBJ2 hflip decodes");
   expect(obj2->vflip, "OBJ2 vflip decodes");
-  expect(memory.write8(0x06010000 + 20U * 32U + 31U, 0xB0), "seed OBJ2 flipped pixel");
+  expect(write_obj_vram_byte(memory, 0x06010000 + 20U * 32U + 31U, 0xB0),
+         "seed OBJ2 flipped pixel");
   expect(memory.write16(0x05000200 + 2U * 32U + 11U * 2U, 0x001F),
          "seed OBJ2 palette color");
   expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj2.value(), 0, 0), 11,
@@ -124,7 +135,8 @@ int main() {
   const std::optional<gba::core::SpriteAttributes> obj5 =
       PpuSpriteFetcher::read_sprite(memory, 5);
   expect(obj5.has_value(), "OBJ5 decodes");
-  expect(memory.write8(0x06010000 + 50U * 32U, 0x00), "seed transparent OBJ pixel");
+  expect(write_obj_vram_byte(memory, 0x06010000 + 50U * 32U, 0x00),
+         "seed transparent OBJ pixel");
   expect(memory.write16(0x05000200 + 1U * 32U, 0x2222), "seed OBJ transparent palette");
   const std::optional<gba::core::SpritePixel> transparent =
       PpuSpriteFetcher::fetch_sprite_pixel(memory, obj5.value(), 0, 0);

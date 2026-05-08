@@ -106,6 +106,10 @@ constexpr std::uint32_t arm_swp(bool byte, std::uint8_t base, std::uint8_t desti
          rd(destination) | rm(source);
 }
 
+constexpr std::uint32_t arm_bx(std::uint32_t condition, std::uint8_t source) {
+  return condition | 0x012FFF10U | rm(source);
+}
+
 constexpr std::uint32_t imm(std::uint8_t value) {
   return value;
 }
@@ -158,6 +162,24 @@ constexpr std::uint16_t thumb_immediate(std::uint8_t opcode_value, std::uint8_t 
                                     immediate);
 }
 
+constexpr std::uint16_t thumb_shift_immediate(std::uint8_t opcode_value,
+                                              std::uint8_t amount, std::uint8_t rs,
+                                              std::uint8_t rd) {
+  return static_cast<std::uint16_t>(
+      (static_cast<std::uint16_t>(opcode_value & 0x3U) << 11) |
+      (static_cast<std::uint16_t>(amount & 0x1FU) << 6) |
+      (static_cast<std::uint16_t>(rs & 0x7U) << 3) |
+      static_cast<std::uint16_t>(rd & 0x7U));
+}
+
+constexpr std::uint16_t thumb_alu(std::uint8_t opcode_value, std::uint8_t rs,
+                                  std::uint8_t rd) {
+  return static_cast<std::uint16_t>(
+      0x4000U | (static_cast<std::uint16_t>(opcode_value & 0xFU) << 6) |
+      (static_cast<std::uint16_t>(rs & 0x7U) << 3) |
+      static_cast<std::uint16_t>(rd & 0x7U));
+}
+
 constexpr std::uint16_t thumb_conditional_branch(std::uint8_t condition,
                                                  std::int8_t halfword_offset) {
   return static_cast<std::uint16_t>(
@@ -168,6 +190,20 @@ constexpr std::uint16_t thumb_conditional_branch(std::uint8_t condition,
 constexpr std::uint16_t thumb_unconditional_branch(std::int16_t halfword_offset) {
   return static_cast<std::uint16_t>(
       0xE000U | (static_cast<std::uint16_t>(halfword_offset) & 0x7FFU));
+}
+
+constexpr std::uint16_t thumb_bl_prefix(std::int16_t page_offset) {
+  return static_cast<std::uint16_t>(0xF000U |
+                                    (static_cast<std::uint16_t>(page_offset) & 0x7FFU));
+}
+
+constexpr std::uint16_t thumb_bl_suffix(std::uint16_t halfword_offset) {
+  return static_cast<std::uint16_t>(0xF800U | (halfword_offset & 0x7FFU));
+}
+
+constexpr std::uint16_t thumb_ldr_literal(std::uint8_t rd, std::uint8_t word_offset) {
+  return static_cast<std::uint16_t>(
+      0x4800U | (static_cast<std::uint16_t>(rd & 0x7U) << 8) | word_offset);
 }
 
 constexpr std::uint16_t thumb_high_register(std::uint8_t opcode_value, std::uint8_t rd,
@@ -215,11 +251,35 @@ constexpr std::uint16_t thumb_sp_relative(bool load, std::uint8_t rd, std::uint8
                                     imm8);
 }
 
+constexpr std::uint16_t thumb_block_transfer(bool load, std::uint8_t rb,
+                                             std::uint8_t list) {
+  return static_cast<std::uint16_t>(0xC000U |
+                                    (static_cast<std::uint16_t>(load ? 1U : 0U) << 11) |
+                                    (static_cast<std::uint16_t>(rb & 0x7U) << 8) |
+                                    list);
+}
+
 constexpr std::uint16_t thumb_stack(bool load, bool extra_register, std::uint8_t list) {
   return static_cast<std::uint16_t>((load ? 0xBC00U : 0xB400U) |
                                     (static_cast<std::uint16_t>(extra_register ? 1U : 0U)
                                      << 8) |
                                     list);
+}
+
+constexpr std::uint16_t thumb_sp_adjust(bool subtract, std::uint8_t word_offset) {
+  return static_cast<std::uint16_t>(0xB000U |
+                                    (static_cast<std::uint16_t>(subtract ? 1U : 0U)
+                                     << 7) |
+                                    (word_offset & 0x7FU));
+}
+
+constexpr std::uint16_t thumb_load_address(bool base_is_sp, std::uint8_t rd,
+                                           std::uint8_t word_offset) {
+  return static_cast<std::uint16_t>(0xA000U |
+                                    (static_cast<std::uint16_t>(base_is_sp ? 1U : 0U)
+                                     << 11) |
+                                    (static_cast<std::uint16_t>(rd & 0x7U) << 8) |
+                                    word_offset);
 }
 
 constexpr std::uint16_t thumb_swi(std::uint8_t comment) {
@@ -275,10 +335,12 @@ void expect_step(const gba::core::ArmStepResult& actual, gba::core::ExecuteStatu
 int main() {
   using gba::core::Arm7tdmi;
   using gba::core::ArmOpcode;
+  using gba::core::ArmShiftType;
   using gba::core::CpuMode;
   using gba::core::ExceptionKind;
   using gba::core::ExecuteStatus;
   using gba::core::MemoryBus;
+  using gba::core::ThumbAluOpcode;
   using gba::core::ThumbHighRegisterOpcode;
   using gba::core::ThumbMemoryTransferKind;
   using gba::core::ThumbOpcode;
@@ -572,6 +634,26 @@ int main() {
          "execute ARM ADD from pipeline-visible PC");
   expect(cpu.register_value(1) == 0x0800000C,
          "ARM data-processing Rn reads PC as current instruction address plus 8");
+  constexpr std::uint32_t mov_r0_pc_lsl_r1 =
+      kCondAl | opcode(0xDU) | rd(0) | rs(1) | shift_type(0) | 0x10 |
+      rm(Arm7tdmi::kPc);
+  constexpr std::uint32_t add_r2_pc_r3_lsl_r4 =
+      kCondAl | opcode(0x4U) | rn(Arm7tdmi::kPc) | rd(2) | rs(4) | shift_type(0) |
+      0x10 | rm(3);
+  cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  cpu.set_register(1, 0);
+  expect(cpu.execute_arm(mov_r0_pc_lsl_r1) == ExecuteStatus::executed,
+         "execute ARM MOV from register-shift pipeline-visible PC");
+  expect(cpu.register_value(0) == 0x0800000C,
+         "ARM register-shift operand reads PC as current instruction address plus 12");
+  cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  cpu.set_register(3, 1);
+  cpu.set_register(4, 0);
+  expect(cpu.execute_arm(add_r2_pc_r3_lsl_r4) == ExecuteStatus::executed,
+         "execute ARM ADD Rn PC with register-controlled shift operand");
+  expect(cpu.register_value(2) == 0x0800000D,
+         "ARM register-shift Rn PC reads as current instruction address plus 12");
+  cpu.set_register(2, 12);
   expect(cpu.execute_arm(cmp_r2_12) == ExecuteStatus::executed, "execute CMP immediate");
   expect(cpu.zero(), "CMP updates Z flag");
   expect(cpu.carry(), "CMP sets carry for no borrow");
@@ -586,11 +668,22 @@ int main() {
   constexpr std::uint16_t thumb_add_r0_0x7f = thumb_immediate(0x2, 0, 0x7F);
   constexpr std::uint16_t thumb_cmp_r0_0xff = thumb_immediate(0x1, 0, 0xFF);
   constexpr std::uint16_t thumb_sub_r1_1 = thumb_immediate(0x3, 1, 1);
+  constexpr std::uint16_t thumb_lsl_r0_r0_5 = thumb_shift_immediate(0x0, 5, 0, 0);
+  constexpr std::uint16_t thumb_lsr_r2_r1_1 = thumb_shift_immediate(0x1, 1, 1, 2);
+  constexpr std::uint16_t thumb_asr_r4_r3_0 = thumb_shift_immediate(0x2, 0, 3, 4);
+  constexpr std::uint16_t thumb_bic_r1_r2 = thumb_alu(0xE, 2, 1);
+  constexpr std::uint16_t thumb_tst_r1_r2 = thumb_alu(0x8, 2, 1);
+  constexpr std::uint16_t thumb_neg_r5_r2 = thumb_alu(0x9, 2, 5);
+  constexpr std::uint16_t thumb_mul_r1_r2 = thumb_alu(0xD, 2, 1);
   constexpr std::uint16_t thumb_add_r2_r0_r1 = thumb_add_sub(false, false, 1, 0, 2);
   constexpr std::uint16_t thumb_sub_r3_r2_7 = thumb_add_sub(true, true, 7, 2, 3);
   constexpr std::uint16_t thumb_b_forward = thumb_unconditional_branch(2);
   constexpr std::uint16_t thumb_beq_backward = thumb_conditional_branch(0, -2);
   constexpr std::uint16_t thumb_bne_forward = thumb_conditional_branch(1, 3);
+  constexpr std::uint16_t thumb_bcs_forward = thumb_conditional_branch(2, 2);
+  constexpr std::uint16_t thumb_bmi_forward = thumb_conditional_branch(4, 2);
+  constexpr std::uint16_t thumb_bl_prefix_0 = thumb_bl_prefix(0);
+  constexpr std::uint16_t thumb_bl_suffix_0x2c = thumb_bl_suffix(0x2C);
   constexpr std::uint16_t thumb_mov_r8_r1 = thumb_high_register(0x2, 8, 1);
   constexpr std::uint16_t thumb_add_r8_r2 = thumb_high_register(0x0, 8, 2);
   constexpr std::uint16_t thumb_cmp_r8_r3 = thumb_high_register(0x1, 8, 3);
@@ -600,6 +693,7 @@ int main() {
   constexpr std::uint16_t thumb_add_sp_r8 = thumb_high_register(0x0, 13, 8);
   constexpr std::uint16_t thumb_mov_pc_lr = thumb_high_register(0x2, 15, 14);
   constexpr std::uint16_t thumb_bx_r4 = thumb_high_register(0x3, 0, 4);
+  constexpr std::uint16_t thumb_ldr_literal_r0_1 = thumb_ldr_literal(0, 1);
   constexpr std::uint16_t thumb_str_r1_r2_imm4_words =
       thumb_memory_immediate(false, false, 4, 2, 1);
   constexpr std::uint16_t thumb_ldr_r3_r2_imm4_words =
@@ -618,13 +712,19 @@ int main() {
   constexpr std::uint16_t thumb_ldrsh_r5_r2_r1 = thumb_memory_register(0x7, 1, 2, 5);
   constexpr std::uint16_t thumb_str_sp_r0_imm2_words = thumb_sp_relative(false, 0, 2);
   constexpr std::uint16_t thumb_ldr_sp_r6_imm2_words = thumb_sp_relative(true, 6, 2);
+  constexpr std::uint16_t thumb_stmia_r0_r2 = thumb_block_transfer(false, 0, 0x04);
+  constexpr std::uint16_t thumb_ldmia_r0_r2_r3 = thumb_block_transfer(true, 0, 0x0C);
   constexpr std::uint16_t thumb_push_r0_r1_lr = thumb_stack(false, true, 0x03);
   constexpr std::uint16_t thumb_pop_r2_r3_pc = thumb_stack(true, true, 0x0C);
   constexpr std::uint16_t thumb_empty_push = thumb_stack(false, false, 0x00);
+  constexpr std::uint16_t thumb_sub_sp_0x34 = thumb_sp_adjust(true, 0x0D);
+  constexpr std::uint16_t thumb_add_sp_0x14 = thumb_sp_adjust(false, 0x05);
+  constexpr std::uint16_t thumb_add_r3_sp_0xa8 = thumb_load_address(true, 3, 0x2A);
+  constexpr std::uint16_t thumb_add_r4_pc_0x10 = thumb_load_address(false, 4, 0x04);
   constexpr std::uint16_t thumb_swi_7 = thumb_swi(7);
-  constexpr std::uint16_t unsupported_thumb_condition = thumb_conditional_branch(2, 1);
+  constexpr std::uint16_t unsupported_thumb_condition = thumb_conditional_branch(14, 1);
   constexpr std::uint16_t unsupported_low_only_high_add = thumb_high_register(0x0, 0, 1);
-  constexpr std::uint16_t unsupported_thumb = 0x4800;
+  constexpr std::uint16_t unsupported_thumb = 0xB100;
   expect(Arm7tdmi::can_decode_thumb_immediate(thumb_mov_r0_0x80),
          "Thumb MOV immediate decodes");
   const auto decoded_thumb_mov = Arm7tdmi::decode_thumb_immediate(thumb_mov_r0_0x80);
@@ -640,14 +740,41 @@ int main() {
   expect(decoded_thumb_add.rs == 0, "Thumb ADD source decodes");
   expect(decoded_thumb_add.operand == 1, "Thumb ADD operand register decodes");
   expect(decoded_thumb_add.operand_is_register, "Thumb ADD register operand is marked");
+  expect(Arm7tdmi::can_decode_thumb_shift_immediate(thumb_lsl_r0_r0_5),
+         "Thumb LSL immediate decodes");
+  const auto decoded_thumb_lsl =
+      Arm7tdmi::decode_thumb_shift_immediate(thumb_lsl_r0_r0_5);
+  expect(decoded_thumb_lsl.type == ArmShiftType::lsl, "Thumb LSL type decodes");
+  expect(decoded_thumb_lsl.rd == 0, "Thumb LSL Rd decodes");
+  expect(decoded_thumb_lsl.rs == 0, "Thumb LSL Rs decodes");
+  expect(decoded_thumb_lsl.amount == 5, "Thumb LSL amount decodes");
+  expect(Arm7tdmi::can_decode_thumb_alu(thumb_bic_r1_r2), "Thumb BIC decodes");
+  const auto decoded_thumb_bic = Arm7tdmi::decode_thumb_alu(thumb_bic_r1_r2);
+  expect(decoded_thumb_bic.opcode == ThumbAluOpcode::bic, "Thumb BIC opcode decodes");
+  expect(decoded_thumb_bic.rd == 1, "Thumb BIC Rd decodes");
+  expect(decoded_thumb_bic.rs == 2, "Thumb BIC Rs decodes");
   expect(Arm7tdmi::can_decode_thumb_unconditional_branch(thumb_b_forward),
          "Thumb B decodes");
   expect(Arm7tdmi::decode_thumb_unconditional_branch(thumb_b_forward).offset == 4,
          "Thumb B offset decodes");
   expect(Arm7tdmi::can_decode_thumb_conditional_branch(thumb_bne_forward),
          "Thumb BNE decodes");
+  expect(Arm7tdmi::can_decode_thumb_conditional_branch(thumb_bcs_forward),
+         "Thumb BCS decodes");
   expect(Arm7tdmi::decode_thumb_conditional_branch(thumb_beq_backward).offset == -4,
          "Thumb conditional branch sign-extends offset");
+  expect(Arm7tdmi::can_decode_thumb_long_branch_link(thumb_bl_prefix_0),
+         "Thumb BL prefix decodes");
+  expect(!Arm7tdmi::decode_thumb_long_branch_link(thumb_bl_prefix_0).second_half,
+         "Thumb BL prefix marks first half");
+  expect(Arm7tdmi::decode_thumb_long_branch_link(thumb_bl_prefix_0).offset == 0,
+         "Thumb BL prefix offset decodes");
+  expect(Arm7tdmi::can_decode_thumb_long_branch_link(thumb_bl_suffix_0x2c),
+         "Thumb BL suffix decodes");
+  expect(Arm7tdmi::decode_thumb_long_branch_link(thumb_bl_suffix_0x2c).second_half,
+         "Thumb BL suffix marks second half");
+  expect(Arm7tdmi::decode_thumb_long_branch_link(thumb_bl_suffix_0x2c).offset == 0x58,
+         "Thumb BL suffix offset decodes");
   expect(Arm7tdmi::can_decode_thumb_high_register(thumb_mov_r8_r1),
          "Thumb high-register MOV decodes");
   const auto decoded_thumb_high_mov =
@@ -671,6 +798,18 @@ int main() {
   expect(decoded_thumb_str.rb == 2, "Thumb STR immediate decodes base register");
   expect(decoded_thumb_str.offset == 16, "Thumb STR immediate scales word offset");
   expect(!decoded_thumb_str.offset_is_register, "Thumb STR immediate marks immediate offset");
+  expect(Arm7tdmi::can_decode_thumb_memory_transfer(thumb_ldr_literal_r0_1),
+         "Thumb LDR literal decodes");
+  const auto decoded_thumb_ldr_literal =
+      Arm7tdmi::decode_thumb_memory_transfer(thumb_ldr_literal_r0_1);
+  expect(decoded_thumb_ldr_literal.load, "Thumb LDR literal decodes load");
+  expect(decoded_thumb_ldr_literal.kind == ThumbMemoryTransferKind::word,
+         "Thumb LDR literal decodes word kind");
+  expect(decoded_thumb_ldr_literal.rd == 0, "Thumb LDR literal decodes Rd");
+  expect(decoded_thumb_ldr_literal.rb == Arm7tdmi::kPc, "Thumb LDR literal uses PC base");
+  expect(decoded_thumb_ldr_literal.offset == 4, "Thumb LDR literal scales word offset");
+  expect(!decoded_thumb_ldr_literal.offset_is_register,
+         "Thumb LDR literal marks immediate offset");
   expect(Arm7tdmi::can_decode_thumb_memory_transfer(thumb_ldrsb_r4_r2_r1),
          "Thumb LDRSB register decodes");
   const auto decoded_thumb_ldrsb =
@@ -680,6 +819,13 @@ int main() {
          "Thumb LDRSB decodes signed-byte kind");
   expect(decoded_thumb_ldrsb.offset == 1, "Thumb LDRSB decodes offset register");
   expect(decoded_thumb_ldrsb.offset_is_register, "Thumb LDRSB marks register offset");
+  expect(Arm7tdmi::can_decode_thumb_block_transfer(thumb_stmia_r0_r2),
+         "Thumb STMIA decodes");
+  const auto decoded_thumb_stmia =
+      Arm7tdmi::decode_thumb_block_transfer(thumb_stmia_r0_r2);
+  expect(!decoded_thumb_stmia.load, "Thumb STMIA decodes store");
+  expect(decoded_thumb_stmia.rb == 0, "Thumb STMIA decodes base register");
+  expect(decoded_thumb_stmia.register_list == 0x04, "Thumb STMIA decodes register list");
   expect(Arm7tdmi::can_decode_thumb_stack_transfer(thumb_push_r0_r1_lr),
          "Thumb PUSH decodes");
   const auto decoded_thumb_push =
@@ -687,6 +833,20 @@ int main() {
   expect(!decoded_thumb_push.load, "Thumb PUSH decodes store");
   expect(decoded_thumb_push.extra_register, "Thumb PUSH decodes LR bit");
   expect(decoded_thumb_push.register_list == 0x03, "Thumb PUSH decodes low register list");
+  expect(Arm7tdmi::can_decode_thumb_stack_pointer_adjust(thumb_sub_sp_0x34),
+         "Thumb SUB SP immediate decodes");
+  const auto decoded_thumb_sub_sp =
+      Arm7tdmi::decode_thumb_stack_pointer_adjust(thumb_sub_sp_0x34);
+  expect(decoded_thumb_sub_sp.subtract, "Thumb SUB SP immediate decodes subtract bit");
+  expect(decoded_thumb_sub_sp.offset == 0x34, "Thumb SUB SP immediate decodes word offset");
+  expect(Arm7tdmi::can_decode_thumb_load_address(thumb_add_r3_sp_0xa8),
+         "Thumb ADD Rd, SP immediate decodes");
+  const auto decoded_thumb_add_sp_address =
+      Arm7tdmi::decode_thumb_load_address(thumb_add_r3_sp_0xa8);
+  expect(decoded_thumb_add_sp_address.base_is_sp, "Thumb load-address decodes SP base");
+  expect(decoded_thumb_add_sp_address.rd == 3, "Thumb load-address decodes Rd");
+  expect(decoded_thumb_add_sp_address.offset == 0xA8,
+         "Thumb load-address decodes scaled offset");
   expect(Arm7tdmi::can_decode_thumb_software_interrupt(thumb_swi_7),
          "Thumb SWI decodes");
 
@@ -713,6 +873,40 @@ int main() {
   expect(thumb_cpu.register_value(1) == 0xFFFFFFFF, "Thumb SUB immediate wraps");
   expect(thumb_cpu.negative(), "Thumb SUB updates N flag");
   expect(!thumb_cpu.carry(), "Thumb SUB clears carry for borrow");
+  thumb_cpu.set_register(0, 0x08000000);
+  expect(thumb_cpu.execute_thumb(thumb_lsl_r0_r0_5) == ExecuteStatus::executed,
+         "execute Thumb LSL immediate");
+  expect(thumb_cpu.register_value(0) == 0, "Thumb LSL immediate shifts result");
+  expect(thumb_cpu.zero(), "Thumb LSL immediate updates Z flag");
+  expect(thumb_cpu.carry(), "Thumb LSL immediate updates carry");
+  thumb_cpu.set_register(1, 0x3);
+  expect(thumb_cpu.execute_thumb(thumb_lsr_r2_r1_1) == ExecuteStatus::executed,
+         "execute Thumb LSR immediate");
+  expect(thumb_cpu.register_value(2) == 0x1, "Thumb LSR immediate shifts result");
+  expect(thumb_cpu.carry(), "Thumb LSR immediate captures shifted-out bit");
+  thumb_cpu.set_register(3, 0x80000000);
+  expect(thumb_cpu.execute_thumb(thumb_asr_r4_r3_0) == ExecuteStatus::executed,
+         "execute Thumb ASR immediate zero-as-32");
+  expect(thumb_cpu.register_value(4) == 0xFFFFFFFF,
+         "Thumb ASR immediate zero amount sign-fills");
+  expect(thumb_cpu.carry(), "Thumb ASR immediate zero amount carries sign bit");
+  thumb_cpu.set_register(1, 0xFFFF00FF);
+  thumb_cpu.set_register(2, 0x000000F0);
+  expect(thumb_cpu.execute_thumb(thumb_bic_r1_r2) == ExecuteStatus::executed,
+         "execute Thumb BIC");
+  expect(thumb_cpu.register_value(1) == 0xFFFF000F, "Thumb BIC clears selected bits");
+  expect(thumb_cpu.execute_thumb(thumb_tst_r1_r2) == ExecuteStatus::executed,
+         "execute Thumb TST");
+  expect(thumb_cpu.register_value(1) == 0xFFFF000F, "Thumb TST does not write Rd");
+  expect(thumb_cpu.zero(), "Thumb TST updates flags");
+  expect(thumb_cpu.execute_thumb(thumb_neg_r5_r2) == ExecuteStatus::executed,
+         "execute Thumb NEG");
+  expect(thumb_cpu.register_value(5) == 0xFFFFFF10, "Thumb NEG subtracts from zero");
+  thumb_cpu.set_register(1, 7);
+  thumb_cpu.set_register(2, 6);
+  expect(thumb_cpu.execute_thumb(thumb_mul_r1_r2) == ExecuteStatus::executed,
+         "execute Thumb MUL");
+  expect(thumb_cpu.register_value(1) == 42, "Thumb MUL writes Rd");
   thumb_cpu.set_register(0, 5);
   thumb_cpu.set_register(1, 6);
   expect(thumb_cpu.execute_thumb(thumb_add_r2_r0_r1) == ExecuteStatus::executed,
@@ -724,7 +918,7 @@ int main() {
   thumb_cpu.set_register(Arm7tdmi::kPc, 0x08000000);
   expect(thumb_cpu.execute_thumb(thumb_b_forward) == ExecuteStatus::executed,
          "execute Thumb B");
-  expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x08000004,
+  expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x08000008,
          "Thumb B applies signed halfword offset");
   thumb_cpu.set_register(0, 0);
   expect(thumb_cpu.execute_thumb(thumb_immediate(0x1, 0, 0)) == ExecuteStatus::executed,
@@ -732,10 +926,34 @@ int main() {
   thumb_cpu.set_register(Arm7tdmi::kPc, 0x08000010);
   expect(thumb_cpu.execute_thumb(thumb_beq_backward) == ExecuteStatus::executed,
          "execute taken Thumb BEQ");
-  expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x0800000C,
+  expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x08000010,
          "Thumb BEQ applies negative offset");
   expect(thumb_cpu.execute_thumb(thumb_bne_forward) == ExecuteStatus::skipped_condition,
          "non-taken Thumb BNE reports skipped condition");
+  thumb_cpu.set_register(0, 1);
+  expect(thumb_cpu.execute_thumb(thumb_immediate(0x1, 0, 0)) == ExecuteStatus::executed,
+         "prepare Thumb carry branch flags");
+  thumb_cpu.set_register(Arm7tdmi::kPc, 0x08000020);
+  expect(thumb_cpu.execute_thumb(thumb_bcs_forward) == ExecuteStatus::executed,
+         "execute taken Thumb BCS");
+  expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x08000028,
+         "Thumb BCS applies positive offset");
+  expect(thumb_cpu.execute_thumb(thumb_bmi_forward) == ExecuteStatus::skipped_condition,
+         "non-taken Thumb BMI reports skipped condition");
+  thumb_cpu.set_register(Arm7tdmi::kPc, 0x0800012C);
+  expect(thumb_cpu.execute_thumb(thumb_bl_prefix_0) == ExecuteStatus::executed,
+         "execute Thumb BL prefix");
+  expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x0800012C,
+         "Thumb BL prefix preserves PC for scheduler advance");
+  expect(thumb_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000130,
+         "Thumb BL prefix seeds LR from visible PC");
+  thumb_cpu.set_register(Arm7tdmi::kPc, 0x0800012E);
+  expect(thumb_cpu.execute_thumb(thumb_bl_suffix_0x2c) == ExecuteStatus::executed,
+         "execute Thumb BL suffix");
+  expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x08000188,
+         "Thumb BL suffix branches to LR plus offset");
+  expect(thumb_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000131,
+         "Thumb BL suffix writes Thumb return address");
   thumb_cpu.set_register(1, 0x12345678);
   expect(thumb_cpu.execute_thumb(thumb_mov_r8_r1) == ExecuteStatus::executed,
          "execute Thumb high-register MOV");
@@ -798,6 +1016,14 @@ int main() {
              ExecuteStatus::executed,
          "execute Thumb LDR immediate");
   expect(thumb_cpu.register_value(3) == 0xAABBCCDD, "Thumb LDR immediate loads word");
+  expect(thumb_memory.write32(0x02000008, 0xCAFEBABE),
+         "seed Thumb LDR literal pool word");
+  thumb_cpu.set_register(Arm7tdmi::kPc, 0x02000000);
+  expect(thumb_cpu.execute_thumb(thumb_ldr_literal_r0_1, thumb_memory) ==
+             ExecuteStatus::executed,
+         "execute Thumb LDR literal");
+  expect(thumb_cpu.register_value(0) == 0xCAFEBABE,
+         "Thumb LDR literal reads from aligned PC plus scaled offset");
   thumb_cpu.set_register(4, 0x123456EF);
   expect(thumb_cpu.execute_thumb(thumb_strb_r4_r2_imm1, thumb_memory) ==
              ExecuteStatus::executed,
@@ -812,10 +1038,17 @@ int main() {
              ExecuteStatus::executed,
          "execute Thumb STRH immediate");
   expect(thumb_memory.read16(0x02000004).value() == 0x9001, "Thumb STRH stores halfword");
+  thumb_cpu.set_register(1, 5);
+  thumb_cpu.set_register(6, 0xCAFE1122);
+  expect(thumb_cpu.execute_thumb(thumb_memory_register(0x1, 1, 2, 6), thumb_memory) ==
+             ExecuteStatus::executed,
+         "execute Thumb unaligned STRH register-offset");
+  expect(thumb_memory.read16(0x02000004).value() == 0x1122,
+         "Thumb unaligned STRH aligns destination down");
   expect(thumb_cpu.execute_thumb(thumb_ldrh_r7_r2_imm2_halfwords, thumb_memory) ==
              ExecuteStatus::executed,
          "execute Thumb LDRH immediate");
-  expect(thumb_cpu.register_value(7) == 0x9001, "Thumb LDRH zero-extends halfword");
+  expect(thumb_cpu.register_value(7) == 0x1122, "Thumb LDRH zero-extends halfword");
   thumb_cpu.set_register(0, 0x01020304);
   thumb_cpu.set_register(1, 0x20);
   expect(thumb_cpu.execute_thumb(thumb_str_r0_r2_r1, thumb_memory) ==
@@ -828,6 +1061,14 @@ int main() {
          "execute Thumb LDR register-offset");
   expect(thumb_cpu.register_value(3) == 0x01020304,
          "Thumb LDR register-offset loads word");
+  thumb_cpu.set_register(0, 0xA1B2C3D4);
+  thumb_cpu.set_register(1, 0x21);
+  expect(thumb_cpu.execute_thumb(thumb_str_r0_r2_r1, thumb_memory) ==
+             ExecuteStatus::executed,
+         "execute Thumb unaligned STR register-offset");
+  expect(thumb_memory.read32(0x02000020).value() == 0xA1B2C3D4,
+         "Thumb unaligned STR aligns destination down");
+  thumb_cpu.set_register(1, 0x20);
   expect(thumb_memory.write8(0x02000020, 0x80), "seed Thumb LDRSB byte");
   expect(thumb_cpu.execute_thumb(thumb_ldrsb_r4_r2_r1, thumb_memory) ==
              ExecuteStatus::executed,
@@ -852,6 +1093,21 @@ int main() {
          "execute Thumb SP-relative LDR");
   expect(thumb_cpu.register_value(6) == 0x11223344,
          "Thumb SP-relative LDR loads word");
+  thumb_cpu.set_register(0, 0x030000A0);
+  thumb_cpu.set_register(2, 0x55667788);
+  expect(thumb_cpu.execute_thumb(thumb_stmia_r0_r2, thumb_memory) == ExecuteStatus::executed,
+         "execute Thumb STMIA");
+  expect(thumb_memory.read32(0x030000A0).value() == 0x55667788,
+         "Thumb STMIA stores listed register");
+  expect(thumb_cpu.register_value(0) == 0x030000A4, "Thumb STMIA writes back base");
+  expect(thumb_memory.write32(0x030000A4, 0x01020304), "seed Thumb LDMIA first word");
+  expect(thumb_memory.write32(0x030000A8, 0x05060708), "seed Thumb LDMIA second word");
+  expect(thumb_cpu.execute_thumb(thumb_ldmia_r0_r2_r3, thumb_memory) ==
+             ExecuteStatus::executed,
+         "execute Thumb LDMIA");
+  expect(thumb_cpu.register_value(2) == 0x01020304, "Thumb LDMIA loads first register");
+  expect(thumb_cpu.register_value(3) == 0x05060708, "Thumb LDMIA loads second register");
+  expect(thumb_cpu.register_value(0) == 0x030000AC, "Thumb LDMIA writes back base");
   thumb_cpu.set_register(13, 0x03000100);
   thumb_cpu.set_register(0, 0xAAAA0000);
   thumb_cpu.set_register(1, 0xBBBB1111);
@@ -876,6 +1132,25 @@ int main() {
   expect(thumb_cpu.register_value(13) == 0x03000100, "Thumb POP increments SP");
   expect(thumb_cpu.execute_thumb(thumb_empty_push, thumb_memory) == ExecuteStatus::unsupported,
          "Thumb empty PUSH remains unsupported");
+  thumb_cpu.set_register(13, 0x03007EDC);
+  expect(thumb_cpu.execute_thumb(thumb_sub_sp_0x34) == ExecuteStatus::executed,
+         "execute Thumb SUB SP immediate");
+  expect(thumb_cpu.register_value(13) == 0x03007EA8,
+         "Thumb SUB SP immediate subtracts scaled offset");
+  expect(thumb_cpu.execute_thumb(thumb_add_sp_0x14) == ExecuteStatus::executed,
+         "execute Thumb ADD SP immediate");
+  expect(thumb_cpu.register_value(13) == 0x03007EBC,
+         "Thumb ADD SP immediate adds scaled offset");
+  thumb_cpu.set_register(13, 0x03007DF0);
+  expect(thumb_cpu.execute_thumb(thumb_add_r3_sp_0xa8) == ExecuteStatus::executed,
+         "execute Thumb ADD Rd, SP immediate");
+  expect(thumb_cpu.register_value(3) == 0x03007E98,
+         "Thumb ADD Rd, SP immediate writes computed address");
+  thumb_cpu.set_register(Arm7tdmi::kPc, 0x08000002);
+  expect(thumb_cpu.execute_thumb(thumb_add_r4_pc_0x10) == ExecuteStatus::executed,
+         "execute Thumb ADD Rd, PC immediate");
+  expect(thumb_cpu.register_value(4) == 0x08000014,
+         "Thumb ADD Rd, PC immediate uses aligned visible PC");
   thumb_cpu.reset();
   expect(thumb_cpu.set_cpsr(0x40000030), "prepare Thumb SWI from user state");
   thumb_cpu.set_register(Arm7tdmi::kPc, 0x08000400);
@@ -912,6 +1187,22 @@ int main() {
   expect(cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000024, "BL writes link register");
   expect(cpu.register_value(Arm7tdmi::kPc) == 0x08000018, "BL applies signed offset");
 
+  constexpr std::uint32_t bx_r3 = arm_bx(kCondAl, 3);
+  expect(Arm7tdmi::can_decode_branch_exchange(bx_r3), "BX decodes");
+  expect(Arm7tdmi::decode_branch_exchange(bx_r3).rm == 3, "BX source register decodes");
+  expect_cycles(Arm7tdmi::estimate_arm_cycles(bx_r3).value(), 2, 1, 0, false,
+                "BX cycle estimate matches pipeline refill shape");
+  cpu.set_register(3, 0x08000201);
+  expect(cpu.execute_arm(bx_r3) == ExecuteStatus::executed, "execute BX to Thumb");
+  expect(cpu.thumb_state(), "BX sets Thumb state from target bit");
+  expect(cpu.register_value(Arm7tdmi::kPc) == 0x08000200, "BX clears target state bit");
+
+  constexpr std::uint32_t bx_r4 = arm_bx(kCondAl, 4);
+  cpu.set_register(4, 0x08000300);
+  expect(cpu.execute_arm(bx_r4) == ExecuteStatus::executed, "execute BX to ARM");
+  expect(!cpu.thumb_state(), "BX clears Thumb state from aligned target");
+  expect(cpu.register_value(Arm7tdmi::kPc) == 0x08000300, "BX keeps aligned ARM target");
+
   constexpr std::uint32_t bne_skipped = kCondNe | kBranch | branch_offset(1);
   cpu.set_register(Arm7tdmi::kPc, 0x08000100);
   expect(cpu.execute_arm(bne_skipped) == ExecuteStatus::skipped_condition,
@@ -927,6 +1218,10 @@ int main() {
   expect(cpu.execute_arm(blt_forward) == ExecuteStatus::skipped_condition,
          "LT branch skips when N equals V");
   expect(cpu.register_value(Arm7tdmi::kPc) == 0x0800012C, "skipped LT preserves PC");
+  constexpr std::uint32_t bxlt_r4 = arm_bx(kCondLt, 4);
+  expect(cpu.execute_arm(bxlt_r4) == ExecuteStatus::skipped_condition,
+         "conditional BX skips when condition fails");
+  expect(cpu.register_value(Arm7tdmi::kPc) == 0x0800012C, "skipped BX preserves PC");
   expect(cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::supervisor)),
          "restore supervisor CPSR after condition tests");
   Arm7tdmi branch_step_cpu;
@@ -935,6 +1230,13 @@ int main() {
               "scheduler step charges branch");
   expect(branch_step_cpu.register_value(Arm7tdmi::kPc) == 0x08000010,
          "scheduler step executes branch");
+  Arm7tdmi bx_step_cpu;
+  bx_step_cpu.set_register(3, 0x08000401);
+  expect_step(bx_step_cpu.step_arm(bx_r3), ExecuteStatus::executed, 3, 3, false, false,
+              "scheduler step charges BX");
+  expect(bx_step_cpu.thumb_state(), "scheduler step executes BX state switch");
+  expect(bx_step_cpu.register_value(Arm7tdmi::kPc) == 0x08000400,
+         "scheduler step executes BX target");
   branch_step_cpu.set_register(2, 12);
   expect_step(branch_step_cpu.step_arm(cmp_r2_12), ExecuteStatus::executed, 1, 4, false, false,
               "scheduler step charges CMP");
@@ -986,10 +1288,11 @@ int main() {
   expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(mov_r1_7, 0x08000000, waitcnt).value(),
                  1, false, false,
                  "WAITCNT-aware MOV elapsed estimate does not apply memory timing");
-  expect(!Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x00000000,
-                                                waitcnt)
-              .has_value(),
-         "WAITCNT-aware LDR estimate still rejects BIOS data timing without BIOS backing");
+  expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x00000000,
+                                                       waitcnt)
+                     .value(),
+                 3, false, true,
+                 "WAITCNT-aware LDR estimate accepts HLE BIOS vector timing");
   Arm7tdmi scheduler_cpu;
   MemoryBus scheduler_memory;
   expect(scheduler_cpu.elapsed_cycles() == 0, "scheduler elapsed cycles start at zero");
@@ -1071,15 +1374,15 @@ int main() {
   expect(memory.read8(0x02000024).value() == 0xAB, "SWPB writes low source byte");
   MemoryBus swap_rom_memory;
   expect(swap_rom_memory.load_game_pak_rom(rom_with_word(0, 0xCAFEBABE)),
-         "prepare read-only ROM for rejected SWP");
+         "prepare read-only ROM for ignored-write SWP");
   cpu.set_register(6, 0x08000000);
   cpu.set_register(9, 0xDEADBEEF);
   cpu.set_register(10, 0x01010101);
-  expect(cpu.execute_arm(swp_r9_r10_base_r6, swap_rom_memory) == ExecuteStatus::unsupported,
-         "SWP to read-only ROM fails cleanly");
-  expect(cpu.register_value(9) == 0xDEADBEEF, "failed SWP preserves Rd");
+  expect(cpu.execute_arm(swp_r9_r10_base_r6, swap_rom_memory) == ExecuteStatus::executed,
+         "SWP to read-only ROM reads old value and ignores write");
+  expect(cpu.register_value(9) == 0xCAFEBABE, "ROM SWP loads old ROM value into Rd");
   expect(swap_rom_memory.read32(0x08000000).value() == 0xCAFEBABE,
-         "failed SWP preserves ROM bytes");
+         "ROM SWP ignored write preserves ROM bytes");
 
   expect(memory.write32(0x020000FC, 0x11223344), "prepare LDR down fixture");
   cpu.set_register(6, 0x02000100);
@@ -1179,6 +1482,20 @@ int main() {
          "STMDB stores second register sequentially");
   expect(cpu.register_value(8) == 0x02000138, "STMDB writeback subtracts block size");
 
+  constexpr std::uint32_t stmdb_sp_writeback_sp_lr =
+      kCondAl | kBlockDataTransfer | kPreIndexed | kWriteBack | rn(13) |
+      reg_list((1U << 13U) | (1U << 14U));
+  cpu.set_register(13, 0x02000160);
+  cpu.set_register(14, 0x08001234);
+  expect(cpu.execute_arm(stmdb_sp_writeback_sp_lr, memory) == ExecuteStatus::executed,
+         "execute STMDB writeback with base in store list");
+  expect(memory.read32(0x02000158).value_or(0) == 0x02000160,
+         "STMDB stores original SP when base is in store list");
+  expect(memory.read32(0x0200015C).value_or(0) == 0x08001234,
+         "STMDB stores LR after original SP");
+  expect(cpu.register_value(13) == 0x02000158,
+         "STMDB writeback with base in store list updates SP after stores");
+
   constexpr std::uint32_t ldmne_skipped =
       kCondNe | kBlockDataTransfer | kUp | kLoad | rn(7) | reg_list(1U << 9U);
   cpu.set_register(9, 0xFEEDFACE);
@@ -1222,7 +1539,14 @@ int main() {
          "execute STR register-offset");
   expect(memory.read32(0x0200002C).value_or(0) == 0x55667788,
          "STR register-offset writes memory");
+  cpu.set_register(1, 0x11223344);
+  cpu.set_register(2, 13);
+  expect(cpu.execute_arm(str_r1_base_plus_r2, memory) == ExecuteStatus::executed,
+         "execute unaligned STR register-offset");
+  expect(memory.read32(0x0200002C).value_or(0) == 0x11223344,
+         "unaligned STR register-offset aligns destination down");
 
+  cpu.set_register(2, 12);
   expect(memory.write32(0x02000014, 0xCAFEBABE), "prepare LDR register-offset fixture");
   expect(cpu.execute_arm(ldr_r14_base_minus_r2, memory) == ExecuteStatus::executed,
          "execute LDR register-offset down");
@@ -1243,6 +1567,50 @@ int main() {
   expect(cpu.execute_arm(ldrb_r12_base_plus_r3_lsl_1, memory) == ExecuteStatus::executed,
          "execute LDRB shifted register-offset");
   expect(cpu.register_value(12) == 0xDD, "LDRB shifted register-offset zero-extends byte");
+  constexpr std::uint32_t ldrb_r3_bios =
+      kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | kByteTransfer | kLoad |
+      rn(0) | rd(3);
+  cpu.set_register(0, 0);
+  expect(cpu.execute_arm(ldrb_r3_bios, memory) == ExecuteStatus::executed,
+         "execute LDRB from HLE BIOS vector");
+  expect(cpu.register_value(3) == 0x04, "LDRB from HLE BIOS vector reads byte zero");
+
+  MemoryBus open_bus_memory;
+  expect(open_bus_memory.load_game_pak_rom(rom_with_word(8, 0xE3A02001)),
+         "open-bus test ROM with pipeline word loads");
+  Arm7tdmi open_bus_cpu;
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  open_bus_cpu.set_register(0, 0x00010000);
+  expect(open_bus_cpu.execute_arm(ldrb_r3_bios, open_bus_memory) == ExecuteStatus::executed,
+         "protected BIOS LDRB uses pipeline open bus");
+  expect(open_bus_cpu.register_value(3) == 0x01,
+         "protected BIOS LDRB reads low byte from PC+8 instruction");
+
+  expect(open_bus_memory.load_game_pak_rom(rom_with_word(8, 0xE3A02004)),
+         "open-bus test ROM with halfword pipeline word loads");
+  constexpr std::uint32_t ldrh_r10_protected_bios_odd =
+      kCondAl | kHalfwordDataTransferImmediate | kPreIndexed | kUp | kLoad | rn(0) |
+      rd(10) | halfword_offset(1);
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  open_bus_cpu.set_register(0, 0x00010000);
+  expect(open_bus_cpu.execute_arm(ldrh_r10_protected_bios_odd, open_bus_memory) ==
+             ExecuteStatus::executed,
+         "protected BIOS odd LDRH uses pipeline open bus");
+  expect(open_bus_cpu.register_value(10) == 0x04000020,
+         "protected BIOS odd LDRH rotates PC+8 halfword");
+
+  expect(open_bus_memory.load_game_pak_rom(rom_with_word(8, 0xE3A02008)),
+         "open-bus test ROM with word pipeline word loads");
+  constexpr std::uint32_t ldr_r4_protected_bios_unaligned =
+      kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | kLoad | rn(0) |
+      rd(4) | offset12(1);
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  open_bus_cpu.set_register(0, 0x00010000);
+  expect(open_bus_cpu.execute_arm(ldr_r4_protected_bios_unaligned, open_bus_memory) ==
+             ExecuteStatus::executed,
+         "protected BIOS unaligned LDR uses pipeline open bus");
+  expect(open_bus_cpu.register_value(4) == 0x08E3A020,
+         "protected BIOS unaligned LDR rotates PC+8 word");
 
   constexpr std::uint32_t str_r1_base_plus_r2_rrx =
       kCondAl | kSingleDataTransferRegister | kPreIndexed | kUp | rn(6) | rd(1) |
@@ -1300,12 +1668,21 @@ int main() {
   expect(cpu.execute_arm(ldrh_r10_base_plus_6, memory) == ExecuteStatus::executed,
          "execute LDRH immediate");
   expect(cpu.register_value(10) == 0xCCDD, "LDRH zero-extends halfword");
+  constexpr std::uint32_t ldrh_r10_base_plus_7 = kCondAl | kHalfwordDataTransferImmediate |
+                                                 kPreIndexed | kUp | kLoad | rn(6) | rd(10) |
+                                                 halfword_offset(7);
+  expect(cpu.execute_arm(ldrh_r10_base_plus_7, memory) == ExecuteStatus::executed,
+         "execute unaligned LDRH immediate");
+  expect(cpu.register_value(10) == 0xDD0000CC,
+         "unaligned LDRH rotates aligned halfword right by 8");
 
   constexpr std::uint32_t strh_unaligned =
       kCondAl | kHalfwordDataTransferImmediate | kPreIndexed | kUp | rn(6) | rd(1) |
       halfword_offset(7);
-  expect(cpu.execute_arm(strh_unaligned, memory) == ExecuteStatus::unsupported,
-         "unaligned STRH remains unsupported");
+  expect(cpu.execute_arm(strh_unaligned, memory) == ExecuteStatus::executed,
+         "execute unaligned STRH immediate");
+  expect(memory.read16(0x02000006).value_or(0) == 0xCCDD,
+         "unaligned STRH aligns destination down");
 
   expect(memory.write8(0x02000008, 0x80), "prepare LDRSB fixture");
   constexpr std::uint32_t ldrsb_r11_base_plus_8 =
@@ -1340,8 +1717,10 @@ int main() {
   constexpr std::uint32_t ldrsh_unaligned =
       kCondAl | kSignedHalfwordDataTransferImmediate | kPreIndexed | kUp | kLoad | rn(6) |
       rd(13) | halfword_offset(11);
-  expect(cpu.execute_arm(ldrsh_unaligned, memory) == ExecuteStatus::unsupported,
-         "unaligned LDRSH remains unsupported");
+  expect(cpu.execute_arm(ldrsh_unaligned, memory) == ExecuteStatus::executed,
+         "execute unaligned LDRSH immediate");
+  expect(cpu.register_value(13) == 0xFFFFFF80,
+         "unaligned LDRSH sign-extends addressed byte");
 
   constexpr std::uint32_t strh_r1_pre_writeback =
       kCondAl | kHalfwordDataTransferImmediate | kPreIndexed | kUp | kWriteBack | rn(6) |
@@ -1704,6 +2083,19 @@ int main() {
   expect(cpu.execute_arm(umull_r2_r3_r4_r5) == ExecuteStatus::executed, "execute UMULL");
   expect(cpu.register_value(2) == 0xFFFFFFFE, "UMULL writes low word");
   expect(cpu.register_value(3) == 0x00000001, "UMULL writes high word");
+  constexpr std::uint32_t umulls_r2_r3_r4_r5 = umull_r2_r3_r4_r5 | kSetFlags;
+  cpu.set_register(4, 0xFFFFFFFF);
+  cpu.set_register(5, 0xFFFFFFFF);
+  expect(cpu.set_cpsr(0x00000013), "clear flags before UMULLS carry-one case");
+  expect(cpu.execute_arm(umulls_r2_r3_r4_r5) == ExecuteStatus::executed,
+         "execute UMULLS carry-one case");
+  expect(cpu.carry(), "UMULLS sets ARM7TDMI multiply carry quirk");
+  cpu.set_register(4, 0x80000000);
+  cpu.set_register(5, 0xFFFFFFFF);
+  expect(cpu.set_cpsr(0x20000013), "seed carry before UMULLS carry-zero case");
+  expect(cpu.execute_arm(umulls_r2_r3_r4_r5) == ExecuteStatus::executed,
+         "execute UMULLS carry-zero case");
+  expect(!cpu.carry(), "UMULLS overwrites carry with ARM7TDMI multiply carry quirk");
 
   constexpr std::uint32_t umlal_r2_r3_r4_r5 = kCondAl | kMultiplyLongAccumulate |
                                               multiply_long_rd_hi(3) |
@@ -1730,6 +2122,20 @@ int main() {
   expect(cpu.execute_arm(smull_r6_r7_r8_r9) == ExecuteStatus::executed, "execute SMULL");
   expect(cpu.register_value(6) == 0xFFFFFFFE, "SMULL writes signed low word");
   expect(cpu.register_value(7) == 0xFFFFFFFF, "SMULL sign-extends high word");
+  constexpr std::uint32_t smulls_r6_r7_r8_r9 = smull_r6_r7_r8_r9 | kSetFlags;
+  cpu.set_register(8, 0);
+  cpu.set_register(9, 0x80000000);
+  expect(cpu.set_cpsr(0x00000013), "clear flags before SMULLS carry-one case");
+  expect(cpu.execute_arm(smulls_r6_r7_r8_r9) == ExecuteStatus::executed,
+         "execute SMULLS carry-one case");
+  expect(cpu.zero(), "SMULLS updates Z for zero 64-bit result");
+  expect(cpu.carry(), "SMULLS sets ARM7TDMI multiply carry quirk");
+  cpu.set_register(8, 0xFFFFFFFF);
+  cpu.set_register(9, 0x80000000);
+  expect(cpu.set_cpsr(0x20000013), "seed carry before SMULLS carry-zero case");
+  expect(cpu.execute_arm(smulls_r6_r7_r8_r9) == ExecuteStatus::executed,
+         "execute SMULLS carry-zero case");
+  expect(!cpu.carry(), "SMULLS overwrites carry with ARM7TDMI multiply carry quirk");
 
   constexpr std::uint32_t smlals_r6_r7_r8_r9 = kCondAl | kSignedMultiplyLongAccumulate |
                                                kSetFlags | multiply_long_rd_hi(7) |

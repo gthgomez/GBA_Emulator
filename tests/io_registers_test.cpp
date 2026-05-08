@@ -66,9 +66,17 @@ int main() {
   PpuTiming ppu;
   Apu apu;
   WaitStateControl waitcnt;
-  IoRegisters io(interrupts, timers, dma, ppu, apu, waitcnt);
+  gba::core::Keypad keypad;
+  IoRegisters io(interrupts, timers, dma, ppu, apu, waitcnt, keypad);
 
-  expect(!io.read16(0x04000000).has_value(), "unmodeled IO register read is rejected");
+  expect(!io.read16(0x04000300).has_value(), "unmodeled IO register read is rejected");
+  expect_read16(io, IoRegisters::kDispcnt, 0x0000, "DISPCNT defaults to zero");
+  expect(io.write16(IoRegisters::kDispcnt, 0x0141), "DISPCNT write routes to LCD state");
+  expect_read16(io, IoRegisters::kDispcnt, 0x0141, "DISPCNT readback routes");
+  expect(io.write16(IoRegisters::kBg1Cnt, 0x0004), "BG1CNT write routes to LCD state");
+  expect_read16(io, IoRegisters::kBg1Cnt, 0x0004, "BG1CNT readback routes");
+  expect(io.write32(IoRegisters::kBg0Cnt, 0x00040003), "BG0/BG1CNT word write routes");
+  expect_read32(io, IoRegisters::kBg0Cnt, 0x00040003, "BG0/BG1CNT read32 routes");
   expect(!io.write16(IoRegisters::kVcount, 12), "VCOUNT write is rejected as read-only");
   expect(!io.write32(IoRegisters::kDispstat + 2U, 0x12345678),
          "unaligned word IO write is rejected");
@@ -76,10 +84,10 @@ int main() {
          "word IO write with read-only high half is rejected");
   expect_read16(io, IoRegisters::kDispstat, 0x0004,
                 "rejected word IO write does not partially mutate DISPSTAT");
-  expect(!io.write32(IoRegisters::kWaitcnt, 0x12344317),
-         "WAITCNT word write with unmodeled high half is rejected");
-  expect_read16(io, IoRegisters::kWaitcnt, 0x0000,
-                "rejected WAITCNT word write does not partially mutate WAITCNT");
+  expect(io.write32(IoRegisters::kWaitcnt, 0x12344317),
+         "WAITCNT word write routes low halfword and ignores high halfword");
+  expect_read16(io, IoRegisters::kWaitcnt, 0x4317,
+                "WAITCNT word write updates low halfword");
 
   expect(io.write16(IoRegisters::kDispstat, 0x2F38), "DISPSTAT write routes to PPU");
   expect_read16(io, IoRegisters::kDispstat, 0x2F38,
@@ -89,6 +97,9 @@ int main() {
   expect(io.write16(IoRegisters::kIe, irq_bit(InterruptSource::timer0)),
          "IE write routes to interrupt controller");
   expect(io.write16(IoRegisters::kIme, 1), "IME write routes to interrupt controller");
+  expect(io.write32(IoRegisters::kIme, 0), "IME word write routes low halfword");
+  expect_read16(io, IoRegisters::kIme, 0, "IME word write updates low halfword");
+  expect(io.write16(IoRegisters::kIme, 1), "IME restores after word-write check");
   interrupts.request(InterruptSource::timer0);
   expect_read16(io, IoRegisters::kIe, irq_bit(InterruptSource::timer0), "IE read routes");
   expect_read16(io, IoRegisters::kIf, irq_bit(InterruptSource::timer0), "IF read routes");
@@ -139,6 +150,17 @@ int main() {
 
   expect(io.write16(IoRegisters::kSoundcntX, 0x0080), "SOUNDCNT_X write enables APU");
   expect(apu.master_enabled(), "APU master enable routed");
+  expect_read16(io, IoRegisters::kKeyinput, 0x03FF, "KEYINPUT starts all released");
+  keypad.press(gba::core::KeypadButton::a);
+  keypad.press(gba::core::KeypadButton::start);
+  expect_read16(io, IoRegisters::kKeyinput, 0x03F6, "KEYINPUT active-low buttons route");
+  expect(!io.write16(IoRegisters::kKeyinput, 0), "KEYINPUT is read-only");
+  expect(io.write16(IoRegisters::kKeycnt, 0xC009), "KEYCNT write routes");
+  expect_read16(io, IoRegisters::kKeycnt, 0xC009, "KEYCNT readback routes");
+  expect(interrupts.requested(InterruptSource::keypad),
+         "KEYCNT AND condition requests keypad IRQ when selected keys are pressed");
+  expect(io.write16(IoRegisters::kRcnt, 0x8000), "RCNT write routes to serial IO state");
+  expect_read16(io, IoRegisters::kRcnt, 0x8000, "RCNT readback routes");
   expect(io.write16(IoRegisters::kSoundcntH, 0x0300), "SOUNDCNT_H write routes");
   expect_read16(io, IoRegisters::kSoundcntH, 0x0300, "SOUNDCNT_H read routes");
   expect(io.write16(IoRegisters::kSoundbias, 0x02FF), "SOUNDBIAS write routes");

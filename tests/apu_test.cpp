@@ -187,6 +187,39 @@ int main() {
   expect(audio.available_audio_samples() == Apu::kAudioBufferCapacity,
          "audio buffer stays fixed capacity under sustained generation");
 
+  Apu psg;
+  psg.write_soundcnt_x(0x0080);
+  psg.configure_square_channel(0, 2, 8, 4);
+  psg.configure_square_channel(1, 1, 4, 8);
+  expect(psg.psg_channel_enabled(0), "square channel 1 enables");
+  expect(psg.psg_channel_enabled(1), "square channel 2 enables");
+  const std::uint64_t psg_start_hash = psg.state_hash();
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> square_tick =
+      psg.tick(Apu::kCpuCyclesPerAudioSample * 4U);
+  expect(psg.available_audio_samples() == 4, "square PSG generates audio samples");
+  expect(psg.state_hash() != psg_start_hash, "square PSG advances deterministic state");
+  const std::optional<gba::core::ApuMixedSample> square_sample = psg.pop_audio_sample();
+  expect(square_sample.has_value(), "square PSG exposes mixed sample");
+  expect(square_sample->left != 0 || square_sample->right != 0,
+         "square PSG contributes nonzero mixer output");
+
+  psg.write_wave_ram(0, 0x0123);
+  psg.write_wave_ram(1, 0x4567);
+  psg.configure_wave_channel(1, 8);
+  expect(psg.psg_channel_enabled(2), "wave channel enables");
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> wave_tick =
+      psg.tick(Apu::kCpuCyclesPerAudioSample * 2U);
+  expect(psg.available_audio_samples() >= 2, "wave PSG generates buffered samples");
+
+  psg.configure_noise_channel(6, 2, true);
+  expect(psg.psg_channel_enabled(3), "noise channel enables");
+  const std::uint64_t noise_start_hash = psg.state_hash();
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> noise_tick =
+      psg.tick(Apu::kCpuCyclesPerAudioSample * 6U);
+  expect(psg.state_hash() != noise_start_hash, "noise LFSR advances deterministic state");
+  psg.disable_psg_channel(3);
+  expect(!psg.psg_channel_enabled(3), "noise channel disables explicitly");
+
   apu.write_soundcnt_x(0);
   expect(!apu.master_enabled(), "clearing SOUNDCNT_X bit 7 disables master sound");
   expect(apu.soundcnt_l() == 0, "master disable clears SOUNDCNT_L");
