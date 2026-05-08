@@ -108,7 +108,8 @@ std::uint64_t benchmark_io_register_mix() {
   gba::core::PpuTiming ppu;
   gba::core::Apu apu;
   gba::core::WaitStateControl waitcnt;
-  gba::core::IoRegisters io(interrupts, timers, dma, ppu, apu, waitcnt);
+  gba::core::Keypad keypad;
+  gba::core::IoRegisters io(interrupts, timers, dma, ppu, apu, waitcnt, keypad);
   std::uint64_t checksum = 0;
 
   require(io.write16(gba::core::IoRegisters::kSoundcntX, 0x0080),
@@ -221,9 +222,10 @@ std::uint64_t benchmark_dma_immediate_copy() {
 }
 
 void seed_ppu_fetch_memory(gba::core::MemoryBus& memory) {
-  for (std::uint32_t byte = 0; byte < 32; ++byte) {
-    require(memory.write8(0x06000000U + byte, 0x11), "seed BG tile failed");
-    require(memory.write8(0x06010000U + byte, 0x22), "seed OBJ tile failed");
+  for (std::uint32_t halfword = 0; halfword < 16; ++halfword) {
+    const std::uint32_t offset = halfword * 2U;
+    require(memory.write16(0x06000000U + offset, 0x1111), "seed BG tile failed");
+    require(memory.write16(0x06010000U + offset, 0x2222), "seed OBJ tile failed");
   }
   for (std::uint32_t entry = 0; entry < 32 * 32; ++entry) {
     require(memory.write16(0x06004000U + entry * 2U, 0), "seed BG map failed");

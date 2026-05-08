@@ -13,7 +13,12 @@
     "Thresholds are calibrated but intentionally tolerant to catch material slowdowns while allowing workstation noise.",
     "Phase 54 updates core_session_state_hash checksum because CPU banked registers and scheduler HALT state are now part of modeled deterministic state.",
     "Phase 57 updates core_session_state_hash checksum because scheduler prefetch-buffer state is now part of modeled deterministic state.",
-    "Phase 59 updates core_session_state_hash checksum because Flash command protocol state is now part of modeled deterministic state."
+    "Phase 59 updates core_session_state_hash checksum because Flash command protocol state is now part of modeled deterministic state.",
+    "Phase 63 updates core_session_state_hash checksum because deterministic PSG channel state is now part of modeled APU/core-session state.",
+    "Phase 64 updates core_session_state_hash checksum because keypad state is now part of modeled core-session state.",
+    "Phase 65 updates core_session_state_hash checksum because LCD control and serial/debug IO state are now part of modeled core-session state.",
+    "Phase 66 updates core_session_state_hash checksum because BIOS HLE mode, IRQ HLE trampoline state, and debug aperture output are now part of modeled core-session state.",
+    "Phase 67 updates core_session_state_hash checksum after BIOS HLE scheduler integration and DMA latch correctness work settled the deterministic modeled-state checksum."
   ],
   "rows": [
     {
@@ -103,7 +108,7 @@
     {
       "benchmark": "core_session_state_hash",
       "expected_operations": 10000,
-      "expected_checksum": "58128",
+      "expected_checksum": "7568",
       "baseline_ns_per_operation": 451015.20,
       "max_ns_per_operation": 950000.0
     }

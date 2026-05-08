@@ -10,11 +10,13 @@ g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror `
   -I (Join-Path $repoRoot "include") `
   (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
   (Join-Path $repoRoot "src\core\apu.cpp") `
+  (Join-Path $repoRoot "src\core\bios.cpp") `
   (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
   (Join-Path $repoRoot "src\core\core_session.cpp") `
   (Join-Path $repoRoot "src\core\dma_controller.cpp") `
   (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
   (Join-Path $repoRoot "src\core\io_registers.cpp") `
+  (Join-Path $repoRoot "src\core\keypad.cpp") `
   (Join-Path $repoRoot "src\core\memory_bus.cpp") `
   (Join-Path $repoRoot "src\core\ppu_background.cpp") `
   (Join-Path $repoRoot "src\core\ppu_sprites.cpp") `
