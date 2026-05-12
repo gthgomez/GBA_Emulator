@@ -1,6 +1,6 @@
 # mGBA Suite Finish Roadmap
 
-Status: active test-and-implementation roadmap
+Status: measurement roadmap implemented; accuracy frontiers continue in Roadmap 2
 Date: 2026-05-08
 
 This roadmap turns the current mGBA-suite frontier into ordered engineering work. The
@@ -18,6 +18,24 @@ Current baseline:
   while repeatedly passing through the HLE BIOS IRQ path.
 - Current proof point: BIOS IRQ fetch at `0x00000018` is no longer a hard failure;
   mGBA debug output and SRAM text are captured into the result file.
+
+Current Roadmap 1 implementation status:
+
+- Individual suite automation is available with `tools/run-mgba-suite.ps1 -Suite <name>`.
+- `-Suite all` now iterates every known suite in source-menu order and writes aggregate
+  JSON/Markdown artifacts with a compatibility hash.
+- `tools/run-credibility-matrix.ps1` records suite rows, failure categories, artifacts,
+  and optional performance-gate status.
+- `tools/run-mgba-suite.ps1` now applies suite-specific default step budgets when
+  `-MaxSteps` is omitted, so long-running suites such as `timers`, `timing`, `dma`, and
+  `video` are less likely to produce false red max-step frontiers.
+- Suite JSON now names the active source test for timing/timers/timer-IRQ/BIOS
+  math/DMA frontiers when the suite stops before `END:`.
+- `tools/mgba-suite-green-baseline.json` records the currently verified green targets.
+- `tools/run-credibility-matrix.ps1 -FailOnRegression` fails only when one of those
+  verified-green targets regresses, while known-red targets remain visible.
+- `-UpdateDocs` appends generated individual or all-suite summaries to
+  `docs/mgba-suite-test-results.md`.
 
 ## Finish Criteria
 
@@ -176,6 +194,18 @@ Done when:
 - Timer, timer IRQ, DMA, and timing suites produce pass/total summaries.
 - Any non-passing timing cases are categorized as known cycle-fidelity gaps.
 
+Latest phase status:
+
+- `timer-irq` is green: `90/90` in
+  `build/test-results/mgba-suite-20260509-173711.json`.
+- `timers` is green at `936/936` in
+  `build/test-results/mgba-suite-20260511-231709.json`, with no unsupported
+  instructions or fetch failures.
+- `timing` is still red at `594/2020` in
+  `build/test-results/mgba-suite-20260509-174534.json`. The first failure is
+  `nop ARM/ROM P..`, and JSON grouping now separates ROM prefetch, ROM data access,
+  ROM nonsequential, multiply, BIOS HLE, DMA, internal-memory, and other timing gaps.
+
 ## Milestone 7: IO, SIO, And Video Suite Support
 
 Expected suite pressure:
@@ -230,8 +260,26 @@ Done when:
   `tools/check-core-performance-regression.ps1`, `tools/check-release-readiness.ps1`,
   and the mGBA suite runner all have documented expected outcomes.
 
+Implemented commands:
+
+```powershell
+.\tools\run-mgba-suite.ps1 -Suite all -MaxSteps 20000000 -TraceSteps 0
+.\tools\run-mgba-suite.ps1 -Suite all -MaxSteps 20000000 -TraceSteps 0 -UpdateDocs
+.\tools\run-credibility-matrix.ps1 -FailOnRegression
+```
+
+Expected outcome:
+
+- `run-mgba-suite.ps1 -Suite all` may report `RED` overall while hardware suites are
+  still under implementation, but it must produce an aggregate JSON artifact, Markdown
+  artifact, per-suite rows, and a compatibility hash.
+- `run-credibility-matrix.ps1 -FailOnRegression` should pass when currently verified
+  green suites remain green, even if known-red suites are included in the matrix.
+- `run-credibility-matrix.ps1 -FailOnRed` remains the stricter gate for an explicitly
+  requested all-green target list.
+
 ## Recommended Immediate Work
 
-Milestone 1 is implemented enough to clear the BIOS IRQ fetch frontier. Continue
-Milestone 3: calibrate keypad automation, or add an equivalent deterministic runner
-hook, so the default `Memory tests` suite starts and produces suite-level output.
+Roadmap 1 is now a measurement system rather than the main blocker. Continue Roadmap 2
+from the first known red subsystem group: timing. Keep Roadmap 1 commands as the
+regression harness while hardware behavior is fixed.

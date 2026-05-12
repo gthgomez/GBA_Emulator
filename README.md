@@ -272,6 +272,19 @@ For the currently green public-suite frontier plus the synthetic performance gat
 .\tools\run-credibility-matrix.ps1 -Suites memory,bios-math,dma -PerformanceRuns 3 -FailOnRed
 ```
 
+For the Roadmap 1 all-suite measurement artifact:
+
+```powershell
+.\tools\run-mgba-suite.ps1 -Suite all -MaxSteps 20000000 -TraceSteps 0
+```
+
+For the Roadmap 1 regression-only gate, which fails only if a previously verified
+green public-suite target regresses:
+
+```powershell
+.\tools\run-credibility-matrix.ps1 -FailOnRegression
+```
+
 ## Performance Notes
 
 The first performance target is correctness-shaped: implement instruction families in the

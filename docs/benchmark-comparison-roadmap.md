@@ -51,6 +51,8 @@ Latest verified green targets:
 - mGBA `shifter`: `140/140`
 - mGBA `carry`: `93/93`
 - mGBA `multiply-long`: `72/72`
+- mGBA `timer-irq`: `90/90`
+- mGBA `timers`: `936/936`
 - Synthetic core performance report: PASS, including deterministic checksums
 
 Latest matrix artifacts:
@@ -58,28 +60,30 @@ Latest matrix artifacts:
 - Green frontier:
   `build/test-results/credibility-matrix-20260508-152541.json`
 - Next-target frontier:
-  `build/test-results/mgba-suite-20260508-151941.json`
+  `build/test-results/mgba-suite-20260509-174534.json` (`timing`),
+  `build/test-results/mgba-suite-20260511-231709.json` (`timers`),
+  `build/test-results/mgba-suite-20260509-173711.json` (`timer-irq`)
 
 Latest next-target status:
 
-- `timing`: red, reaches real timing failures after the WAITCNT word-write hard stop was
-  cleared; first failure is `Calibration ARM/ROM ...`.
-- `timers`: red, now reaches timer test 22 before the default cap after HLE IRQ dispatch
-  was changed to execute the real IWRAM IRQ handler path. The automatic IRQ path now
-  models a short recognition latency and treats HLE `IntrWait`-observed IRQs as
-  latency-ready, which fixes the first `0b, 0x0001` one-IRQ cases. Remaining failures
-  are timer cycle/read alignment issues and multi-IRQ stop timing.
-- `timer-irq`: red, improved from `0/90` to `4/90`; `FFFE` with 0-3 nops now passes.
-  Remaining failures show two distinct gaps: timer reads are still sampled at coarse
-  instruction boundaries, and the HLE IRQ path undercounts the BIOS/libgba prologue
-  before the user handler stops the timer.
+- `timing`: red, reaches real timing failures with no unsupported instructions or fetch
+  failures. Latest verified result is `594/2020`; the first failure is
+  `nop ARM/ROM P..`. Grouped failures now split into ROM prefetch, ROM data access,
+  ROM nonsequential, multiply, BIOS HLE, DMA, internal-memory, and other timing buckets.
+- `timers`: green at `936/936` with zero unsupported instructions and zero fetch
+  failures in `build/test-results/mgba-suite-20260511-231709.json`.
+- `timer-irq`: green at `90/90` with zero unsupported instructions and zero fetch
+  failures in `build/test-results/mgba-suite-20260509-173711.json` after
+  scheduler-side timer IO store phasing, newly enabled timer tick deferral, HLE IRQ
+  dispatch timing, and HLE IRQ-return pending-line handling were aligned.
 
 Current credibility statement:
 
-Memory, DMA, BIOS math, and the contained ARM shifter/carry/multiply-long suites are
-strong. Whole-emulator accuracy is not yet proven against the top open-source engines
-because timing/IRQ, broader load-store/LDM/STM behavior, PPU, APU, save/cart edge cases,
-and ROM-workload comparisons still need green evidence.
+Memory, DMA, BIOS math, timer IRQ, timers, and the contained ARM
+shifter/carry/multiply-long suites are strong. Whole-emulator accuracy is not yet
+proven against the top open-source engines because timing, broader load-store/LDM/STM
+behavior, PPU, APU, save/cart edge cases, and ROM-workload comparisons still need green
+evidence.
 
 ## Phase 1: Credibility Matrix Runner
 
@@ -246,10 +250,19 @@ Recommended local gates:
 .\tools\run-core-tests.ps1
 .\tools\run-credibility-matrix.ps1 -Suites memory,bios-math,dma -PerformanceRuns 3 -FailOnRed
 .\tools\run-credibility-matrix.ps1 -Suites timing,timers,timer-irq,shifter,carry,multiply-long -SkipPerformance
+.\tools\run-credibility-matrix.ps1 -FailOnRegression
+.\tools\run-mgba-suite.ps1 -Suite all -MaxSteps 20000000 -TraceSteps 0
 ```
 
 Note: the matrix default step cap is `20,000,000` so slower deterministic menu input
 does not create false red results for large suites such as DMA.
+
+Regression baseline:
+
+- `tools/mgba-suite-green-baseline.json` lists the suite targets that are currently
+  expected to remain green.
+- `-FailOnRegression` fails only when a baseline target is missing or no longer green.
+- `-FailOnRed` remains available for intentionally strict all-green target lists.
 
 ## How We Get It All Green
 
