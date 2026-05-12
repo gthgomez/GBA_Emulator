@@ -83,7 +83,7 @@ int main() {
   expect(dma0_result.channels_executed == 1, "DMA0 immediate run executes one channel");
   expect(dma0_result.units_transferred == 3, "DMA0 immediate run copies three halfwords");
   expect(!dma0_result.unsupported_request, "DMA0 immediate run is supported");
-  expect(dma0_result.bus_cycles == 3, "DMA0 halfword transfer reports bus occupancy");
+  expect(dma0_result.bus_cycles == 14, "DMA0 halfword transfer reports bus occupancy");
   expect_read16(memory, 0x03000000, 0x1111, "DMA0 copied halfword 0");
   expect_read16(memory, 0x03000002, 0x2222, "DMA0 copied halfword 1");
   expect_read16(memory, 0x03000004, 0x3333, "DMA0 copied halfword 2");
@@ -104,7 +104,7 @@ int main() {
   const gba::core::DmaRunResult dma1_result = dma.run_immediate(memory, interrupts);
   expect(dma1_result.channels_executed == 1, "DMA1 immediate run executes one channel");
   expect(dma1_result.units_transferred == 2, "DMA1 immediate run copies two words");
-  expect(dma1_result.bus_cycles == 4, "DMA1 word transfer reports doubled bus occupancy");
+  expect(dma1_result.bus_cycles == 16, "DMA1 word transfer reports doubled bus occupancy");
   expect_read32(memory, 0x03000020, 0xAABBCCDD, "DMA1 copied first word to initial dest");
   expect_read32(memory, 0x0300001C, 0x11223344, "DMA1 decremented destination for second word");
   expect(!dma.enabled(1), "DMA1 one-shot transfer clears enable bit");
@@ -246,7 +246,7 @@ int main() {
       dma.run_trigger(gba::core::DmaTrigger::vblank, memory, interrupts);
   expect(vblank_result.channels_executed == 1, "VBlank DMA runs on VBlank trigger");
   expect(vblank_result.units_transferred == 1, "VBlank DMA copies one unit");
-  expect(vblank_result.bus_cycles == 1, "VBlank DMA reports bus occupancy");
+  expect(vblank_result.bus_cycles == 6, "VBlank DMA reports bus occupancy");
   expect_read16(memory, 0x03000030, 0x4444, "VBlank DMA copied delayed value");
   dma.write_control(2, 0);
 
@@ -303,7 +303,7 @@ int main() {
       dma.run_sound_fifo(gba::core::DmaTrigger::fifo_a, memory, apu, interrupts);
   expect(fifo_result.channels_executed == 1, "FIFO DMA runs one sound channel");
   expect(fifo_result.units_transferred == 4, "FIFO DMA transfers four words");
-  expect(fifo_result.bus_cycles == 8, "FIFO DMA reports word bus occupancy");
+  expect(fifo_result.bus_cycles == 28, "FIFO DMA reports word bus occupancy");
   expect(apu.fifo_size(gba::core::DirectSoundChannel::a) == 16,
          "FIFO DMA pushes sixteen bytes into Direct Sound FIFO A");
   expect(dma.enabled(1), "repeat FIFO DMA stays enabled for next refill");

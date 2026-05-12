@@ -25,12 +25,22 @@ struct CoreDeviceTickResult {
   DmaRunResult triggered_dma = {};
 };
 
+struct CoreDataAccessTrace {
+  std::uint32_t address = 0;
+  std::uint8_t width_bytes = 0;
+  bool load = false;
+  bool timer_io = false;
+  std::uint32_t pre_access_cycles = 0;
+  std::uint32_t timer_io_gap_cycles = 0;
+};
+
 struct CoreSchedulerStepResult {
   ArmStepResult cpu_step;
   CoreDeviceTickResult devices;
   DmaRunResult immediate_dma;
   bool irq_serviced;
   std::uint64_t scheduler_cycles;
+  std::optional<CoreDataAccessTrace> data_access;
 };
 
 enum class CoreRunStopReason : std::uint8_t {
@@ -80,10 +90,25 @@ struct CoreSchedulerState {
   std::optional<std::uint8_t> last_fetch_width_bytes;
   std::optional<std::uint8_t> last_fetch_window;
   std::uint8_t prefetch_buffer_halfwords = 0;
+  bool suppress_next_game_pak_prefetch = false;
+  bool recover_next_game_pak_data_fetch = false;
+  bool previous_thumb_internal_load = false;
   std::optional<std::uint32_t> hle_irq_return_lr;
   std::optional<std::array<std::uint32_t, 13>> hle_irq_saved_registers;
+  bool hle_irq_reentry_dispatch_pending = false;
+  bool hle_irq_return_latency_pending = false;
+  bool hle_irq_post_return_latency_armed = false;
+  bool hle_irq_post_return_dispatch_pending = false;
+  bool hle_irq_chained_post_return_dispatch_pending = false;
+  bool hle_irq_chained_post_return_data_dispatch_pending = false;
+  bool hle_irq_chained_post_return_spaced_data_dispatch_pending = false;
+  bool hle_irq_long_timer_chained_return_pending = false;
+  bool hle_irq_slow_timer0_return_pending = false;
+  bool hle_irq_post_return_chain_active = false;
+  std::uint8_t hle_irq_chained_spaced_data_service_count = 0;
   bool auto_irq_line_high = false;
   std::uint8_t auto_irq_latency_cycles = 0;
+  std::uint32_t timer_io_access_gap_cycles = 0;
 };
 
 class CoreScheduler {
@@ -108,9 +133,15 @@ class CoreScheduler {
 
   [[nodiscard]] CoreDeviceTickResult advance_devices(std::uint32_t cycles);
   [[nodiscard]] DmaRunResult run_immediate_dma();
-  [[nodiscard]] bool service_pending_irq();
-  [[nodiscard]] CoreSchedulerStepResult step_arm(std::uint32_t instruction);
-  [[nodiscard]] CoreSchedulerStepResult step_thumb(std::uint16_t instruction);
+  [[nodiscard]] bool service_pending_irq(
+      bool from_data_access = false,
+      bool from_spaced_timer_io_access = false);
+  [[nodiscard]] CoreSchedulerStepResult step_arm(
+      std::uint32_t instruction,
+      std::optional<ArmElapsedCycleEstimate> elapsed_override = std::nullopt);
+  [[nodiscard]] CoreSchedulerStepResult step_thumb(
+      std::uint16_t instruction, bool prefetch_internal_load_overlap = false,
+      std::optional<ArmElapsedCycleEstimate> elapsed_override = std::nullopt);
   [[nodiscard]] CoreSchedulerFetchStepResult step_arm_from_pc();
   [[nodiscard]] CoreSchedulerFetchStepResult step_from_pc();
   [[nodiscard]] CoreSchedulerRunResult run_arm_from_pc(std::uint32_t max_steps);
@@ -128,14 +159,31 @@ class CoreScheduler {
   std::uint64_t scheduler_cycles_;
   bool halted_;
   const WaitStateControl* waitcnt_;
+  std::optional<std::uint16_t> last_waitcnt_control_;
   std::optional<std::uint32_t> last_fetch_address_;
   std::optional<std::uint8_t> last_fetch_width_bytes_;
   std::optional<std::uint8_t> last_fetch_window_;
   std::uint8_t prefetch_buffer_halfwords_;
+  bool suppress_next_game_pak_prefetch_;
+  bool recover_next_game_pak_data_fetch_;
+  bool suppress_next_thumb_prefetch_execute_bubble_;
+  bool previous_thumb_internal_load_;
   std::optional<std::uint32_t> hle_irq_return_lr_;
   std::optional<std::array<std::uint32_t, 13>> hle_irq_saved_registers_;
+  bool hle_irq_reentry_dispatch_pending_;
+  bool hle_irq_return_latency_pending_;
+  bool hle_irq_post_return_latency_armed_;
+  bool hle_irq_post_return_dispatch_pending_;
+  bool hle_irq_chained_post_return_dispatch_pending_;
+  bool hle_irq_chained_post_return_data_dispatch_pending_;
+  bool hle_irq_chained_post_return_spaced_data_dispatch_pending_;
+  bool hle_irq_long_timer_chained_return_pending_;
+  bool hle_irq_slow_timer0_return_pending_;
+  bool hle_irq_post_return_chain_active_;
+  std::uint8_t hle_irq_chained_spaced_data_service_count_;
   bool auto_irq_line_high_;
   std::uint8_t auto_irq_latency_cycles_;
+  std::uint32_t timer_io_access_gap_cycles_;
 
   [[nodiscard]] std::uint32_t apply_fetch_timing(std::uint32_t fetch_address,
                                                  std::uint8_t width_bytes,
@@ -145,7 +193,8 @@ class CoreScheduler {
                                                  bool& prefetch_hit,
                                                  bool& boundary_forced_nonsequential);
   void refill_prefetch_after_step(std::uint32_t fetch_address, std::uint8_t width_bytes,
-                                  const CoreSchedulerStepResult& step);
+                                  const CoreSchedulerStepResult& step,
+                                  std::uint32_t extra_refill_cycles = 0);
   void reset_fetch_timing_sequence();
   void update_auto_irq_latency(std::uint32_t elapsed_cycles);
   [[nodiscard]] bool auto_irq_ready() const;
@@ -156,10 +205,11 @@ class CoreScheduler {
   [[nodiscard]] std::optional<CoreSchedulerStepResult> dispatch_hle_irq_return(
       std::uint32_t fetch_address);
   [[nodiscard]] std::optional<ArmStepResult> execute_hle_arm_swi(
-      std::uint32_t instruction);
+      std::uint32_t instruction, std::uint32_t fetch_address);
   [[nodiscard]] std::optional<ArmStepResult> execute_hle_thumb_swi(
-      std::uint16_t instruction);
-  [[nodiscard]] ArmStepResult execute_hle_swi(BiosSwiCall call);
+      std::uint16_t instruction, std::uint32_t fetch_address);
+  [[nodiscard]] ArmStepResult execute_hle_swi(BiosSwiCall call,
+                                              std::uint32_t fetch_address);
   [[nodiscard]] bool wait_for_interrupt_mask(std::uint16_t mask, bool discard_old_flags);
   [[nodiscard]] bool hle_cpu_set(bool fast);
 };

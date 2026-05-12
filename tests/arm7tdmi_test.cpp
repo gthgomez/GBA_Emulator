@@ -907,6 +907,11 @@ int main() {
   expect(thumb_cpu.execute_thumb(thumb_mul_r1_r2) == ExecuteStatus::executed,
          "execute Thumb MUL");
   expect(thumb_cpu.register_value(1) == 42, "Thumb MUL writes Rd");
+  thumb_cpu.reset_elapsed_cycles();
+  thumb_cpu.set_register(1, 0x12345678);
+  thumb_cpu.set_register(2, 0xFF);
+  expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 5,
+         "Thumb MUL step uses signed early-out destination timing");
   thumb_cpu.set_register(0, 5);
   thumb_cpu.set_register(1, 6);
   expect(thumb_cpu.execute_thumb(thumb_add_r2_r0_r1) == ExecuteStatus::executed,
@@ -1241,7 +1246,7 @@ int main() {
   expect_step(branch_step_cpu.step_arm(cmp_r2_12), ExecuteStatus::executed, 1, 4, false, false,
               "scheduler step charges CMP");
   expect_step(branch_step_cpu.step_arm(bne_skipped), ExecuteStatus::skipped_condition, 0, 4,
-              false, false, "scheduler step does not charge skipped condition");
+              false, false, "scheduler step charges skipped condition");
 
   constexpr std::uint32_t str_r1_base_plus_4 =
       kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | rn(6) | rd(1) | offset12(4);
@@ -1267,18 +1272,23 @@ int main() {
   expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x08000004,
                                                        waitcnt)
                      .value(),
-                 7, false, true,
+                 10, false, true,
                  "WAITCNT-aware LDR estimate uses default ROM wait0 timing");
   waitcnt.write_control(WaitStateControl::kStandardGamePakSetting);
+  expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x03000004,
+                                                       waitcnt)
+                     .value(),
+                 2, false, true,
+                 "WAITCNT prefetch overlaps IWRAM LDR internal cycle");
   expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x08000004,
                                                        waitcnt)
                      .value(),
-                 5, false, true,
+                 8, false, true,
                  "WAITCNT-aware LDR estimate uses standard ROM wait0 timing");
   expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x0C000004,
                                                        waitcnt)
                      .value(),
-                 17, false, true,
+                 20, false, true,
                  "WAITCNT-aware LDR estimate uses standard ROM wait2 timing");
   expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x0E000004,
                                                        waitcnt)
@@ -2033,6 +2043,11 @@ int main() {
   expect(decoded_multiply.rm == 3, "MUL Rm decodes");
   expect(cpu.execute_arm(mul_r2_r3_r4) == ExecuteStatus::executed, "execute MUL");
   expect(cpu.register_value(2) == 42, "MUL writes low 32-bit product");
+  cpu.reset_elapsed_cycles();
+  cpu.set_register(3, 2);
+  cpu.set_register(4, 0x00345678);
+  expect(cpu.step_arm(mul_r2_r3_r4).elapsed_cycles == 4,
+         "MUL step uses signed early-out multiplier timing");
 
   constexpr std::uint32_t mla_r5_r7_r8_r6 = kCondAl | kMultiplyAccumulate |
                                             multiply_rd(5) | multiply_rn(6) |
@@ -2045,6 +2060,12 @@ int main() {
   expect(decoded_accumulate.rn == 6, "MLA Rn decodes");
   expect(cpu.execute_arm(mla_r5_r7_r8_r6) == ExecuteStatus::executed, "execute MLA");
   expect(cpu.register_value(5) == 23, "MLA adds accumulator");
+  cpu.reset_elapsed_cycles();
+  cpu.set_register(6, 3);
+  cpu.set_register(7, 4);
+  cpu.set_register(8, 0xFF);
+  expect(cpu.step_arm(mla_r5_r7_r8_r6).elapsed_cycles == 3,
+         "MLA step includes accumulate internal cycle");
 
   constexpr std::uint32_t muls_r9_r10_r11 =
       kCondAl | kMultiply | kSetFlags | multiply_rd(9) | multiply_rs(10) | rm(11);
@@ -2083,6 +2104,11 @@ int main() {
   expect(cpu.execute_arm(umull_r2_r3_r4_r5) == ExecuteStatus::executed, "execute UMULL");
   expect(cpu.register_value(2) == 0xFFFFFFFE, "UMULL writes low word");
   expect(cpu.register_value(3) == 0x00000001, "UMULL writes high word");
+  cpu.reset_elapsed_cycles();
+  cpu.set_register(4, 2);
+  cpu.set_register(5, 0xFF000000);
+  expect(cpu.step_arm(umull_r2_r3_r4_r5).elapsed_cycles == 6,
+         "UMULL step uses unsigned early-out multiplier timing");
   constexpr std::uint32_t umulls_r2_r3_r4_r5 = umull_r2_r3_r4_r5 | kSetFlags;
   cpu.set_register(4, 0xFFFFFFFF);
   cpu.set_register(5, 0xFFFFFFFF);
@@ -2122,6 +2148,11 @@ int main() {
   expect(cpu.execute_arm(smull_r6_r7_r8_r9) == ExecuteStatus::executed, "execute SMULL");
   expect(cpu.register_value(6) == 0xFFFFFFFE, "SMULL writes signed low word");
   expect(cpu.register_value(7) == 0xFFFFFFFF, "SMULL sign-extends high word");
+  cpu.reset_elapsed_cycles();
+  cpu.set_register(8, 2);
+  cpu.set_register(9, 0xFF000000);
+  expect(cpu.step_arm(smull_r6_r7_r8_r9).elapsed_cycles == 5,
+         "SMULL step uses signed early-out multiplier timing");
   constexpr std::uint32_t smulls_r6_r7_r8_r9 = smull_r6_r7_r8_r9 | kSetFlags;
   cpu.set_register(8, 0);
   cpu.set_register(9, 0x80000000);

@@ -35,6 +35,9 @@ struct U128Pair {
   std::uint64_t hi;
 };
 
+constexpr std::uint32_t kOamMirrorBankStart = 0x07000000U;
+constexpr std::uint32_t kGamePakRomStart = 0x08000000U;
+
 struct Adder32Output {
   std::uint32_t output;
   bool carry;
@@ -53,6 +56,8 @@ constexpr std::uint32_t kThumbStateFlag = 0x00000020;
 constexpr std::uint32_t kFiqDisableFlag = 0x00000040;
 constexpr std::uint32_t kIrqDisableFlag = 0x00000080;
 constexpr std::uint32_t kModeMask = 0x0000001F;
+constexpr std::uint32_t kArmSkippedConditionElapsedCycles = 0;
+constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
 
 [[nodiscard]] std::uint8_t bits(std::uint32_t value, std::uint8_t shift, std::uint32_t mask) {
   return static_cast<std::uint8_t>((value >> shift) & mask);
@@ -519,6 +524,32 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
   };
 }
 
+[[nodiscard]] std::uint32_t signed_multiply_iterations(std::uint32_t value) {
+  if ((value & 0xFFFFFF00U) == 0 || (value & 0xFFFFFF00U) == 0xFFFFFF00U) {
+    return 1;
+  }
+  if ((value & 0xFFFF0000U) == 0 || (value & 0xFFFF0000U) == 0xFFFF0000U) {
+    return 2;
+  }
+  if ((value & 0xFF000000U) == 0 || (value & 0xFF000000U) == 0xFF000000U) {
+    return 3;
+  }
+  return 4;
+}
+
+[[nodiscard]] std::uint32_t unsigned_multiply_iterations(std::uint32_t value) {
+  if ((value & 0xFFFFFF00U) == 0) {
+    return 1;
+  }
+  if ((value & 0xFFFF0000U) == 0) {
+    return 2;
+  }
+  if ((value & 0xFF000000U) == 0) {
+    return 3;
+  }
+  return 4;
+}
+
 [[nodiscard]] bool can_estimate_memory_elapsed_cycles(std::uint32_t instruction) {
   return Arm7tdmi::can_decode_single_data_transfer_immediate(instruction) ||
          Arm7tdmi::can_decode_single_data_transfer_register(instruction) ||
@@ -551,6 +582,102 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
   return AccessWidth::word;
 }
 
+[[nodiscard]] AccessWidth thumb_transfer_access_width(
+    ThumbMemoryTransferKind kind) {
+  switch (kind) {
+    case ThumbMemoryTransferKind::word:
+      return AccessWidth::word;
+    case ThumbMemoryTransferKind::halfword:
+    case ThumbMemoryTransferKind::signed_halfword:
+      return AccessWidth::halfword;
+    case ThumbMemoryTransferKind::byte:
+    case ThumbMemoryTransferKind::signed_byte:
+      return AccessWidth::byte;
+  }
+  return AccessWidth::word;
+}
+
+[[nodiscard]] std::uint32_t thumb_memory_cycles(
+    const DecodedThumbMemoryTransferInstruction& decoded,
+    const MemoryAccessTiming& timing) {
+  if (decoded.load) {
+    return static_cast<std::uint32_t>(timing.nonsequential) + timing.sequential + 1U;
+  }
+  return static_cast<std::uint32_t>(timing.sequential) * 2U;
+}
+
+[[nodiscard]] bool thumb_prefetch_overlaps_internal_data_load_cycle(
+    const DecodedThumbMemoryTransferInstruction& decoded, std::uint32_t address,
+    bool waitcnt_prefetch_enabled) {
+  if (!waitcnt_prefetch_enabled || !decoded.load) {
+    return false;
+  }
+
+  const Region data_region = MemoryBus::describe(address).region;
+  return data_region == Region::ewram || data_region == Region::iwram;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> thumb_mirrored_oam_block_load_elapsed_cycles(
+    const DecodedThumbBlockTransferInstruction& decoded, std::uint32_t data_address,
+    const WaitStateControl& waitcnt) {
+  if (!decoded.load) {
+    return std::nullopt;
+  }
+
+  const AddressInfo first = MemoryBus::describe(data_address);
+  if (first.region != Region::oam || !first.mirrored ||
+      data_address < kOamMirrorBankStart || data_address >= kGamePakRomStart) {
+    return std::nullopt;
+  }
+
+  const std::uint32_t register_count = count_registers(decoded.register_list);
+  const std::uint32_t words_until_rom =
+      std::max<std::uint32_t>((kGamePakRomStart - data_address) / 4U, 1U);
+  const std::uint32_t mirrored_words = std::min(register_count, words_until_rom);
+  const std::uint32_t rom_words = register_count - mirrored_words;
+  const MemoryAccessTiming rom_timing =
+      MemoryBus::timing(kGamePakRomStart, AccessWidth::word, waitcnt);
+
+  if (rom_words == 0 && waitcnt.prefetch_enabled()) {
+    return rom_timing.sequential == 1U ? 7U : 6U;
+  }
+
+  std::uint32_t elapsed = 1U + mirrored_words;
+  if (rom_words != 0) {
+    elapsed += rom_words *
+                   (static_cast<std::uint32_t>(rom_timing.nonsequential) +
+                    static_cast<std::uint32_t>(rom_timing.sequential)) +
+               rom_timing.sequential;
+    if (rom_timing.nonsequential == 3U) {
+      elapsed += mirrored_words == 2U
+                     ? 2U
+                     : (mirrored_words == 3U ? 1U : (mirrored_words == 4U ? 0U : 3U));
+    }
+    if (!waitcnt.prefetch_enabled() && rom_timing.sequential == 1U) {
+      if (mirrored_words == 4U) {
+        elapsed += 1U;
+      } else {
+        elapsed -= mirrored_words == 2U ? 1U : (mirrored_words == 3U ? 0U : 2U);
+      }
+    }
+    if (waitcnt.prefetch_enabled()) {
+      elapsed += mirrored_words == 2U
+                     ? (rom_timing.nonsequential == 3U
+                            ? (rom_timing.sequential == 1U ? 2U : 3U)
+                            : (rom_timing.sequential == 1U ? 3U : 4U))
+                     : (mirrored_words >= 3U && rom_timing.nonsequential != 3U &&
+                                rom_timing.sequential == 1U
+                            ? 5U
+                            : (mirrored_words >= 3U && rom_timing.nonsequential == 3U &&
+                                       rom_timing.sequential == 1U
+                                   ? 4U
+                                   : (rom_timing.nonsequential == 3U ? 2U : 3U)));
+    }
+  }
+  elapsed += 1U;
+  return elapsed;
+}
+
 [[nodiscard]] ArmElapsedCycleEstimate compose_elapsed_cycles(
     const ArmCycleEstimate& cycles, const MemoryAccessTiming& timing) {
   return {
@@ -560,6 +687,80 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
       cycles.data_dependent,
       true,
   };
+}
+
+[[nodiscard]] MemoryAccessTiming timing_for_elapsed_estimate(
+    std::uint32_t address, AccessWidth width, const WaitStateControl* waitcnt) {
+  return waitcnt != nullptr ? MemoryBus::timing(address, width, *waitcnt)
+                            : MemoryBus::timing(address, width);
+}
+
+[[nodiscard]] std::optional<std::uint32_t> mirrored_oam_block_load_elapsed_cycles(
+    std::uint32_t instruction, std::uint32_t data_address,
+    const ArmCycleEstimate& cycles, const WaitStateControl* waitcnt,
+    bool waitcnt_prefetch_enabled) {
+  if (!Arm7tdmi::can_decode_block_data_transfer(instruction)) {
+    return std::nullopt;
+  }
+
+  const DecodedBlockDataTransferInstruction decoded =
+      Arm7tdmi::decode_block_data_transfer(instruction);
+  if (!decoded.load) {
+    return std::nullopt;
+  }
+
+  const AddressInfo first = MemoryBus::describe(data_address);
+  if (first.region != Region::oam || !first.mirrored ||
+      data_address < kOamMirrorBankStart || data_address >= kGamePakRomStart) {
+    return std::nullopt;
+  }
+
+  const std::uint32_t register_count = count_registers(decoded.register_list);
+  const std::uint32_t words_until_rom =
+      std::max<std::uint32_t>((kGamePakRomStart - data_address) / 4U, 1U);
+  const std::uint32_t mirrored_words = std::min(register_count, words_until_rom);
+  const std::uint32_t rom_words = register_count - mirrored_words;
+  const MemoryAccessTiming rom_timing =
+      timing_for_elapsed_estimate(kGamePakRomStart, AccessWidth::word, waitcnt);
+
+  if (rom_words == 0 && waitcnt_prefetch_enabled) {
+    return rom_timing.sequential == 1U ? 5U : 3U;
+  }
+
+  std::uint32_t elapsed = 1U + mirrored_words;
+  if (rom_words != 0) {
+    elapsed += rom_words *
+                   (static_cast<std::uint32_t>(rom_timing.nonsequential) +
+                    static_cast<std::uint32_t>(rom_timing.sequential)) +
+               rom_timing.sequential;
+    if (rom_timing.nonsequential == 3U) {
+      elapsed += mirrored_words == 2U
+                     ? 2U
+                     : (mirrored_words == 3U ? 1U : (mirrored_words == 4U ? 0U : 3U));
+    }
+    if (!waitcnt_prefetch_enabled && rom_timing.sequential == 1U) {
+      if (mirrored_words == 4U) {
+        elapsed += 1U;
+      } else {
+        elapsed -= mirrored_words == 2U ? 1U : (mirrored_words == 3U ? 0U : 2U);
+      }
+    }
+    if (waitcnt_prefetch_enabled) {
+      elapsed += mirrored_words == 2U
+                     ? (rom_timing.nonsequential == 3U
+                            ? (rom_timing.sequential == 1U ? 2U : 3U)
+                            : (rom_timing.sequential == 1U ? 3U : 4U))
+                     : (mirrored_words >= 3U && rom_timing.nonsequential != 3U &&
+                                rom_timing.sequential == 1U
+                            ? 5U
+                            : (mirrored_words >= 3U && rom_timing.nonsequential == 3U &&
+                                       rom_timing.sequential == 1U
+                                   ? 4U
+                                   : (rom_timing.nonsequential == 3U ? 2U : 3U)));
+    }
+  }
+  elapsed += cycles.internal;
+  return elapsed;
 }
 
 [[nodiscard]] bool has_elapsed_timing_for_estimate(std::uint32_t address,
@@ -579,6 +780,86 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
 
   return region == Region::bios || region == Region::game_pak_rom ||
          region == Region::game_pak_save;
+}
+
+[[nodiscard]] bool arm_data_load_has_internal_cycle(std::uint32_t instruction) {
+  if (Arm7tdmi::can_decode_single_data_transfer_immediate(instruction) ||
+      Arm7tdmi::can_decode_single_data_transfer_register(instruction) ||
+      Arm7tdmi::can_decode_halfword_data_transfer_immediate(instruction) ||
+      Arm7tdmi::can_decode_halfword_data_transfer_register(instruction) ||
+      Arm7tdmi::can_decode_block_data_transfer(instruction)) {
+    return ((instruction >> 20) & 0x1U) == 1;
+  }
+  return false;
+}
+
+[[nodiscard]] std::uint32_t prefetch_internal_data_load_overlap_cycles(
+    std::uint32_t instruction, std::uint32_t data_address,
+    const ArmCycleEstimate& cycles, bool waitcnt_prefetch_enabled,
+    bool fast_rom_sequential_prefetch) {
+  if (!waitcnt_prefetch_enabled || cycles.internal == 0 ||
+      !arm_data_load_has_internal_cycle(instruction)) {
+    return 0;
+  }
+
+  const Region data_region = MemoryBus::describe(data_address).region;
+  if (data_region != Region::ewram && data_region != Region::iwram) {
+    return 0;
+  }
+
+  if (Arm7tdmi::can_decode_block_data_transfer(instruction)) {
+    const DecodedBlockDataTransferInstruction decoded =
+        Arm7tdmi::decode_block_data_transfer(instruction);
+    if (decoded.load) {
+      const std::uint32_t overlap_cap = fast_rom_sequential_prefetch ? 2U : 4U;
+      return std::min<std::uint32_t>(count_registers(decoded.register_list), overlap_cap);
+    }
+  }
+  return 1;
+}
+
+[[nodiscard]] std::uint32_t prefetch_block_store_overlap_cycles(
+    std::uint32_t instruction, std::uint32_t data_address,
+    bool waitcnt_prefetch_enabled, bool fast_rom_sequential_prefetch) {
+  if (!waitcnt_prefetch_enabled ||
+      !Arm7tdmi::can_decode_block_data_transfer(instruction)) {
+    return 0;
+  }
+
+  const Region data_region = MemoryBus::describe(data_address).region;
+  if (data_region != Region::ewram && data_region != Region::iwram) {
+    return 0;
+  }
+
+  const DecodedBlockDataTransferInstruction decoded =
+      Arm7tdmi::decode_block_data_transfer(instruction);
+  if (decoded.load) {
+    return 0;
+  }
+  const std::uint32_t register_count = count_registers(decoded.register_list);
+  if (register_count < 2) {
+    return 0;
+  }
+  const std::uint32_t overlap_cap = fast_rom_sequential_prefetch ? 2U : 4U;
+  return std::min<std::uint32_t>(register_count - 1U, overlap_cap);
+}
+
+[[nodiscard]] bool arm_single_word_load_from_game_pak_rom(std::uint32_t instruction,
+                                                          std::uint32_t data_address) {
+  if (!Arm7tdmi::can_decode_single_data_transfer_immediate(instruction) &&
+      !Arm7tdmi::can_decode_single_data_transfer_register(instruction)) {
+    return false;
+  }
+  const bool load = ((instruction >> 20) & 0x1U) == 1;
+  const bool byte_transfer = ((instruction >> 22) & 0x1U) == 1;
+  return load && !byte_transfer &&
+         MemoryBus::describe(data_address).region == Region::game_pak_rom;
+}
+
+[[nodiscard]] bool thumb_word_load_from_game_pak_rom(
+    const DecodedThumbMemoryTransferInstruction& decoded, std::uint32_t data_address) {
+  return decoded.load && decoded.kind == ThumbMemoryTransferKind::word &&
+         MemoryBus::describe(data_address).region == Region::game_pak_rom;
 }
 
 [[nodiscard]] std::optional<std::uint32_t> read_pipeline_open_bus_word(
@@ -628,7 +909,9 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
 
 [[nodiscard]] std::optional<ArmElapsedCycleEstimate> estimate_arm_elapsed_cycles_with_timing(
     std::uint32_t instruction, std::uint32_t data_address,
-    const MemoryAccessTiming& timing, bool waitcnt_aware) {
+    const MemoryAccessTiming& timing, bool waitcnt_aware,
+    bool waitcnt_prefetch_enabled, bool fast_rom_sequential_prefetch,
+    const WaitStateControl* waitcnt) {
   const std::optional<ArmCycleEstimate> cycles = Arm7tdmi::estimate_arm_cycles(instruction);
   if (!cycles.has_value()) {
     return std::nullopt;
@@ -648,7 +931,26 @@ constexpr std::uint32_t kModeMask = 0x0000001F;
     return std::nullopt;
   }
 
-  return compose_elapsed_cycles(cycles.value(), timing);
+  ArmElapsedCycleEstimate elapsed = compose_elapsed_cycles(cycles.value(), timing);
+  const std::optional<std::uint32_t> mirrored_oam_elapsed =
+      mirrored_oam_block_load_elapsed_cycles(instruction, data_address, cycles.value(),
+                                             waitcnt, waitcnt_prefetch_enabled);
+  if (mirrored_oam_elapsed.has_value()) {
+    elapsed = {mirrored_oam_elapsed.value(), cycles.value().data_dependent, true};
+  }
+  if (waitcnt_aware && arm_single_word_load_from_game_pak_rom(instruction, data_address)) {
+    elapsed.cycles += 3U;
+  }
+  const std::uint32_t prefetch_overlap = prefetch_internal_data_load_overlap_cycles(
+      instruction, data_address, cycles.value(), waitcnt_prefetch_enabled,
+      fast_rom_sequential_prefetch) +
+      prefetch_block_store_overlap_cycles(instruction, data_address,
+                                          waitcnt_prefetch_enabled,
+                                          fast_rom_sequential_prefetch);
+  if (prefetch_overlap != 0) {
+    elapsed.cycles -= std::min(elapsed.cycles, prefetch_overlap);
+  }
+  return elapsed;
 }
 
 }  // namespace
@@ -1737,7 +2039,8 @@ std::optional<ArmElapsedCycleEstimate> Arm7tdmi::estimate_arm_elapsed_cycles(
     std::uint32_t instruction, std::uint32_t data_address) {
   const MemoryAccessTiming timing =
       MemoryBus::timing(data_address, transfer_access_width(instruction));
-  return estimate_arm_elapsed_cycles_with_timing(instruction, data_address, timing, false);
+  return estimate_arm_elapsed_cycles_with_timing(instruction, data_address, timing, false,
+                                                false, false, nullptr);
 }
 
 std::optional<ArmElapsedCycleEstimate> Arm7tdmi::estimate_arm_elapsed_cycles(
@@ -1745,7 +2048,11 @@ std::optional<ArmElapsedCycleEstimate> Arm7tdmi::estimate_arm_elapsed_cycles(
     const WaitStateControl& waitcnt) {
   const MemoryAccessTiming timing =
       MemoryBus::timing(data_address, transfer_access_width(instruction), waitcnt);
-  return estimate_arm_elapsed_cycles_with_timing(instruction, data_address, timing, true);
+  const bool fast_rom_sequential_prefetch =
+      waitcnt.rom_wait_states(CartridgeWindow::rom_wait0).sequential <= 1;
+  return estimate_arm_elapsed_cycles_with_timing(
+      instruction, data_address, timing, true, waitcnt.prefetch_enabled(),
+      fast_rom_sequential_prefetch, &waitcnt);
 }
 
 std::uint32_t Arm7tdmi::register_value(std::uint8_t index) const {
@@ -3125,13 +3432,22 @@ bool Arm7tdmi::memory_condition_passed(std::uint32_t instruction) const {
 ArmStepResult Arm7tdmi::finish_step(std::uint32_t instruction,
                                     std::optional<std::uint32_t> data_address,
                                     ExecuteStatus status,
-                                    const WaitStateControl* waitcnt) {
+                                    const WaitStateControl* waitcnt,
+                                    std::optional<ArmElapsedCycleEstimate>
+                                        elapsed_override) {
+  if (status == ExecuteStatus::skipped_condition) {
+    elapsed_cycles_ += kArmSkippedConditionElapsedCycles;
+    return {status, kArmSkippedConditionElapsedCycles, elapsed_cycles_, false,
+            false};
+  }
   if (status != ExecuteStatus::executed) {
     return {status, 0, elapsed_cycles_, false, false};
   }
 
   const std::optional<ArmElapsedCycleEstimate> estimate =
-      waitcnt == nullptr
+      elapsed_override.has_value()
+          ? elapsed_override
+          : waitcnt == nullptr
           ? estimate_arm_elapsed_cycles(instruction, data_address.value_or(0))
           : estimate_arm_elapsed_cycles(instruction, data_address.value_or(0), *waitcnt);
   if (!estimate.has_value()) {
@@ -3148,9 +3464,49 @@ ArmStepResult Arm7tdmi::finish_step(std::uint32_t instruction,
   };
 }
 
+std::optional<ArmElapsedCycleEstimate> Arm7tdmi::runtime_multiply_elapsed_cycles(
+    std::uint32_t instruction) const {
+  if (can_decode_multiply_long(instruction)) {
+    const DecodedMultiplyLongInstruction decoded = decode_multiply_long(instruction);
+    const std::uint32_t multiplier = registers_.at(decoded.rs);
+    const std::uint32_t iterations =
+        decoded.signed_multiply ? signed_multiply_iterations(multiplier)
+                                : unsigned_multiply_iterations(multiplier);
+    return ArmElapsedCycleEstimate{iterations + (decoded.accumulate ? 3U : 2U), true,
+                                   false};
+  }
+
+  if (can_decode_multiply(instruction)) {
+    const DecodedMultiplyInstruction decoded = decode_multiply(instruction);
+    const std::uint32_t iterations =
+        signed_multiply_iterations(registers_.at(decoded.rs));
+    return ArmElapsedCycleEstimate{iterations + (decoded.accumulate ? 2U : 1U), true,
+                                   false};
+  }
+
+  return std::nullopt;
+}
+
+std::optional<ArmElapsedCycleEstimate> Arm7tdmi::runtime_thumb_elapsed_cycles(
+    std::uint16_t instruction) const {
+  if (!can_decode_thumb_alu(instruction)) {
+    return std::nullopt;
+  }
+
+  const DecodedThumbAluInstruction decoded = decode_thumb_alu(instruction);
+  if (decoded.opcode != ThumbAluOpcode::mul) {
+    return std::nullopt;
+  }
+
+  return ArmElapsedCycleEstimate{
+      signed_multiply_iterations(registers_.at(decoded.rd)) + 1U, true, false};
+}
+
 ArmStepResult Arm7tdmi::step_arm(std::uint32_t instruction) {
+  const std::optional<ArmElapsedCycleEstimate> elapsed_override =
+      runtime_multiply_elapsed_cycles(instruction);
   const ExecuteStatus status = execute_arm(instruction);
-  return finish_step(instruction, std::nullopt, status);
+  return finish_step(instruction, std::nullopt, status, nullptr, elapsed_override);
 }
 
 ArmStepResult Arm7tdmi::step_arm(std::uint32_t instruction, MemoryBus& memory) {
@@ -3159,41 +3515,149 @@ ArmStepResult Arm7tdmi::step_arm(std::uint32_t instruction, MemoryBus& memory) {
       !estimate_arm_elapsed_cycles(instruction, data_address.value()).has_value()) {
     return {ExecuteStatus::unsupported, 0, elapsed_cycles_, false, false};
   }
+  const std::optional<ArmElapsedCycleEstimate> elapsed_override =
+      runtime_multiply_elapsed_cycles(instruction);
   const ExecuteStatus status = execute_arm(instruction, memory);
-  return finish_step(instruction, data_address, status);
+  return finish_step(instruction, data_address, status, nullptr, elapsed_override);
 }
 
-ArmStepResult Arm7tdmi::step_arm(std::uint32_t instruction, MemoryBus& memory,
-                                 const WaitStateControl& waitcnt) {
+ArmStepResult Arm7tdmi::step_arm(
+    std::uint32_t instruction, MemoryBus& memory, const WaitStateControl& waitcnt,
+    std::optional<ArmElapsedCycleEstimate> elapsed_override) {
   const std::optional<std::uint32_t> data_address = first_data_address(instruction);
   if (data_address.has_value() && memory_condition_passed(instruction) &&
       !estimate_arm_elapsed_cycles(instruction, data_address.value(), waitcnt).has_value()) {
     return {ExecuteStatus::unsupported, 0, elapsed_cycles_, false, false};
   }
+  const std::optional<ArmElapsedCycleEstimate> runtime_override =
+      elapsed_override.has_value() ? elapsed_override
+                                   : runtime_multiply_elapsed_cycles(instruction);
   const ExecuteStatus status = execute_arm(instruction, memory);
-  return finish_step(instruction, data_address, status, &waitcnt);
+  return finish_step(instruction, data_address, status, &waitcnt, runtime_override);
 }
 
 ArmStepResult Arm7tdmi::step_thumb(std::uint16_t instruction) {
+  const std::optional<ArmElapsedCycleEstimate> elapsed_override =
+      runtime_thumb_elapsed_cycles(instruction);
   const ExecuteStatus status = execute_thumb(instruction);
+  if (status == ExecuteStatus::skipped_condition) {
+    elapsed_cycles_ += kThumbSkippedConditionElapsedCycles;
+    return {status, kThumbSkippedConditionElapsedCycles, elapsed_cycles_, false,
+            false};
+  }
   if (status != ExecuteStatus::executed) {
     return {status, 0, elapsed_cycles_, false, false};
   }
 
   constexpr std::uint32_t kSeedThumbElapsedCycles = 1;
-  elapsed_cycles_ += kSeedThumbElapsedCycles;
-  return {status, kSeedThumbElapsedCycles, elapsed_cycles_, false, false};
+  const ArmElapsedCycleEstimate elapsed =
+      elapsed_override.value_or(ArmElapsedCycleEstimate{kSeedThumbElapsedCycles, false, false});
+  elapsed_cycles_ += elapsed.cycles;
+  return {status, elapsed.cycles, elapsed_cycles_, elapsed.data_dependent,
+          elapsed.memory_timing_applied};
 }
 
 ArmStepResult Arm7tdmi::step_thumb(std::uint16_t instruction, MemoryBus& memory) {
+  const std::optional<ArmElapsedCycleEstimate> elapsed_override =
+      runtime_thumb_elapsed_cycles(instruction);
   const ExecuteStatus status = execute_thumb(instruction, memory);
+  if (status == ExecuteStatus::skipped_condition) {
+    elapsed_cycles_ += kThumbSkippedConditionElapsedCycles;
+    return {status, kThumbSkippedConditionElapsedCycles, elapsed_cycles_, false,
+            false};
+  }
   if (status != ExecuteStatus::executed) {
     return {status, 0, elapsed_cycles_, false, false};
   }
 
   constexpr std::uint32_t kSeedThumbElapsedCycles = 1;
-  elapsed_cycles_ += kSeedThumbElapsedCycles;
-  return {status, kSeedThumbElapsedCycles, elapsed_cycles_, false, false};
+  const ArmElapsedCycleEstimate elapsed =
+      elapsed_override.value_or(ArmElapsedCycleEstimate{kSeedThumbElapsedCycles, false, false});
+  elapsed_cycles_ += elapsed.cycles;
+  return {status, elapsed.cycles, elapsed_cycles_, elapsed.data_dependent,
+          elapsed.memory_timing_applied};
+}
+
+ArmStepResult Arm7tdmi::step_thumb(std::uint16_t instruction, MemoryBus& memory,
+                                   const WaitStateControl& waitcnt) {
+  return step_thumb(instruction, memory, waitcnt, false, std::nullopt);
+}
+
+ArmStepResult Arm7tdmi::step_thumb(std::uint16_t instruction, MemoryBus& memory,
+                                   const WaitStateControl& waitcnt,
+                                   bool prefetch_internal_load_overlap,
+                                   std::optional<ArmElapsedCycleEstimate>
+                                       elapsed_override) {
+  std::optional<ArmElapsedCycleEstimate> estimate = std::nullopt;
+  if (can_decode_thumb_memory_transfer(instruction)) {
+    const DecodedThumbMemoryTransferInstruction decoded =
+        decode_thumb_memory_transfer(instruction);
+    const std::uint32_t base =
+        decoded.rb == kPc ? align_word(registers_.at(kPc) + 4U)
+                          : registers_.at(decoded.rb);
+    const std::uint32_t offset =
+        decoded.offset_is_register ? registers_.at(decoded.offset) : decoded.offset;
+    const std::uint32_t address = base + offset;
+    const MemoryAccessTiming timing =
+        MemoryBus::timing(address, thumb_transfer_access_width(decoded.kind), waitcnt);
+    if (has_elapsed_timing_for_estimate(address, timing, true)) {
+      std::uint32_t cycles = thumb_memory_cycles(decoded, timing);
+      if (thumb_word_load_from_game_pak_rom(decoded, address)) {
+        cycles += 3U;
+      }
+      if (thumb_prefetch_overlaps_internal_data_load_cycle(
+              decoded, address,
+              waitcnt.prefetch_enabled() && prefetch_internal_load_overlap)) {
+        --cycles;
+      }
+      estimate = ArmElapsedCycleEstimate{cycles, false, true};
+    }
+  }
+  if (can_decode_thumb_block_transfer(instruction)) {
+    const DecodedThumbBlockTransferInstruction decoded =
+        decode_thumb_block_transfer(instruction);
+    const std::uint32_t address = registers_.at(decoded.rb);
+    const std::optional<std::uint32_t> mirrored_oam_elapsed =
+        thumb_mirrored_oam_block_load_elapsed_cycles(decoded, address, waitcnt);
+    if (mirrored_oam_elapsed.has_value()) {
+      estimate = ArmElapsedCycleEstimate{mirrored_oam_elapsed.value(), false, true};
+    } else {
+      const std::uint32_t register_count = count_registers(decoded.register_list);
+      const MemoryAccessTiming timing =
+          MemoryBus::timing(address, AccessWidth::word, waitcnt);
+      if (has_elapsed_timing_for_estimate(address, timing, true)) {
+        const std::uint32_t cycles =
+            decoded.load
+                ? 1U + register_count *
+                           (static_cast<std::uint32_t>(timing.nonsequential) +
+                            timing.sequential)
+                : register_count * static_cast<std::uint32_t>(timing.sequential);
+        estimate = ArmElapsedCycleEstimate{cycles, false, true};
+      }
+    }
+  }
+  const std::optional<ArmElapsedCycleEstimate> runtime_override =
+      elapsed_override.has_value() ? elapsed_override
+                                   : runtime_thumb_elapsed_cycles(instruction);
+
+  const ExecuteStatus status = execute_thumb(instruction, memory);
+  if (status == ExecuteStatus::skipped_condition) {
+    elapsed_cycles_ += kThumbSkippedConditionElapsedCycles;
+    return {status, kThumbSkippedConditionElapsedCycles, elapsed_cycles_, false,
+            false};
+  }
+  if (status != ExecuteStatus::executed) {
+    return {status, 0, elapsed_cycles_, false, false};
+  }
+
+  constexpr std::uint32_t kSeedThumbElapsedCycles = 1;
+  const ArmElapsedCycleEstimate elapsed =
+      runtime_override.has_value()
+          ? runtime_override.value()
+          : estimate.value_or(ArmElapsedCycleEstimate{kSeedThumbElapsedCycles, false, false});
+  elapsed_cycles_ += elapsed.cycles;
+  return {status, elapsed.cycles, elapsed_cycles_, elapsed.data_dependent,
+          elapsed.memory_timing_applied};
 }
 
 bool Arm7tdmi::condition_passed(ArmCondition condition) const {

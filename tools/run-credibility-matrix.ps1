@@ -5,6 +5,8 @@ param(
   [int]$PerformanceRuns = 3,
   [switch]$SkipPerformance,
   [switch]$FailOnRed,
+  [switch]$FailOnRegression,
+  [string]$BaselinePath = "",
   [string]$OutputDir = ""
 )
 
@@ -15,6 +17,9 @@ $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDir = Join-Path $repoRoot "build\test-results"
 }
+if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
+  $BaselinePath = Join-Path $PSScriptRoot "mgba-suite-green-baseline.json"
+}
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
@@ -23,6 +28,10 @@ $jsonPath = Join-Path $OutputDir "credibility-matrix-$timestamp.json"
 $latestJsonPath = Join-Path $OutputDir "credibility-matrix-latest.json"
 $markdownPath = Join-Path $OutputDir "credibility-matrix-$timestamp.md"
 $latestMarkdownPath = Join-Path $OutputDir "credibility-matrix-latest.md"
+$baseline = $null
+if (Test-Path -LiteralPath $BaselinePath -PathType Leaf) {
+  $baseline = Get-Content -Raw -LiteralPath $BaselinePath | ConvertFrom-Json
+}
 
 function ConvertTo-MatrixStatus {
   param(
@@ -226,6 +235,27 @@ if ($performanceRow) {
 
 $redRows = @($allRows | Where-Object { $_.status -ne "GREEN" })
 $overallStatus = if (@($redRows).Count -eq 0) { "GREEN" } else { "RED" }
+$expectedGreenTargets = @()
+if ($baseline -and $baseline.green_suites) {
+  $expectedGreenTargets = @($baseline.green_suites)
+}
+if ($baseline -and $baseline.include_performance -and -not $SkipPerformance) {
+  $expectedGreenTargets += "core-performance"
+}
+$regressionRows = @()
+foreach ($target in $expectedGreenTargets) {
+  $row = @($allRows | Where-Object { $_.target -eq $target } | Select-Object -First 1)
+  if (@($row).Count -eq 0) {
+    $regressionRows += [ordered]@{
+      target = $target
+      status = "MISSING"
+      first_failure = "target missing from current matrix"
+    }
+  } elseif ($row[0].status -ne "GREEN") {
+    $regressionRows += $row[0]
+  }
+}
+$regressionStatus = if (@($regressionRows).Count -eq 0) { "GREEN" } else { "RED" }
 
 $matrix = [ordered]@{
   generated_at = (Get-Date).ToString("o")
@@ -236,8 +266,17 @@ $matrix = [ordered]@{
   trace_steps = $TraceSteps
   performance_runs = if ($SkipPerformance) { 0 } else { $PerformanceRuns }
   overall_status = $overallStatus
+  regression_status = $regressionStatus
+  regression_baseline_path = if (Test-Path -LiteralPath $BaselinePath -PathType Leaf) {
+    (Resolve-Path -LiteralPath $BaselinePath).Path
+  } else {
+    $BaselinePath
+  }
+  expected_green_targets = $expectedGreenTargets
+  regressions = @($regressionRows)
   rows = $allRows
   red_count = @($redRows).Count
+  regression_count = @($regressionRows).Count
   next_red_target = if (@($redRows).Count -gt 0) { $redRows[0].target } else { $null }
 }
 
@@ -253,6 +292,8 @@ $markdown.Add("")
 $markdown.Add("Purpose: keep every benchmark comparison paired with correctness evidence, subsystem grouping, and reproducible artifacts.")
 $markdown.Add("")
 $markdown.Add("Overall status: **$overallStatus**")
+$markdown.Add("")
+$markdown.Add("Regression status: **$regressionStatus**")
 $markdown.Add("")
 $markdown.Add("| Target | Status | Pass/total | First failure | Categories | Artifact |")
 $markdown.Add("| --- | --- | --- | --- | --- | --- |")
@@ -277,6 +318,15 @@ if ($performanceRow) {
 $markdown.Add("")
 $markdown.Add("Next red target: ``$($matrix.next_red_target)``")
 $markdown.Add("")
+$markdown.Add("Regression baseline: ``$($matrix.regression_baseline_path)``")
+if (@($regressionRows).Count -gt 0) {
+  $markdown.Add("")
+  $markdown.Add("Regressions:")
+  foreach ($row in $regressionRows) {
+    $markdown.Add("- ``$($row.target)``: $($row.status) $($row.first_failure)")
+  }
+}
+$markdown.Add("")
 $markdown.Add("JSON: ``$jsonPath``")
 
 Set-Content -LiteralPath $markdownPath -Value $markdown -Encoding UTF8
@@ -289,4 +339,7 @@ Write-Output "credibility_matrix: next_red_target=$($matrix.next_red_target)"
 
 if ($FailOnRed -and $overallStatus -ne "GREEN") {
   throw "credibility_matrix: RED"
+}
+if ($FailOnRegression -and $regressionStatus -ne "GREEN") {
+  throw "credibility_matrix: REGRESSION"
 }

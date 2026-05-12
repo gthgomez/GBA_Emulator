@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -84,6 +85,45 @@ struct RunnerLastStep {
   std::int32_t active_test = -1;
   std::int32_t active_subtest = -1;
   bool thumb_state = false;
+  std::uint32_t fetch_cycles = 0;
+  bool fetch_timing_applied = false;
+  bool fetch_sequential = false;
+  bool prefetch_enabled = false;
+  bool prefetch_hit = false;
+  std::uint8_t prefetch_buffer_halfwords = 0;
+  bool boundary_forced_nonsequential = false;
+  std::uint32_t cpu_elapsed_cycles = 0;
+  std::uint64_t scheduler_cycles = 0;
+  std::uint32_t device_cycles = 0;
+  std::uint32_t immediate_dma_bus_cycles = 0;
+  std::uint32_t triggered_dma_bus_cycles = 0;
+  bool irq_serviced = false;
+  bool hle_irq_reentry_dispatch_pending = false;
+  bool hle_irq_return_latency_pending = false;
+  bool hle_irq_post_return_latency_armed = false;
+  bool hle_irq_post_return_dispatch_pending = false;
+  bool hle_irq_chained_post_return_dispatch_pending = false;
+  bool hle_irq_chained_post_return_data_dispatch_pending = false;
+  bool hle_irq_chained_post_return_spaced_data_dispatch_pending = false;
+  bool hle_irq_long_timer_chained_return_pending = false;
+  bool hle_irq_post_return_chain_active = false;
+  bool auto_irq_line_high = false;
+  std::uint8_t auto_irq_latency_cycles = 0;
+  std::uint32_t timer_io_access_gap_cycles = 0;
+  std::uint16_t interrupt_enable = 0;
+  std::uint16_t interrupt_flags = 0;
+  std::uint16_t ime = 0;
+  std::array<std::uint16_t, gba::core::Timers::kTimerCount> timer_counters{};
+  std::array<std::uint16_t, gba::core::Timers::kTimerCount> timer_controls{};
+  std::array<std::uint16_t, gba::core::Timers::kTimerCount> timer_enable_phases{};
+  std::array<std::uint32_t, gba::core::Timers::kTimerCount> timer_next_ticks{};
+  bool data_access_present = false;
+  std::uint32_t data_access_address = 0;
+  std::uint8_t data_access_width_bytes = 0;
+  bool data_access_load = false;
+  bool data_access_timer_io = false;
+  std::uint32_t data_access_pre_cycles = 0;
+  std::uint32_t data_access_timer_io_gap_cycles = 0;
 };
 
 struct RunnerStop {
@@ -94,6 +134,7 @@ struct RunnerStop {
 struct RunnerWatchChange {
   std::uint32_t index = 0;
   std::uint32_t pc = 0;
+  std::string kind;
   std::uint32_t previous = 0;
   std::uint32_t current = 0;
   std::int32_t active_test = -1;
@@ -217,8 +258,9 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
                                                      const std::vector<InputEvent>& events,
                                                      std::string_view until_output,
                                                      RunnerStop& runner_stop,
-                                                     std::vector<RunnerLastStep>& recent_steps,
-                                                     std::vector<RunnerWatchChange>& watch_changes) {
+                                                     std::deque<RunnerLastStep>& recent_steps,
+                                                     std::vector<RunnerWatchChange>& watch_changes,
+                                                     std::size_t recent_step_limit) {
   gba::core::CoreSchedulerRunResult result{
       max_steps,
       0,
@@ -235,6 +277,11 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
   std::size_t next_event = 0;
   std::uint32_t previous_locale_wctomb =
       static_cast<std::uint32_t>(read_i32_or(session.memory(), 0x0300377CU, 0));
+  std::int32_t previous_active_test = read_u8_or(session.memory(), 0x030000B2U, -1);
+  std::int32_t previous_active_subtest = read_u16_or(session.memory(), 0x030000B0U, -1);
+  constexpr std::uint32_t kUntilOutputGraceSteps = 4096;
+  bool until_output_seen = false;
+  std::uint32_t until_output_grace_remaining = 0;
   for (std::uint32_t index = 0; index < max_steps; ++index) {
     while (next_event < events.size() && events.at(next_event).step == index) {
       [[maybe_unused]] const bool input_applied =
@@ -243,6 +290,7 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
       ++next_event;
     }
     const gba::core::CoreSchedulerFetchStepResult step = session.step();
+    last_step = RunnerLastStep{};
     last_step.index = index;
     last_step.instruction_set = step.instruction_set;
     last_step.fetch_address = step.fetch_address;
@@ -261,16 +309,96 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
         static_cast<std::uint32_t>(read_i32_or(session.memory(), 0x0300377CU, 0));
     last_step.active_test = read_u8_or(session.memory(), 0x030000B2U, -1);
     last_step.active_subtest = read_u16_or(session.memory(), 0x030000B0U, -1);
+    last_step.fetch_cycles = step.fetch_cycles;
+    last_step.fetch_timing_applied = step.fetch_timing_applied;
+    last_step.fetch_sequential = step.fetch_sequential;
+    last_step.prefetch_enabled = step.prefetch_enabled;
+    last_step.prefetch_hit = step.prefetch_hit;
+    last_step.prefetch_buffer_halfwords = step.prefetch_buffer_halfwords;
+    last_step.boundary_forced_nonsequential = step.boundary_forced_nonsequential;
+    last_step.scheduler_cycles = session.scheduler().scheduler_cycles();
+    const gba::core::CoreSchedulerState scheduler_state =
+        session.scheduler().save_state();
+    last_step.hle_irq_reentry_dispatch_pending =
+        scheduler_state.hle_irq_reentry_dispatch_pending;
+    last_step.hle_irq_return_latency_pending =
+        scheduler_state.hle_irq_return_latency_pending;
+    last_step.hle_irq_post_return_latency_armed =
+        scheduler_state.hle_irq_post_return_latency_armed;
+    last_step.hle_irq_post_return_dispatch_pending =
+        scheduler_state.hle_irq_post_return_dispatch_pending;
+    last_step.hle_irq_chained_post_return_dispatch_pending =
+        scheduler_state.hle_irq_chained_post_return_dispatch_pending;
+    last_step.hle_irq_chained_post_return_data_dispatch_pending =
+        scheduler_state.hle_irq_chained_post_return_data_dispatch_pending;
+    last_step.hle_irq_chained_post_return_spaced_data_dispatch_pending =
+        scheduler_state.hle_irq_chained_post_return_spaced_data_dispatch_pending;
+    last_step.hle_irq_long_timer_chained_return_pending =
+        scheduler_state.hle_irq_long_timer_chained_return_pending;
+    last_step.hle_irq_post_return_chain_active =
+        scheduler_state.hle_irq_post_return_chain_active;
+    last_step.auto_irq_line_high = scheduler_state.auto_irq_line_high;
+    last_step.auto_irq_latency_cycles =
+        scheduler_state.auto_irq_latency_cycles;
+    last_step.timer_io_access_gap_cycles =
+        scheduler_state.timer_io_access_gap_cycles;
+    last_step.interrupt_enable = session.interrupts().interrupt_enable();
+    last_step.interrupt_flags = session.interrupts().interrupt_flags();
+    last_step.ime = session.interrupts().ime();
+    for (std::size_t timer = 0; timer < gba::core::Timers::kTimerCount; ++timer) {
+      last_step.timer_counters.at(timer) = session.timers().counter(timer);
+      last_step.timer_controls.at(timer) = session.timers().control(timer);
+      last_step.timer_enable_phases.at(timer) =
+          session.timers().last_enable_phase(timer);
+      last_step.timer_next_ticks.at(timer) =
+          session.timers().cycles_until_next_prescaler_tick(timer);
+    }
+    if (step.step.has_value()) {
+      last_step.cpu_elapsed_cycles = step.step->cpu_step.elapsed_cycles;
+      last_step.device_cycles = step.step->devices.cycles;
+      last_step.immediate_dma_bus_cycles = step.step->immediate_dma.bus_cycles;
+      last_step.triggered_dma_bus_cycles =
+          step.step->devices.triggered_dma.bus_cycles;
+      last_step.irq_serviced = step.step->irq_serviced;
+      if (step.step->data_access.has_value()) {
+        last_step.data_access_present = true;
+        last_step.data_access_address = step.step->data_access->address;
+        last_step.data_access_width_bytes = step.step->data_access->width_bytes;
+        last_step.data_access_load = step.step->data_access->load;
+        last_step.data_access_timer_io = step.step->data_access->timer_io;
+        last_step.data_access_pre_cycles =
+            step.step->data_access->pre_access_cycles;
+        last_step.data_access_timer_io_gap_cycles =
+            step.step->data_access->timer_io_gap_cycles;
+      }
+    }
     if (last_step.locale_wctomb != previous_locale_wctomb) {
-      watch_changes.push_back({index, last_step.pc, previous_locale_wctomb,
+      watch_changes.push_back({index, last_step.pc, "locale_wctomb",
+                               previous_locale_wctomb,
                                last_step.locale_wctomb, last_step.active_test,
                                last_step.active_subtest});
       previous_locale_wctomb = last_step.locale_wctomb;
     }
+    if (last_step.active_test != previous_active_test) {
+      watch_changes.push_back(
+          {index, last_step.pc, "active_test",
+           static_cast<std::uint32_t>(previous_active_test),
+           static_cast<std::uint32_t>(last_step.active_test), last_step.active_test,
+           last_step.active_subtest});
+      previous_active_test = last_step.active_test;
+    }
+    if (last_step.active_subtest != previous_active_subtest) {
+      watch_changes.push_back(
+          {index, last_step.pc, "active_subtest",
+           static_cast<std::uint32_t>(previous_active_subtest),
+           static_cast<std::uint32_t>(last_step.active_subtest), last_step.active_test,
+           last_step.active_subtest});
+      previous_active_subtest = last_step.active_subtest;
+    }
     last_step.thumb_state = session.cpu().thumb_state();
     recent_steps.push_back(last_step);
-    if (recent_steps.size() > 32U) {
-      recent_steps.erase(recent_steps.begin());
+    if (recent_step_limit != 0 && recent_steps.size() > recent_step_limit) {
+      recent_steps.pop_front();
     }
 
     if (step.fetch_failed) {
@@ -294,11 +422,18 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
       break;
     }
 
-    if (!until_output.empty() &&
+    if (!until_output.empty() && !until_output_seen &&
         session.memory().debug_output().find(until_output) != std::string::npos) {
       runner_stop.reason = "until_output";
       runner_stop.until_output_matched = true;
-      break;
+      until_output_seen = true;
+      until_output_grace_remaining = kUntilOutputGraceSteps;
+    }
+    if (until_output_seen) {
+      if (until_output_grace_remaining == 0) {
+        break;
+      }
+      --until_output_grace_remaining;
     }
   }
 
@@ -318,7 +453,7 @@ std::string header_text(const std::array<std::uint8_t, 12>& bytes) {
   return text;
 }
 
-void print_recent_trace(const std::vector<RunnerLastStep>& recent_steps) {
+void print_recent_trace(const std::deque<RunnerLastStep>& recent_steps) {
   std::cout << "suite_recent_trace_begin\n";
   for (const RunnerLastStep& step : recent_steps) {
     std::cout << "suite_recent_trace: index=" << step.index
@@ -344,7 +479,77 @@ void print_recent_trace(const std::vector<RunnerLastStep>& recent_steps) {
               << " active_test=" << step.active_test
               << " active_subtest=" << step.active_subtest
               << " thumb=" << (step.thumb_state ? "true" : "false")
-              << " fetch_failed=" << (step.fetch_failed ? "true" : "false");
+              << " fetch_failed=" << (step.fetch_failed ? "true" : "false")
+              << " fetch_cycles=" << step.fetch_cycles
+              << " cpu_elapsed=" << step.cpu_elapsed_cycles
+              << " device_cycles=" << step.device_cycles
+              << " scheduler_cycles=" << step.scheduler_cycles
+              << " fetch_timing=" << (step.fetch_timing_applied ? "true" : "false")
+              << " fetch_sequential=" << (step.fetch_sequential ? "true" : "false")
+              << " prefetch_enabled=" << (step.prefetch_enabled ? "true" : "false")
+              << " prefetch_hit=" << (step.prefetch_hit ? "true" : "false")
+              << " prefetch_buffer="
+              << static_cast<unsigned>(step.prefetch_buffer_halfwords)
+              << " boundary_nonseq="
+              << (step.boundary_forced_nonsequential ? "true" : "false")
+              << " irq_serviced=" << (step.irq_serviced ? "true" : "false")
+              << " hle_reentry="
+              << (step.hle_irq_reentry_dispatch_pending ? "true" : "false")
+              << " hle_return_latency="
+              << (step.hle_irq_return_latency_pending ? "true" : "false")
+              << " hle_post_return_armed="
+              << (step.hle_irq_post_return_latency_armed ? "true" : "false")
+              << " hle_post_return_dispatch="
+              << (step.hle_irq_post_return_dispatch_pending ? "true" : "false")
+              << " hle_chained_dispatch="
+              << (step.hle_irq_chained_post_return_dispatch_pending ? "true" : "false")
+              << " hle_chained_data_dispatch="
+              << (step.hle_irq_chained_post_return_data_dispatch_pending ? "true" : "false")
+              << " hle_chained_spaced_data_dispatch="
+              << (step.hle_irq_chained_post_return_spaced_data_dispatch_pending ? "true" : "false")
+              << " hle_long_chained_return="
+              << (step.hle_irq_long_timer_chained_return_pending ? "true" : "false")
+              << " hle_chain="
+              << (step.hle_irq_post_return_chain_active ? "true" : "false")
+              << " auto_irq_line="
+              << (step.auto_irq_line_high ? "true" : "false")
+              << " auto_irq_latency="
+              << static_cast<unsigned>(step.auto_irq_latency_cycles)
+              << " timer_io_gap=" << step.timer_io_access_gap_cycles
+              << " ime=0x" << std::hex << step.ime
+              << " ie=0x" << step.interrupt_enable
+              << " if=0x" << step.interrupt_flags
+              << " tm0=0x" << step.timer_counters.at(0)
+              << "/0x" << step.timer_controls.at(0)
+              << "/phase=" << std::dec << step.timer_enable_phases.at(0)
+              << "/next=" << step.timer_next_ticks.at(0) << std::hex
+              << " tm1=0x" << step.timer_counters.at(1)
+              << "/0x" << step.timer_controls.at(1)
+              << "/phase=" << std::dec << step.timer_enable_phases.at(1)
+              << "/next=" << step.timer_next_ticks.at(1) << std::hex
+              << " tm2=0x" << step.timer_counters.at(2)
+              << "/0x" << step.timer_controls.at(2)
+              << "/phase=" << std::dec << step.timer_enable_phases.at(2)
+              << "/next=" << step.timer_next_ticks.at(2) << std::hex
+              << " tm3=0x" << step.timer_counters.at(3)
+              << "/0x" << step.timer_controls.at(3)
+              << "/phase=" << std::dec << step.timer_enable_phases.at(3)
+              << "/next=" << step.timer_next_ticks.at(3) << std::hex
+              << " dma_bus=" << std::dec << step.immediate_dma_bus_cycles
+              << " triggered_dma_bus=" << step.triggered_dma_bus_cycles;
+    if (step.data_access_present) {
+      std::cout << " data_addr=0x" << std::hex << step.data_access_address
+                << std::dec
+                << " data_width=" << static_cast<unsigned>(step.data_access_width_bytes)
+                << " data_load=" << (step.data_access_load ? "true" : "false")
+                << " data_timer_io="
+                << (step.data_access_timer_io ? "true" : "false")
+                << " data_pre_cycles=" << step.data_access_pre_cycles
+                << " data_timer_io_gap="
+                << step.data_access_timer_io_gap_cycles;
+    } else {
+      std::cout << " data_addr=null";
+    }
     if (step.status.has_value()) {
       std::cout << " status=" << execute_status_name(step.status.value());
     } else {
@@ -359,8 +564,9 @@ void print_watch_changes(const std::vector<RunnerWatchChange>& watch_changes) {
   std::cout << "suite_watch_changes_begin\n";
   for (const RunnerWatchChange& change : watch_changes) {
     std::cout << "suite_watch_change: index=" << change.index << " pc=0x" << std::hex
-              << change.pc << " locale_wctomb_old=0x" << change.previous
-              << " locale_wctomb_new=0x" << change.current << std::dec
+              << change.pc << std::dec << " kind=" << change.kind << std::hex
+              << " old=0x" << change.previous << " new=0x" << change.current
+              << std::dec
               << " active_test=" << change.active_test
               << " active_subtest=" << change.active_subtest << '\n';
   }
@@ -370,9 +576,9 @@ void print_watch_changes(const std::vector<RunnerWatchChange>& watch_changes) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2 || argc > 6) {
+  if (argc < 2 || argc > 7) {
     std::cerr << "usage: mgba-suite-runner <suite.gba> [max_steps] [trace_steps]"
-                 " [input_script] [until_output]\n";
+                 " [input_script] [until_output] [recent_trace_limit]\n";
     return 2;
   }
 
@@ -384,6 +590,8 @@ int main(int argc, char** argv) {
   const std::vector<InputEvent> input_events = argc >= 5 ? parse_input_script(argv[4])
                                                          : std::vector<InputEvent>{};
   const std::string until_output = argc >= 6 ? argv[5] : "";
+  const std::size_t recent_trace_limit =
+      argc >= 7 ? static_cast<std::size_t>(std::stoul(argv[6])) : 32U;
 
   try {
     const std::vector<std::uint8_t> rom = read_file(rom_path);
@@ -411,6 +619,7 @@ int main(int argc, char** argv) {
               << '\n';
     std::cout << "suite_runner: bios_mode=hle\n";
     std::cout << "suite_runner: input_events=" << input_events.size() << '\n';
+    std::cout << "suite_runner: recent_trace_limit=" << recent_trace_limit << '\n';
 
     const std::optional<gba::core::CartridgeHeader> header =
         session.memory().game_pak_header();
@@ -450,11 +659,12 @@ int main(int argc, char** argv) {
 
     RunnerLastStep last_step;
     RunnerStop runner_stop;
-    std::vector<RunnerLastStep> recent_steps;
+    std::deque<RunnerLastStep> recent_steps;
     std::vector<RunnerWatchChange> watch_changes;
     const gba::core::CoreSchedulerRunResult result =
         run_with_last_step(session, max_steps, last_step, input_events, until_output,
-                           runner_stop, recent_steps, watch_changes);
+                           runner_stop, recent_steps, watch_changes,
+                           recent_trace_limit);
 
     std::cout << "suite_runner: requested_steps=" << result.requested_steps << '\n';
     std::cout << "suite_runner: attempted_steps=" << result.attempted_steps << '\n';

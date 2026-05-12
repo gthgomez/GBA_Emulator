@@ -18,7 +18,8 @@
     "Phase 64 updates core_session_state_hash checksum because keypad state is now part of modeled core-session state.",
     "Phase 65 updates core_session_state_hash checksum because LCD control and serial/debug IO state are now part of modeled core-session state.",
     "Phase 66 updates core_session_state_hash checksum because BIOS HLE mode, IRQ HLE trampoline state, and debug aperture output are now part of modeled core-session state.",
-    "Phase 67 updates core_session_state_hash checksum after BIOS HLE scheduler integration and DMA latch correctness work settled the deterministic modeled-state checksum."
+    "Phase 67 updates core_session_state_hash checksum after BIOS HLE scheduler integration and DMA latch correctness work settled the deterministic modeled-state checksum.",
+    "Phase 0 roadmap stabilization updates scheduler_prefetch_cart_loop, cpu_waitcnt_elapsed_estimate, and core_session_state_hash checksums after the active timing/timer branch added runtime multiply timing, timer IO load phasing, prefetch recovery/suppression state, and expanded scheduler state hashing."
   ],
   "rows": [
     {
@@ -87,8 +88,8 @@
     {
       "benchmark": "scheduler_prefetch_cart_loop",
       "expected_operations": 200000,
-      "expected_checksum": "340574158753200",
-      "baseline_ns_per_operation": 218.10,
+      "expected_checksum": "340574159816656",
+      "baseline_ns_per_operation": 335.75,
       "max_ns_per_operation": 500.0
     },
     {
@@ -101,15 +102,15 @@
     {
       "benchmark": "cpu_waitcnt_elapsed_estimate",
       "expected_operations": 500000,
-      "expected_checksum": "4372252796",
-      "baseline_ns_per_operation": 25.89,
+      "expected_checksum": "4373252798",
+      "baseline_ns_per_operation": 49.48,
       "max_ns_per_operation": 70.0
     },
     {
       "benchmark": "core_session_state_hash",
       "expected_operations": 10000,
-      "expected_checksum": "7568",
-      "baseline_ns_per_operation": 451015.20,
+      "expected_checksum": "492240",
+      "baseline_ns_per_operation": 419608.05,
       "max_ns_per_operation": 950000.0
     }
   ]

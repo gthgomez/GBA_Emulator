@@ -1,10 +1,13 @@
 param(
-  [uint32]$MaxSteps = 100000,
+  [uint32]$MaxSteps = 0,
   [uint32]$TraceSteps = 0,
+  [uint32]$TraceWindow = 32,
   [string]$InputScript = "",
   [ValidateSet("menu", "memory", "io-read", "timing", "timers", "timer-irq", "shifter", "carry", "multiply-long", "bios-math", "dma", "sio-read", "sio-timing", "misc-edge", "video", "all")]
   [string]$Suite = "menu",
   [string]$UntilOutput = "",
+  [switch]$TraceFirstFailure,
+  [switch]$FailOnRed,
   [switch]$UpdateDocs
 )
 
@@ -34,12 +37,241 @@ $suiteMenuIndices = [ordered]@{
   "misc-edge" = 12
   "video" = 13
 }
+$allSuiteOrder = @(
+  "memory",
+  "io-read",
+  "timing",
+  "timers",
+  "timer-irq",
+  "shifter",
+  "carry",
+  "multiply-long",
+  "bios-math",
+  "dma",
+  "sio-read",
+  "sio-timing",
+  "misc-edge",
+  "video"
+)
+$suiteDefaultMaxSteps = @{
+  "menu" = 1000000
+  "memory" = 8000000
+  "io-read" = 8000000
+  "timing" = 20000000
+  "timers" = 20000000
+  "timer-irq" = 8000000
+  "shifter" = 8000000
+  "carry" = 8000000
+  "multiply-long" = 8000000
+  "bios-math" = 8000000
+  "dma" = 20000000
+  "sio-read" = 8000000
+  "sio-timing" = 12000000
+  "misc-edge" = 12000000
+  "video" = 20000000
+  "all" = 20000000
+}
+
+if ($MaxSteps -eq 0) {
+  $MaxSteps = [uint32]$suiteDefaultMaxSteps[$Suite]
+}
 
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
 
 if (-not (Test-Path -LiteralPath $suitePath -PathType Leaf)) {
   & (Join-Path $PSScriptRoot "build-mgba-suite.ps1")
+}
+
+function Get-TextSha256 {
+  param([string]$Text)
+
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+    $hash = $sha.ComputeHash($bytes)
+    return (($hash | ForEach-Object { $_.ToString("x2") }) -join "")
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function ConvertTo-SuiteGreenStatus {
+  param([object]$SuiteResult)
+
+  if ($null -eq $SuiteResult -or $null -eq $SuiteResult.parsed -or $null -eq $SuiteResult.runner) {
+    return "RED"
+  }
+  if (-not [bool]$SuiteResult.parsed.ended) {
+    return "RED"
+  }
+  if ($null -eq $SuiteResult.parsed.pass -or $null -eq $SuiteResult.parsed.total) {
+    return "RED"
+  }
+  if ([int]$SuiteResult.parsed.pass -ne [int]$SuiteResult.parsed.total) {
+    return "RED"
+  }
+  if ([int]$SuiteResult.parsed.failure_count -ne 0) {
+    return "RED"
+  }
+  if ($null -ne $SuiteResult.runner.unsupported_steps -and
+      [int64]$SuiteResult.runner.unsupported_steps -ne 0) {
+    return "RED"
+  }
+  if ($null -ne $SuiteResult.runner.fetch_failures -and
+      [int64]$SuiteResult.runner.fetch_failures -ne 0) {
+    return "RED"
+  }
+  return "GREEN"
+}
+
+function ConvertTo-CategorySummaryText {
+  param([object[]]$Categories)
+
+  if ($null -eq $Categories -or @($Categories).Count -eq 0) {
+    return ""
+  }
+  $parts = New-Object System.Collections.Generic.List[string]
+  foreach ($category in @($Categories)) {
+    $parts.Add("$($category.name)=$($category.count)")
+  }
+  return ($parts -join "; ")
+}
+
+if ($Suite -eq "all") {
+  $suiteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $suitePath).Hash
+  $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $jsonPath = Join-Path $resultsDir "mgba-suite-all-$timestamp.json"
+  $markdownPath = Join-Path $resultsDir "mgba-suite-all-$timestamp.md"
+  $latestMarkdownPath = Join-Path $resultsDir "mgba-suite-all-latest.md"
+  $childUntilOutput = if ([string]::IsNullOrWhiteSpace($UntilOutput)) { "END:" } else { $UntilOutput }
+
+  $rows = New-Object System.Collections.Generic.List[object]
+  foreach ($suiteName in $allSuiteOrder) {
+    $suiteError = $null
+    try {
+      & $PSCommandPath -Suite $suiteName -MaxSteps $MaxSteps -TraceSteps $TraceSteps -TraceWindow $TraceWindow -UntilOutput $childUntilOutput -TraceFirstFailure:$TraceFirstFailure | Out-Null
+    } catch {
+      $suiteError = $_.Exception.Message
+    }
+
+    $childJsonPath = Join-Path $resultsDir "mgba-suite-latest.json"
+    $child = $null
+    if (Test-Path -LiteralPath $childJsonPath -PathType Leaf) {
+      $child = Get-Content -Raw -LiteralPath $childJsonPath | ConvertFrom-Json
+    }
+    $status = if ($suiteError) { "RED" } else { ConvertTo-SuiteGreenStatus -SuiteResult $child }
+    $parsed = if ($child) { $child.parsed } else { $null }
+    $runner = if ($child) { $child.runner } else { $null }
+    $passTotal = if ($parsed -and $null -ne $parsed.pass -and $null -ne $parsed.total) {
+      "$($parsed.pass)/$($parsed.total)"
+    } else {
+      ""
+    }
+    $rows.Add([ordered]@{
+      target = $suiteName
+      status = $status
+      parsed_suite = if ($parsed) { $parsed.suite } else { $null }
+      pass = if ($parsed) { $parsed.pass } else { $null }
+      total = if ($parsed) { $parsed.total } else { $null }
+      pass_total = $passTotal
+      ended = if ($parsed) { [bool]$parsed.ended } else { $false }
+      first_failure = if ($suiteError) {
+        $suiteError
+      } elseif ($parsed) {
+        $parsed.first_failure
+      } else {
+        "missing suite result"
+      }
+      failure_count = if ($parsed) { $parsed.failure_count } else { $null }
+      failure_categories = if ($parsed) { $parsed.failure_categories } else { @() }
+      runner_stop_reason = if ($runner) { $runner.runner_stop_reason } else { $null }
+      unsupported_steps = if ($runner) { $runner.unsupported_steps } else { $null }
+      fetch_failures = if ($runner) { $runner.fetch_failures } else { $null }
+      state_hash = if ($runner) { $runner.state_hash } else { $null }
+      artifact = if ($child) { $child.json_result_path } else { $childJsonPath }
+    })
+    Write-Output "suite_all: target=$suiteName status=$status pass_total=$passTotal artifact=$($child.json_result_path)"
+  }
+
+  $rowArray = @($rows.ToArray())
+  $redRows = @($rowArray | Where-Object { $_.status -ne "GREEN" })
+  $overallStatus = if (@($redRows).Count -eq 0) { "GREEN" } else { "RED" }
+  $compatibilityInput = ($rowArray | ConvertTo-Json -Depth 8 -Compress)
+  $compatibilityHash = Get-TextSha256 -Text "$suiteHash`n$compatibilityInput"
+  $aggregate = [ordered]@{
+    timestamp = $timestamp
+    suite_request = "all"
+    status = "complete"
+    overall_status = $overallStatus
+    command = ".\tools\run-mgba-suite.ps1 -Suite all -MaxSteps $MaxSteps -TraceSteps $TraceSteps -TraceWindow $TraceWindow -UntilOutput `"$childUntilOutput`" -TraceFirstFailure:$TraceFirstFailure -FailOnRed:$FailOnRed"
+    rom_path = $suitePath
+    suite_sha256 = $suiteHash
+    json_result_path = $jsonPath
+    markdown_result_path = $markdownPath
+    max_steps = $MaxSteps
+    trace_steps = $TraceSteps
+    until_output = $childUntilOutput
+    compatibility_hash = $compatibilityHash
+    rows = $rowArray
+    red_count = @($redRows).Count
+    next_red_target = if (@($redRows).Count -gt 0) { $redRows[0].target } else { $null }
+  }
+
+  $json = $aggregate | ConvertTo-Json -Depth 10
+  Set-Content -LiteralPath $jsonPath -Value $json -Encoding UTF8
+  Set-Content -LiteralPath $latestJsonPath -Value $json -Encoding UTF8
+
+  $markdown = New-Object System.Collections.Generic.List[string]
+  $markdown.Add("# mGBA All-Suite Summary $timestamp")
+  $markdown.Add("")
+  $markdown.Add("Overall status: **$overallStatus**")
+  $markdown.Add("")
+  $markdown.Add("Compatibility hash: ``$compatibilityHash``")
+  $markdown.Add("")
+  $markdown.Add("| Suite | Status | Pass/total | First failure | Categories | Artifact |")
+  $markdown.Add("| --- | --- | --- | --- | --- | --- |")
+  foreach ($row in $rowArray) {
+    $failure = if ([string]::IsNullOrWhiteSpace($row.first_failure)) { "" } else { $row.first_failure.Replace("|", "\|") }
+    $categories = (ConvertTo-CategorySummaryText -Categories $row.failure_categories).Replace("|", "\|")
+    $markdown.Add("| ``$($row.target)`` | $($row.status) | ``$($row.pass_total)`` | $failure | $categories | ``$($row.artifact)`` |")
+  }
+  $markdown.Add("")
+  $markdown.Add("Next red target: ``$($aggregate.next_red_target)``")
+  $markdown.Add("")
+  $markdown.Add("JSON: ``$jsonPath``")
+  Set-Content -LiteralPath $markdownPath -Value $markdown -Encoding UTF8
+  Set-Content -LiteralPath $latestMarkdownPath -Value $markdown -Encoding UTF8
+
+  if ($UpdateDocs) {
+    $greenCount = @($rowArray | Where-Object { $_.status -eq "GREEN" }).Count
+    $totalCount = @($rowArray).Count
+    $docSection = @"
+
+## Generated All-Suite Run $timestamp
+
+| Field | Value |
+| --- | --- |
+| Status | ``$overallStatus`` |
+| Green suites | ``$greenCount/$totalCount`` |
+| Next red target | ``$($aggregate.next_red_target)`` |
+| Compatibility hash | ``$compatibilityHash`` |
+| JSON result | ``$jsonPath`` |
+| Markdown result | ``$markdownPath`` |
+
+"@
+    Add-Content -LiteralPath $docPath -Value $docSection -Encoding UTF8
+  }
+
+  Write-Output "suite_test: all_status=$overallStatus"
+  Write-Output "suite_test: compatibility_hash=$compatibilityHash"
+  Write-Output "suite_test: json_result_path=$jsonPath"
+  Write-Output "suite_test: markdown_result_path=$markdownPath"
+  Write-Output "suite_test: next_red_target=$($aggregate.next_red_target)"
+  if ($FailOnRed -and $overallStatus -ne "GREEN") {
+    throw "suite_test: RED"
+  }
+  return
 }
 
 g++ -std=c++17 -Wall -Wextra -Werror `
@@ -103,13 +335,15 @@ $header = @(
   "suite_test: target_suite=$targetSuite",
   "suite_test: max_steps=$MaxSteps",
   "suite_test: trace_steps=$TraceSteps",
+  "suite_test: trace_window=$TraceWindow",
+  "suite_test: trace_first_failure=$TraceFirstFailure",
   "suite_test: input_script=$InputScript",
   "suite_test: until_output=$UntilOutput",
   "suite_test: suite_sha256=$suiteHash"
 )
 
 $header | Tee-Object -FilePath $resultPath
-& $runnerPath $suitePath $MaxSteps $TraceSteps $InputScript $UntilOutput | Tee-Object -FilePath $resultPath -Append
+& $runnerPath $suitePath $MaxSteps $TraceSteps $InputScript $UntilOutput $TraceWindow | Tee-Object -FilePath $resultPath -Append
 
 $lines = Get-Content -LiteralPath $resultPath
 
@@ -249,6 +483,83 @@ function Get-MemorySuiteSubtestName {
   return $names[[int]$Index]
 }
 
+function Get-SuiteSourceInfo {
+  param([string]$SuiteName)
+
+  switch ($SuiteName) {
+    "Timing tests" { return @{ File = "timing.c"; Array = "timingTests" } }
+    "Timer count-up tests" { return @{ File = "timers.c"; Array = "timerTests" } }
+    "Timer IRQ tests" { return @{ File = "timer-irq.c"; Array = "timerIRQTests" } }
+    "BIOS math tests" { return @{ File = "bios-math.c"; Array = "mathTests" } }
+    "DMA tests" { return @{ File = "dma.c"; Array = "dmaTests" } }
+    default { return $null }
+  }
+}
+
+function Get-SuiteSourcePath {
+  param([string]$FileName)
+
+  $sourcePath = Join-Path $repoRoot "external\test-suites\mgba-suite\src\$FileName"
+  if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+    return $sourcePath
+  }
+  $sourcePath = Join-Path $buildDir "test-suite-build\mgba-suite\src\$FileName"
+  if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+    return $sourcePath
+  }
+  return $null
+}
+
+function Get-CArrayTestName {
+  param(
+    [string]$SuiteName,
+    [int64]$Index
+  )
+
+  if ($Index -lt 0) {
+    return $null
+  }
+  $sourceInfo = Get-SuiteSourceInfo -SuiteName $SuiteName
+  if ($null -eq $sourceInfo) {
+    return $null
+  }
+  $sourcePath = Get-SuiteSourcePath -FileName $sourceInfo.File
+  if (-not $sourcePath) {
+    return $null
+  }
+
+  $inside = $false
+  $depth = 0
+  $names = New-Object System.Collections.Generic.List[string]
+  foreach ($line in Get-Content -LiteralPath $sourcePath) {
+    if (-not $inside -and $line -match ("static\s+const\s+struct\s+\w+\s+" + [regex]::Escape($sourceInfo.Array) + "\[\]\s*=")) {
+      $inside = $true
+    }
+    if (-not $inside) {
+      continue
+    }
+
+    foreach ($char in $line.ToCharArray()) {
+      if ($char -eq "{") {
+        ++$depth
+      } elseif ($char -eq "}") {
+        --$depth
+      }
+    }
+    if ($line -match '^\s*\{\s*"([^"]+)"\s*,') {
+      $names.Add($Matches[1])
+    }
+    if ($inside -and $depth -le 0 -and $line -match ";\s*$") {
+      break
+    }
+  }
+
+  if ($Index -ge $names.Count) {
+    return $null
+  }
+  return $names[[int]$Index]
+}
+
 function Get-MemoryFailureCategory {
   param(
     [string]$TestName,
@@ -332,9 +643,32 @@ function Get-SuiteFailureCategory {
     if ($probe -match "ROM") { return "dma_rom_source_open_bus" }
     return "dma_other"
   }
-  if ($SuiteName -match "Timing") { return "timing" }
+  if ($SuiteName -match "Timing") {
+    if ($probe -match "DMA") { return "timing_dma" }
+    if ($probe -match "swi|Div|Sqrt|Atan|CpuSet") { return "timing_bios_hle" }
+    if ($probe -match "mul|mla|smull|smlal|umull|umlal") { return "timing_multiply" }
+    if ($probe -match "\[#0x08000000\]") { return "timing_rom_data_access" }
+    if ($FailureLine -match "ROM P") { return "timing_rom_prefetch" }
+    if ($FailureLine -match "ROM .N|ROM PN|ROM .NS|ROM PNS") {
+      return "timing_rom_nonsequential"
+    }
+    if ($FailureLine -match "EWRAM|IWRAM") { return "timing_internal_memory" }
+    return "timing_other"
+  }
   if ($SuiteName -match "Timer IRQ") { return "timer_irq" }
-  if ($SuiteName -match "Timer") { return "timers" }
+  if ($SuiteName -match "Timer") {
+    $prescaled = $TestName -match "^[68]b|^10b"
+    $multiIrq = $FailureLine -match "\b[24]i\b"
+    $loopCount = $FailureLine -match "\b(1xs|16xs)\b"
+    $sample = $FailureLine -match "\b(1xv|16xv)\b"
+    if ($prescaled -and $loopCount) { return "timers_prescaled_loop_count" }
+    if ($prescaled -and $sample) { return "timers_prescaled_counter_sample" }
+    if ($multiIrq -and $loopCount) { return "timers_multi_irq_loop_count" }
+    if ($multiIrq -and $sample) { return "timers_multi_irq_counter_sample" }
+    if ($loopCount) { return "timers_loop_count" }
+    if ($sample) { return "timers_counter_sample" }
+    return "timers_other"
+  }
   if ($SuiteName -match "Shifter") { return "shifter" }
   if ($SuiteName -match "Carry") { return "carry" }
   if ($SuiteName -match "Multiply") { return "multiply_long" }
@@ -410,6 +744,8 @@ function Get-SuiteFailureCategories {
 
 $debugText = Get-OutputBlock -Lines $lines -Begin "suite_output_begin" -End "suite_output_end"
 $sramText = Get-OutputBlock -Lines $lines -Begin "suite_sram_text_begin" -End "suite_sram_text_end"
+$watchText = Get-OutputBlock -Lines $lines -Begin "suite_watch_changes_begin" -End "suite_watch_changes_end"
+$watchChanges = @($watchText -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $combinedText = @($debugText, $sramText) -join "`n"
 
 $begunSuite = $null
@@ -439,10 +775,46 @@ $activeTestId = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "su
 $activeSubtestId = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "active_subtest_id")
 $stopReason = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "stop_reason"
 $runnerStopReason = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "runner_stop_reason"
-$activeTestName = if ($begunSuite -eq "Memory tests") { Get-MemorySuiteTestName -Index $activeTestId } else { $null }
+$activeTestName = if ($begunSuite -eq "Memory tests") {
+  Get-MemorySuiteTestName -Index $activeTestId
+} else {
+  Get-CArrayTestName -SuiteName $begunSuite -Index $activeTestId
+}
 $activeSubtestName = if ($begunSuite -eq "Memory tests") { Get-MemorySuiteSubtestName -Index $activeSubtestId } else { $null }
 $failures = @(Get-SuiteFailures -Text $combinedText)
 $failureCategories = @(Get-SuiteFailureCategories -Text $combinedText -SuiteName $begunSuite)
+
+$firstFailureTrace = $null
+if ($TraceFirstFailure -and $firstFailure -and $firstFailure -match "^FAIL:") {
+  $traceResultPath = Join-Path $resultsDir "mgba-suite-$timestamp-first-failure-trace.txt"
+  $firstFailureTraceWindow = [Math]::Max([uint32]512, $TraceWindow)
+  & $runnerPath $suitePath $MaxSteps 0 $InputScript "FAIL:" $firstFailureTraceWindow | Tee-Object -FilePath $traceResultPath | Out-Null
+  $traceLines = Get-Content -LiteralPath $traceResultPath
+  $traceDebugText = Get-OutputBlock -Lines $traceLines -Begin "suite_output_begin" -End "suite_output_end"
+  $traceRecentText = Get-OutputBlock -Lines $traceLines -Begin "suite_recent_trace_begin" -End "suite_recent_trace_end"
+  $traceWatchText = Get-OutputBlock -Lines $traceLines -Begin "suite_watch_changes_begin" -End "suite_watch_changes_end"
+  $traceFailure = $null
+  foreach ($line in ($traceDebugText -split "`r?`n")) {
+    if ($line -match "^FAIL:") {
+      $traceFailure = $line.Trim()
+      break
+    }
+  }
+  $firstFailureTrace = [ordered]@{
+    text_result_path = $traceResultPath
+    until_output = "FAIL:"
+    trace_window = $firstFailureTraceWindow
+    matched = (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "until_output_matched")
+    first_failure = $traceFailure
+    attempted_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "attempted_steps")
+    executed_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "executed_steps")
+    unsupported_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "unsupported_steps")
+    fetch_failures = Convert-ToNullableInt (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "fetch_failures")
+    final_pc = Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "final_pc"
+    recent_trace = @($traceRecentText -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    watch_changes = @($traceWatchText -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  }
+}
 
 if ($null -eq $firstFailure -and $begunSuite -and -not $ended) {
   $namedFrontier = if ($activeTestName) { "$activeTestName" } else { "test_id=$activeTestId" }
@@ -459,13 +831,15 @@ $result = [ordered]@{
   suite_request = $Suite
   target_suite = $targetSuite
   status = if ($ended) { "complete" } elseif ($begunSuite) { "started_incomplete" } else { "not_started" }
-  command = ".\tools\run-mgba-suite.ps1 -Suite $Suite -MaxSteps $MaxSteps -TraceSteps $TraceSteps -InputScript `"$InputScript`" -UntilOutput `"$UntilOutput`""
+  command = ".\tools\run-mgba-suite.ps1 -Suite $Suite -MaxSteps $MaxSteps -TraceSteps $TraceSteps -TraceWindow $TraceWindow -InputScript `"$InputScript`" -UntilOutput `"$UntilOutput`" -TraceFirstFailure:$TraceFirstFailure -FailOnRed:$FailOnRed"
   rom_path = $suitePath
   suite_sha256 = $suiteHash
   text_result_path = $resultPath
   json_result_path = $jsonPath
   max_steps = $MaxSteps
   trace_steps = $TraceSteps
+  trace_window = $TraceWindow
+  trace_first_failure = [bool]$TraceFirstFailure
   input_script = $InputScript
   until_output = $UntilOutput
   parsed = [ordered]@{
@@ -501,6 +875,10 @@ $result = [ordered]@{
     sram_text_bytes = $sramText.Length
     debug_text = $debugText
     sram_text = $sramText
+  }
+  diagnostics = [ordered]@{
+    watch_changes = $watchChanges
+    first_failure_trace = $firstFailureTrace
   }
 }
 
@@ -539,3 +917,8 @@ if ($UpdateDocs) {
 
 Write-Output "suite_test: result_path=$resultPath"
 Write-Output "suite_test: json_result_path=$jsonPath"
+$singleStatus = ConvertTo-SuiteGreenStatus -SuiteResult ([pscustomobject]$result)
+Write-Output "suite_test: status=$singleStatus"
+if ($FailOnRed -and $singleStatus -ne "GREEN") {
+  throw "suite_test: RED"
+}

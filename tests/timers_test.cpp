@@ -79,18 +79,143 @@ int main() {
 
   timers.reset();
   interrupts.reset();
+  timers.write_reload(0, 0);
+  timers.write_control(0, 0x0080);
+  timers.defer_newly_enabled_ticks();
+  timers.tick(0, interrupts);
+  timers.tick(1, interrupts);
+  expect(timers.counter(0) == 0,
+         "zero-cycle tick preserves deferred timer start state");
+  timers.tick(1, interrupts);
+  expect(timers.counter(0) == 1,
+         "deferred timer start counts the next cycle after the delay");
+
+  timers.reset();
+  interrupts.reset();
+  timers.write_reload(0, 0);
+  timers.write_control(0, 0x0080);
+  timers.defer_newly_enabled_ticks();
+  timers.tick(3, interrupts);
+  expect(timers.counter(0) == 2,
+         "deferred timer start counts remaining cycles in the same tick batch");
+
+  timers.reset();
+  interrupts.reset();
+  timers.tick(179, interrupts);
+  timers.write_reload(0, 0xFFEE);
+  timers.write_control(0, 0x00C3);
+  timers.defer_newly_enabled_ticks();
+  const Timers::State deferred_timer_state = timers.save_state();
+  timers.tick(1024, interrupts);
+  expect(timers.load_state(deferred_timer_state),
+         "timer state restore accepts deferred active timer state");
+  timers.tick(1, interrupts);
+  expect(timers.counter(0) == 0xFFEE,
+         "timer state restore preserves deferred enable delay");
+  timers.tick(843, interrupts);
+  expect(timers.counter(0) == 0xFFEE,
+         "timer state restore preserves 1024-prescaler phase before edge");
+  timers.tick(1, interrupts);
+  expect(timers.counter(0) == 0xFFEF,
+         "timer state restore resumes on the original prescaler edge");
+
+  timers.reset();
+  interrupts.reset();
   expect(timers.overflow_count(0) == 0, "timer reset clears overflow count");
   timers.write_reload(1, 0);
   timers.write_control(1, 0x0081);
+  expect(timers.cycles_until_next_prescaler_tick(1) == 64,
+         "timer1 prescaler phase starts one full divisor from the first tick");
   timers.tick(63, interrupts);
   expect(timers.counter(1) == 0, "timer1 prescaler waits for divisor");
+  expect(timers.cycles_until_next_prescaler_tick(1) == 1,
+         "timer1 prescaler phase reports the next edge before it lands");
   timers.tick(1, interrupts);
   expect(timers.counter(1) == 1, "timer1 prescaler increments at 64 cycles");
+  expect(timers.cycles_until_next_prescaler_tick(1) == 64,
+         "timer1 prescaler phase wraps after the edge lands");
   timers.write_reload(1, 0xFFF0);
   expect(timers.counter(1) == 1, "timer1 reload write does not change running counter");
   timers.write_control(1, 0);
   timers.write_control(1, 0x0081);
   expect(timers.counter(1) == 0xFFF0, "timer1 restart reloads counter");
+
+  timers.reset();
+  interrupts.reset();
+  timers.tick(179, interrupts);
+  timers.write_reload(0, 0xFFEE);
+  timers.write_control(0, 0x00C3);
+  expect(timers.last_enable_phase(0) == 179,
+         "timer0 records 1024-prescaler enable phase");
+  expect(timers.cycles_until_next_prescaler_tick(0) == 845,
+         "timer0 reports cycles until the next 1024-prescaler edge");
+  timers.tick(844, interrupts);
+  expect(timers.counter(0) == 0xFFEE,
+         "timer0 1024-prescaler waits until the recorded edge");
+  expect(timers.cycles_until_next_prescaler_tick(0) == 1,
+         "timer0 reports the final cycle before the 1024-prescaler edge");
+  timers.tick(1, interrupts);
+  expect(timers.counter(0) == 0xFFEF,
+         "timer0 increments on the recorded 1024-prescaler edge");
+  timers.tick(16U * 1024U, interrupts);
+  expect(timers.counter(0) == 0xFFFF,
+         "timer0 reaches the pre-overflow state on 1024-prescaler edges");
+  timers.tick(1019, interrupts);
+  expect(timers.counter(0) == 0xFFFF,
+         "timer0 holds the pre-overflow value before the final edge");
+  expect(timers.cycles_until_next_prescaler_tick(0) == 5,
+         "timer0 reports five cycles until the overflowing 1024-prescaler edge");
+  timers.tick(5, interrupts);
+  expect(timers.counter(0) == 0xFFEE,
+         "timer0 overflows back to reload on the traced 1024-prescaler edge");
+  expect(interrupts.requested(InterruptSource::timer0),
+         "timer0 requests IRQ on the traced 1024-prescaler overflow edge");
+
+  timers.reset();
+  interrupts.reset();
+  timers.write_reload(0, 0xFFFF);
+  timers.write_control(0, 0x00C0);
+  const Timers::TickResult repeated_overflow = timers.tick(3, interrupts);
+  expect(timers.counter(0) == 0xFFFF,
+         "batched one-cycle timer overflows keep the reload value");
+  expect(timers.overflow_count(0) == 3,
+         "batched one-cycle timer records every overflow");
+  expect(repeated_overflow.first_irq_cycle.has_value() &&
+             repeated_overflow.first_irq_cycle.value() == 1,
+         "batched one-cycle timer reports the first IRQ cycle");
+
+  timers.reset();
+  interrupts.reset();
+  timers.write_reload(0, 0xFFFF);
+  timers.write_reload(1, 0xFFFE);
+  timers.write_control(0, 0x0080);
+  timers.write_control(1, 0x00C4);
+  const Timers::TickResult cascaded_overflow = timers.tick(3, interrupts);
+  expect(timers.counter(1) == 0xFFFF,
+         "batched count-up timer observes every source overflow");
+  expect(timers.overflow_count(1) == 1,
+         "batched count-up timer records cascaded overflow");
+  expect(cascaded_overflow.first_irq_cycle.has_value() &&
+             cascaded_overflow.first_irq_cycle.value() == 2,
+         "batched count-up timer reports the cascaded IRQ cycle");
+
+  timers.reset();
+  interrupts.reset();
+  timers.write_reload(0, 0xFFFF);
+  timers.write_control(0, 0x0080);
+  timers.tick(1, interrupts);
+  interrupts.reset();
+  timers.write_reload(1, 0xFFFE);
+  timers.write_control(1, 0x00C4);
+  timers.defer_newly_enabled_ticks();
+  const Timers::TickResult deferred_cascade = timers.tick(3, interrupts);
+  expect(timers.counter(1) == 0xFFFE,
+         "deferred count-up timer ignores the first source overflow");
+  expect(timers.overflow_count(1) == 1,
+         "deferred count-up timer still records later cascaded overflow");
+  expect(deferred_cascade.first_irq_cycle.has_value() &&
+             deferred_cascade.first_irq_cycle.value() == 3,
+         "deferred count-up timer shifts the cascaded IRQ cycle");
 
   timers.reset();
   interrupts.reset();

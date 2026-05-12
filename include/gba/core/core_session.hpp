@@ -43,7 +43,9 @@ class CoreSession {
   [[nodiscard]] MemoryBus& memory();
   [[nodiscard]] const MemoryBus& memory() const;
   [[nodiscard]] InterruptController& interrupts();
+  [[nodiscard]] const InterruptController& interrupts() const;
   [[nodiscard]] Timers& timers();
+  [[nodiscard]] const Timers& timers() const;
   [[nodiscard]] DmaController& dma();
   [[nodiscard]] PpuTiming& ppu();
   [[nodiscard]] Apu& apu();

@@ -10,6 +10,7 @@
 namespace gba::core {
 
 class MemoryBus;
+class WaitStateControl;
 
 enum class DmaAddressControl : std::uint8_t {
   increment = 0,
@@ -69,12 +70,15 @@ class DmaController {
   [[nodiscard]] std::uint64_t state_hash() const;
 
   [[nodiscard]] DmaRunResult run_immediate(MemoryBus& memory,
-                                           InterruptController& interrupts);
+                                           InterruptController& interrupts,
+                                           const WaitStateControl* waitcnt = nullptr);
   [[nodiscard]] DmaRunResult run_trigger(DmaTrigger trigger, MemoryBus& memory,
-                                         InterruptController& interrupts);
+                                         InterruptController& interrupts,
+                                         const WaitStateControl* waitcnt = nullptr);
   [[nodiscard]] DmaRunResult run_sound_fifo(DmaTrigger trigger, MemoryBus& memory,
                                             Apu& apu,
-                                            InterruptController& interrupts);
+                                            InterruptController& interrupts,
+                                            const WaitStateControl* waitcnt = nullptr);
 
  private:
   struct Channel {
@@ -99,12 +103,14 @@ class DmaController {
                                                                    std::uint32_t address);
   [[nodiscard]] bool execute_channel(std::size_t channel, MemoryBus& memory,
                                      InterruptController& interrupts,
+                                     const WaitStateControl* waitcnt,
                                      std::uint32_t& units_transferred,
                                      std::uint32_t& bus_cycles);
   [[nodiscard]] bool execute_sound_fifo_channel(std::size_t channel,
                                                 DirectSoundChannel fifo,
                                                 MemoryBus& memory, Apu& apu,
                                                 InterruptController& interrupts,
+                                                const WaitStateControl* waitcnt,
                                                 std::uint32_t& units_transferred,
                                                 std::uint32_t& bus_cycles);
 };

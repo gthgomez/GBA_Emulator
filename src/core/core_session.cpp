@@ -81,7 +81,15 @@ InterruptController& CoreSession::interrupts() {
   return interrupts_;
 }
 
+const InterruptController& CoreSession::interrupts() const {
+  return interrupts_;
+}
+
 Timers& CoreSession::timers() {
+  return timers_;
+}
+
+const Timers& CoreSession::timers() const {
   return timers_;
 }
 

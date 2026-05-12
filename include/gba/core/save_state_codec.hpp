@@ -27,7 +27,7 @@ struct SaveStateDecodeResult {
 class SaveStateCodec {
  public:
   static constexpr std::uint32_t kMagic = 0x53534247;  // GBSS, little-endian.
-  static constexpr std::uint32_t kVersion = 1;
+  static constexpr std::uint32_t kVersion = 2;
 
   [[nodiscard]] static std::vector<std::uint8_t> encode(const CoreSession& session);
   [[nodiscard]] static SaveStateDecodeResult decode_into(

@@ -2,6 +2,7 @@
 
 #include "gba/core/memory_bus.hpp"
 #include "gba/core/state_hash.hpp"
+#include "gba/core/wait_state_control.hpp"
 
 #include <optional>
 #include <stdexcept>
@@ -80,6 +81,103 @@ constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
 [[nodiscard]] constexpr std::uint32_t duplicate_halfword(std::uint16_t value) {
   return static_cast<std::uint32_t>(value) |
          (static_cast<std::uint32_t>(value) << 16U);
+}
+
+[[nodiscard]] bool game_pak_region(Region region) {
+  return region == Region::game_pak_rom || region == Region::game_pak_save;
+}
+
+[[nodiscard]] MemoryAccessTiming dma_timing(std::uint32_t address, AccessWidth width,
+                                            const WaitStateControl* waitcnt) {
+  return waitcnt != nullptr ? MemoryBus::timing(address, width, *waitcnt)
+                            : MemoryBus::timing(address, width);
+}
+
+[[nodiscard]] std::uint32_t dma_access_phase_cycles(const MemoryAccessTiming& timing,
+                                                    bool sequential,
+                                                    bool external_waitcnt_access) {
+  const std::uint32_t cycles =
+      sequential ? static_cast<std::uint32_t>(timing.sequential)
+                 : static_cast<std::uint32_t>(timing.nonsequential);
+  return external_waitcnt_access ? cycles + 1U : cycles;
+}
+
+[[nodiscard]] std::uint32_t dma_access_cycles(std::uint32_t address, AccessWidth width,
+                                              bool sequential,
+                                              const WaitStateControl* waitcnt) {
+  const MemoryAccessTiming timing = dma_timing(address, width, waitcnt);
+  const bool external_waitcnt_access =
+      waitcnt != nullptr && game_pak_region(MemoryBus::describe(address).region);
+  if (width == AccessWidth::word && external_waitcnt_access) {
+    return dma_access_phase_cycles(timing, sequential, true) +
+           dma_access_phase_cycles(timing, true, true);
+  }
+  return dma_access_phase_cycles(timing, sequential, external_waitcnt_access);
+}
+
+[[nodiscard]] std::uint32_t dma_transfer_bus_cycles(std::uint32_t source_address,
+                                                    std::uint32_t destination_address,
+                                                    bool word_transfer,
+                                                    bool source_sequential,
+                                                    bool destination_sequential,
+                                                    const WaitStateControl* waitcnt) {
+  const AccessWidth width = word_transfer ? AccessWidth::word : AccessWidth::halfword;
+  return dma_access_cycles(source_address, width, source_sequential, waitcnt) +
+         dma_access_cycles(destination_address, width, destination_sequential, waitcnt);
+}
+
+[[nodiscard]] constexpr bool dma_stream_is_sequential(std::uint32_t unit,
+                                                      DmaAddressControl control) {
+  return unit != 0 && (control == DmaAddressControl::increment ||
+                      control == DmaAddressControl::increment_reload);
+}
+
+void apply_dma_bus_adjustment(std::uint32_t& bus_cycles, std::int32_t adjustment) {
+  if (adjustment >= 0) {
+    bus_cycles += static_cast<std::uint32_t>(adjustment);
+    return;
+  }
+  const std::uint32_t magnitude = static_cast<std::uint32_t>(-adjustment);
+  bus_cycles = bus_cycles > magnitude ? bus_cycles - magnitude : 0;
+}
+
+[[nodiscard]] std::int32_t dma_game_pak_arbitration_adjustment(
+    std::uint32_t source_address, std::uint32_t destination_address,
+    const WaitStateControl* waitcnt) {
+  if (waitcnt == nullptr) {
+    return 0;
+  }
+
+  const bool source_game_pak =
+      game_pak_region(MemoryBus::describe(source_address).region);
+  const bool destination_game_pak =
+      game_pak_region(MemoryBus::describe(destination_address).region);
+  if (!source_game_pak && !destination_game_pak) {
+    return 0;
+  }
+
+  if (source_game_pak && destination_game_pak) {
+    const MemoryAccessTiming timing =
+        MemoryBus::timing(source_address, AccessWidth::halfword, *waitcnt);
+    std::int32_t adjustment =
+        -static_cast<std::int32_t>(timing.nonsequential > 2U
+                                       ? timing.nonsequential - 2U
+                                       : 0U);
+    if (!waitcnt->prefetch_enabled() && timing.sequential <= 1U) {
+      --adjustment;
+    }
+    return adjustment;
+  }
+
+  if (source_game_pak) {
+    const MemoryAccessTiming timing =
+        MemoryBus::timing(source_address, AccessWidth::halfword, *waitcnt);
+    return waitcnt->prefetch_enabled() && timing.sequential <= 1U ? 1 : 0;
+  }
+
+  const MemoryAccessTiming timing =
+      MemoryBus::timing(destination_address, AccessWidth::halfword, *waitcnt);
+  return waitcnt->prefetch_enabled() && timing.sequential > 1U ? 1 : 0;
 }
 
 }  // namespace
@@ -192,12 +290,14 @@ std::uint64_t DmaController::state_hash() const {
 }
 
 DmaRunResult DmaController::run_immediate(MemoryBus& memory,
-                                          InterruptController& interrupts) {
-  return run_trigger(DmaTrigger::immediate, memory, interrupts);
+                                          InterruptController& interrupts,
+                                          const WaitStateControl* waitcnt) {
+  return run_trigger(DmaTrigger::immediate, memory, interrupts, waitcnt);
 }
 
 DmaRunResult DmaController::run_trigger(DmaTrigger trigger, MemoryBus& memory,
-                                        InterruptController& interrupts) {
+                                        InterruptController& interrupts,
+                                        const WaitStateControl* waitcnt) {
   DmaRunResult result{0, 0, false, 0};
   const DmaStartTiming timing = trigger_timing(trigger);
   if (trigger == DmaTrigger::fifo_a || trigger == DmaTrigger::fifo_b) {
@@ -208,7 +308,7 @@ DmaRunResult DmaController::run_trigger(DmaTrigger trigger, MemoryBus& memory,
     if (!enabled(channel) || start_timing(channel) != timing) {
       continue;
     }
-    if (!execute_channel(channel, memory, interrupts, result.units_transferred,
+    if (!execute_channel(channel, memory, interrupts, waitcnt, result.units_transferred,
                          result.bus_cycles)) {
       result.unsupported_request = true;
       return result;
@@ -220,7 +320,8 @@ DmaRunResult DmaController::run_trigger(DmaTrigger trigger, MemoryBus& memory,
 
 DmaRunResult DmaController::run_sound_fifo(DmaTrigger trigger, MemoryBus& memory,
                                            Apu& apu,
-                                           InterruptController& interrupts) {
+                                           InterruptController& interrupts,
+                                           const WaitStateControl* waitcnt) {
   DmaRunResult result{0, 0, false, 0};
   if (trigger != DmaTrigger::fifo_a && trigger != DmaTrigger::fifo_b) {
     result.unsupported_request = true;
@@ -233,7 +334,7 @@ DmaRunResult DmaController::run_sound_fifo(DmaTrigger trigger, MemoryBus& memory
       continue;
     }
     if (!execute_sound_fifo_channel(channel, trigger_fifo(trigger), memory, apu,
-                                    interrupts, result.units_transferred,
+                                    interrupts, waitcnt, result.units_transferred,
                                     result.bus_cycles)) {
       result.unsupported_request = true;
       return result;
@@ -278,6 +379,7 @@ std::uint32_t DmaController::effective_destination_address(std::size_t channel,
 
 bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
                                     InterruptController& interrupts,
+                                    const WaitStateControl* waitcnt,
                                     std::uint32_t& units_transferred,
                                     std::uint32_t& bus_cycles) {
   if (source_control(channel) == DmaAddressControl::increment_reload) {
@@ -289,12 +391,25 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
   const std::uint32_t unit_size = word_transfer ? 4U : 2U;
   std::uint32_t source_address = state.current_source;
   std::uint32_t destination_address = state.current_destination;
+  const std::uint32_t initial_aligned_source =
+      effective_source_address(channel, source_address) & ~(unit_size - 1U);
+  const std::uint32_t initial_aligned_destination =
+      effective_destination_address(channel, destination_address) & ~(unit_size - 1U);
+  bus_cycles += 2U;
 
   for (std::uint32_t unit = 0; unit < state.current_count; ++unit) {
     const std::uint32_t aligned_source =
         effective_source_address(channel, source_address) & ~(unit_size - 1U);
     const std::uint32_t aligned_destination =
         effective_destination_address(channel, destination_address) & ~(unit_size - 1U);
+    const DmaAddressControl source_step_control =
+        dma_source_steps_as_game_pak_stream(channel, source_address)
+            ? DmaAddressControl::increment
+            : source_control(channel);
+    bus_cycles += dma_transfer_bus_cycles(
+        aligned_source, aligned_destination, word_transfer,
+        dma_stream_is_sequential(unit, source_step_control),
+        dma_stream_is_sequential(unit, destination_control(channel)), waitcnt);
     if (word_transfer) {
       const std::optional<std::uint32_t> read_value =
           dma_source_uses_latch(aligned_source) ? std::nullopt : memory.read32(aligned_source);
@@ -311,17 +426,16 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
       }
       [[maybe_unused]] const bool written = memory.write16(aligned_destination, value);
     }
-    const DmaAddressControl source_step_control =
-        dma_source_steps_as_game_pak_stream(channel, source_address)
-            ? DmaAddressControl::increment
-            : source_control(channel);
     source_address = step_address(source_address, source_step_control, unit_size);
     destination_address =
         step_address(destination_address, destination_control(channel), unit_size);
   }
 
   units_transferred += state.current_count;
-  bus_cycles += state.current_count * (word_transfer ? 2U : 1U);
+  apply_dma_bus_adjustment(
+      bus_cycles, dma_game_pak_arbitration_adjustment(initial_aligned_source,
+                                                      initial_aligned_destination,
+                                                      waitcnt));
   state.current_source = source_address;
   state.current_destination = destination_address;
   state.current_count = 0;
@@ -346,6 +460,7 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
                                                DirectSoundChannel fifo,
                                                MemoryBus& memory, Apu& apu,
                                                InterruptController& interrupts,
+                                               const WaitStateControl* waitcnt,
                                                std::uint32_t& units_transferred,
                                                std::uint32_t& bus_cycles) {
   if (!transfer_32bit(channel) || source_control(channel) == DmaAddressControl::increment_reload ||
@@ -356,8 +471,13 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
   Channel& state = checked_channel(channel);
   std::uint32_t source_address = state.current_source;
   for (std::uint32_t unit = 0; unit < kSoundFifoWordsPerRequest; ++unit) {
+    const std::uint32_t aligned_source =
+        effective_source_address(channel, source_address) & ~0x3U;
+    bus_cycles += dma_transfer_bus_cycles(
+        aligned_source, destination(channel), true,
+        dma_stream_is_sequential(unit, source_control(channel)), false, waitcnt);
     const std::optional<std::uint32_t> value =
-        memory.read32(effective_source_address(channel, source_address) & ~0x3U);
+        memory.read32(aligned_source);
     if (!value.has_value()) {
       return false;
     }
@@ -367,7 +487,6 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
   }
 
   units_transferred += kSoundFifoWordsPerRequest;
-  bus_cycles += kSoundFifoWordsPerRequest * 2U;
   state.current_source = source_address;
   state.current_destination = destination(channel);
   state.current_count = repeat(channel) ? normalized_word_count(channel) : 0;

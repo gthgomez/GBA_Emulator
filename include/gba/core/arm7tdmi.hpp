@@ -462,9 +462,18 @@ class Arm7tdmi {
   [[nodiscard]] ArmStepResult step_arm(std::uint32_t instruction);
   [[nodiscard]] ArmStepResult step_arm(std::uint32_t instruction, MemoryBus& memory);
   [[nodiscard]] ArmStepResult step_arm(std::uint32_t instruction, MemoryBus& memory,
-                                       const WaitStateControl& waitcnt);
+                                       const WaitStateControl& waitcnt,
+                                       std::optional<ArmElapsedCycleEstimate>
+                                           elapsed_override = std::nullopt);
   [[nodiscard]] ArmStepResult step_thumb(std::uint16_t instruction);
   [[nodiscard]] ArmStepResult step_thumb(std::uint16_t instruction, MemoryBus& memory);
+  [[nodiscard]] ArmStepResult step_thumb(std::uint16_t instruction, MemoryBus& memory,
+                                         const WaitStateControl& waitcnt);
+  [[nodiscard]] ArmStepResult step_thumb(std::uint16_t instruction, MemoryBus& memory,
+                                         const WaitStateControl& waitcnt,
+                                         bool prefetch_internal_load_overlap,
+                                         std::optional<ArmElapsedCycleEstimate>
+                                             elapsed_override = std::nullopt);
 
  private:
   std::array<std::uint32_t, kRegisterCount> registers_;
@@ -537,7 +546,13 @@ class Arm7tdmi {
   [[nodiscard]] ArmStepResult finish_step(std::uint32_t instruction,
                                           std::optional<std::uint32_t> data_address,
                                           ExecuteStatus status,
-                                          const WaitStateControl* waitcnt = nullptr);
+                                          const WaitStateControl* waitcnt = nullptr,
+                                          std::optional<ArmElapsedCycleEstimate>
+                                              elapsed_override = std::nullopt);
+  [[nodiscard]] std::optional<ArmElapsedCycleEstimate> runtime_multiply_elapsed_cycles(
+      std::uint32_t instruction) const;
+  [[nodiscard]] std::optional<ArmElapsedCycleEstimate> runtime_thumb_elapsed_cycles(
+      std::uint16_t instruction) const;
   [[nodiscard]] std::uint32_t arm_visible_register_value(std::uint8_t index) const;
   [[nodiscard]] std::uint32_t thumb_visible_register_value(std::uint8_t index) const;
   void set_nz(std::uint32_t result);

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "scope": "mGBA public suite regression baseline",
+  "date": "2026-05-08",
+  "green_suites": [
+    "memory",
+    "bios-math",
+    "dma",
+    "shifter",
+    "carry",
+    "multiply-long",
+    "timer-irq"
+  ],
+  "include_performance": true,
+  "notes": [
+    "Only targets with verified green evidence belong in green_suites.",
+    "run-credibility-matrix.ps1 -FailOnRegression fails when one of these targets is missing or no longer GREEN.",
+    "Known red targets such as timing, timers, IO/SIO, misc-edge, and video remain visible without blocking this regression gate."
+  ]
+}

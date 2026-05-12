@@ -1041,6 +1041,9 @@ bool MemoryBus::write_debug8(std::uint32_t address, std::uint8_t value) {
 }
 
 bool MemoryBus::write_debug16(std::uint32_t address, std::uint16_t value) {
+  if (address == kMgbaDebugEnable) {
+    return true;
+  }
   if (address == kMgbaDebugFlags) {
     flush_mgba_debug_string(value);
     return true;

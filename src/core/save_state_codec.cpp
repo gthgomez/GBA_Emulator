@@ -36,6 +36,28 @@ void write_bytes(std::vector<std::uint8_t>& out, const std::vector<std::uint8_t>
   out.insert(out.end(), bytes.begin(), bytes.end());
 }
 
+void write_timer_state(std::vector<std::uint8_t>& out,
+                       const Timers::State& timers) {
+  write_u64(out, timers.cycle_counter);
+  for (const Timers::TimerState& timer : timers.timers) {
+    write_u16(out, timer.counter);
+    write_u16(out, timer.reload);
+    write_u16(out, timer.control);
+    write_u64(out, timer.prescaler_remainder);
+    write_u64(out, timer.overflow_count);
+    write_u32(out, timer.enable_delay_cycles);
+    write_u16(out, timer.last_enable_phase);
+    write_u8(out, timer.just_enabled ? 1U : 0U);
+  }
+}
+
+void write_interrupt_state(std::vector<std::uint8_t>& out,
+                           const InterruptController& interrupts) {
+  write_u16(out, interrupts.interrupt_enable());
+  write_u16(out, interrupts.interrupt_flags());
+  write_u8(out, interrupts.master_enabled() ? 1U : 0U);
+}
+
 class Reader {
  public:
   explicit Reader(const std::vector<std::uint8_t>& bytes) : bytes_(bytes) {}
@@ -93,6 +115,53 @@ class Reader {
     return true;
   }
 
+  [[nodiscard]] bool read_bool(bool& value) {
+    std::uint8_t raw = 0;
+    if (!read_u8(raw) || raw > 1U) {
+      return false;
+    }
+    value = raw != 0;
+    return true;
+  }
+
+  [[nodiscard]] bool read_timer_state(Timers::State& out) {
+    if (!read_u64(out.cycle_counter)) {
+      return false;
+    }
+    for (Timers::TimerState& timer : out.timers) {
+      if (!read_u16(timer.counter) || !read_u16(timer.reload) ||
+          !read_u16(timer.control) || !read_u64(timer.prescaler_remainder) ||
+          !read_u64(timer.overflow_count) ||
+          !read_u32(timer.enable_delay_cycles) ||
+          !read_u16(timer.last_enable_phase) || !read_bool(timer.just_enabled)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool read_interrupt_state(InterruptController& interrupts) {
+    std::uint16_t interrupt_enable = 0;
+    std::uint16_t interrupt_flags = 0;
+    bool master_enabled = false;
+    if (!read_u16(interrupt_enable) || !read_u16(interrupt_flags) ||
+        !read_bool(master_enabled) ||
+        (interrupt_enable & ~InterruptController::kSupportedMask) != 0 ||
+        (interrupt_flags & ~InterruptController::kSupportedMask) != 0) {
+      return false;
+    }
+
+    interrupts.write_interrupt_enable(interrupt_enable);
+    for (std::uint8_t bit = 0; bit < 14U; ++bit) {
+      const std::uint16_t mask = static_cast<std::uint16_t>(1U << bit);
+      if ((interrupt_flags & mask) != 0) {
+        interrupts.request(static_cast<InterruptSource>(bit));
+      }
+    }
+    interrupts.set_master_enabled(master_enabled);
+    return true;
+  }
+
   [[nodiscard]] bool at_end() const {
     return offset_ == bytes_.size();
   }
@@ -116,9 +185,12 @@ std::vector<std::uint8_t> SaveStateCodec::encode(const CoreSession& session) {
   write_u16(out, session.waitcnt().read_control());
   write_u16(out, session.keypad().pressed_mask());
   write_u16(out, session.keypad().keycnt());
+  write_u8(out, static_cast<std::uint8_t>(session.bios().mode()));
+  write_interrupt_state(out, session.interrupts());
   const CoreSchedulerState scheduler = session.scheduler().save_state();
   write_u64(out, scheduler.scheduler_cycles);
   write_u8(out, scheduler.halted ? 1U : 0U);
+  write_timer_state(out, session.timers().save_state());
   write_bytes(out, session.memory().export_game_pak_rom());
   write_u8(out, static_cast<std::uint8_t>(session.memory().game_pak_save_type()));
   write_bytes(out, session.memory().export_game_pak_save());
@@ -158,14 +230,20 @@ SaveStateDecodeResult SaveStateCodec::decode_into(CoreSession& session,
   std::uint16_t waitcnt = 0;
   std::uint16_t pressed = 0;
   std::uint16_t keycnt = 0;
+  std::uint8_t bios_mode = 0;
+  InterruptController interrupts_state;
   std::uint64_t scheduler_cycles = 0;
   std::uint8_t halted = 0;
+  Timers::State timers_state{};
   std::vector<std::uint8_t> rom;
   std::uint8_t save_type_raw = 0;
   std::vector<std::uint8_t> save;
   if (!reader.read_u32(cpsr) || !reader.read_u16(waitcnt) || !reader.read_u16(pressed) ||
-      !reader.read_u16(keycnt) || !reader.read_u64(scheduler_cycles) ||
-      !reader.read_u8(halted) || !reader.read_bytes(rom) ||
+      !reader.read_u16(keycnt) || !reader.read_u8(bios_mode) ||
+      !reader.read_interrupt_state(interrupts_state) ||
+      !reader.read_u64(scheduler_cycles) ||
+      !reader.read_u8(halted) || !reader.read_timer_state(timers_state) ||
+      !reader.read_bytes(rom) ||
       !reader.read_u8(save_type_raw) || !reader.read_bytes(save) || !reader.at_end()) {
     return {SaveStateDecodeStatus::corrupt_payload, version, state_hash};
   }
@@ -179,6 +257,11 @@ SaveStateDecodeResult SaveStateCodec::decode_into(CoreSession& session,
   }
   session.waitcnt().write_control(waitcnt);
   session.keypad().write_keycnt(keycnt);
+  if (bios_mode > static_cast<std::uint8_t>(BiosExecutionMode::hle)) {
+    return {SaveStateDecodeStatus::restore_rejected, version, state_hash};
+  }
+  session.bios().set_mode(static_cast<BiosExecutionMode>(bios_mode));
+  session.interrupts() = interrupts_state;
   if (!rom.empty() && !session.memory().load_game_pak_rom(rom)) {
     return {SaveStateDecodeStatus::restore_rejected, version, state_hash};
   }
@@ -189,9 +272,13 @@ SaveStateDecodeResult SaveStateCodec::decode_into(CoreSession& session,
       return {SaveStateDecodeStatus::restore_rejected, version, state_hash};
     }
   }
-  session.scheduler().load_state({scheduler_cycles, halted != 0, std::nullopt,
-                                  std::nullopt, std::nullopt, 0, std::nullopt,
-                                  std::nullopt});
+  if (!session.timers().load_state(timers_state)) {
+    return {SaveStateDecodeStatus::restore_rejected, version, state_hash};
+  }
+  CoreSchedulerState scheduler_state{};
+  scheduler_state.scheduler_cycles = scheduler_cycles;
+  scheduler_state.halted = halted != 0;
+  session.scheduler().load_state(scheduler_state);
   return {SaveStateDecodeStatus::ok, version, state_hash};
 }
 

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -39,6 +40,8 @@ int main() {
   constexpr std::uint32_t kBranchBackOneInstruction = 0xEAFFFFFDU;
   constexpr std::uint32_t kMovR0IoBase = 0xE3A00301U;
   constexpr std::uint32_t kStrR0Ime = 0xE5800208U;
+  constexpr std::uint32_t kLdrR2R1Imm0 = 0xE5912000U;
+  constexpr std::uint32_t kStrR5R4Imm0 = 0xE5845000U;
   constexpr std::uint32_t kArmSwiDiv = 0xEF060000U;
   constexpr std::uint32_t kArmSwiArcTan = 0xEF090000U;
   constexpr std::uint32_t kArmSwiArcTan2 = 0xEF0A0000U;
@@ -111,6 +114,57 @@ int main() {
   expect(ime_after.has_value() && ime_after.value() == 0,
          "CoreSession IO callback updates IME through MemoryBus");
 
+  auto timer_phase_session = std::make_unique<CoreSession>();
+  timer_phase_session->timers().write_reload(0, 0);
+  timer_phase_session->timers().write_control(0, 0x0080);
+  timer_phase_session->cpu().set_register(1, IoRegisters::kTimerBase);
+  const gba::core::CoreSchedulerStepResult timer_load =
+      timer_phase_session->scheduler().step_arm(kLdrR2R1Imm0);
+  expect(timer_load.cpu_step.status == ExecuteStatus::executed,
+         "timer IO phase fixture executes ARM LDR");
+  expect(timer_load.devices.cycles == timer_load.cpu_step.elapsed_cycles,
+         "timer IO phase fixture preserves total device cycle accounting");
+  expect((timer_phase_session->cpu().register_value(2) & 0xFFFFU) == 3,
+         "timer IO reads sample at the load data phase");
+
+  auto timer_store_session = std::make_unique<CoreSession>();
+  timer_store_session->cpu().set_register(4, IoRegisters::kTimerBase);
+  timer_store_session->cpu().set_register(5, 0x00800000U);
+  const gba::core::CoreSchedulerStepResult timer_store =
+      timer_store_session->scheduler().step_arm(kStrR5R4Imm0);
+  expect(timer_store.cpu_step.status == ExecuteStatus::executed,
+         "timer IO store fixture executes ARM STR");
+  expect(timer_store_session->timers().enabled(0),
+         "timer IO store enables timer0 through CoreSession callbacks");
+  expect(timer_store_session->timers().counter(0) == 0,
+         "timer IO store loads timer0 reload value without ticking immediately");
+  const gba::core::CoreSchedulerStepResult timer_store_tick_1 =
+      timer_store_session->scheduler().step_arm(kAddR0R0Imm1);
+  expect(timer_store_tick_1.cpu_step.status == ExecuteStatus::executed,
+         "timer IO store delayed-start tick fixture executes first ARM ADD");
+  expect(timer_store_session->timers().counter(0) == 1,
+         "timer IO store starts timer0 after the one-cycle enable delay");
+  const gba::core::CoreSchedulerStepResult timer_store_tick_2 =
+      timer_store_session->scheduler().step_arm(kAddR0R0Imm1);
+  expect(timer_store_tick_2.cpu_step.status == ExecuteStatus::executed,
+         "timer IO store delayed-start tick fixture executes second ARM ADD");
+  expect(timer_store_session->timers().counter(0) == 2,
+         "timer IO store continues ticking after the delayed start");
+
+  auto timer_word_store_session = std::make_unique<CoreSession>();
+  timer_word_store_session->cpu().set_register(4, IoRegisters::kTimerBase);
+  timer_word_store_session->cpu().set_register(5, 0x00C3FFEEU);
+  const gba::core::CoreSchedulerStepResult timer_word_store =
+      timer_word_store_session->scheduler().step_arm(kStrR5R4Imm0);
+  expect(timer_word_store.cpu_step.status == ExecuteStatus::executed,
+         "timer IO word-store fixture executes ARM STR");
+  expect(timer_word_store_session->timers().reload(0) == 0xFFEE,
+         "timer IO word store writes timer0 reload before control");
+  expect(timer_word_store_session->timers().counter(0) == 0xFFEE,
+         "timer IO word store enables timer0 with the new reload value");
+  expect(timer_word_store_session->timers().control(0) == 0x00C3,
+         "timer IO word store writes timer0 control after reload");
+
   auto irq_hle = std::make_unique<CoreSession>();
   irq_hle->bios().set_mode(BiosExecutionMode::hle);
   std::vector<std::uint8_t> irq_rom(256);
@@ -124,6 +178,8 @@ int main() {
   expect(!irq_dispatch.fetch_failed, "IRQ-HLE dispatch does not fetch BIOS bytes");
   expect(irq_dispatch.step->cpu_step.status == ExecuteStatus::executed,
          "IRQ-HLE dispatch reports executed");
+  expect(irq_dispatch.step->cpu_step.elapsed_cycles == 21,
+         "IRQ-HLE dispatch accounts for BIOS vector dispatch latency");
   expect(irq_hle->cpu().register_value(Arm7tdmi::kPc) == 0x08000040,
          "IRQ-HLE dispatch jumps to user IRQ handler pointer");
 
