@@ -34,7 +34,7 @@ constexpr std::uint32_t kVcountAddress = 0x04000006;
   if (address >= 0x04000020U && address <= 0x0400003EU) {
     return true;
   }
-  if (address >= 0x04000040U && address <= kLcdControlEnd && address != 0x0400004EU) {
+  if (address >= 0x04000040U && address <= kLcdControlEnd) {
     return true;
   }
   return false;
@@ -42,6 +42,25 @@ constexpr std::uint32_t kVcountAddress = 0x04000006;
 
 [[nodiscard]] constexpr std::size_t lcd_control_index(std::uint32_t address) {
   return static_cast<std::size_t>((address - kLcdControlStart) / 2U);
+}
+
+[[nodiscard]] constexpr std::uint16_t lcd_control_read_mask(std::uint32_t address) {
+  switch (address) {
+    case 0x04000002U:
+      return 0x0001U;
+    case 0x04000008U:
+    case 0x0400000AU:
+      return 0xDFFFU;
+    case 0x04000048U:
+    case 0x0400004AU:
+      return 0x3F3FU;
+    case 0x04000050U:
+      return 0x3FFFU;
+    case 0x04000052U:
+      return 0x1F1FU;
+    default:
+      return 0xFFFFU;
+  }
 }
 
 }  // namespace
@@ -65,14 +84,16 @@ std::optional<std::uint16_t> PpuTiming::read_lcd_control(std::uint32_t address) 
   if (!is_lcd_control_address(address)) {
     return std::nullopt;
   }
-  return lcd_control_.at(lcd_control_index(address));
+  return static_cast<std::uint16_t>(lcd_control_.at(lcd_control_index(address)) &
+                                    lcd_control_read_mask(address));
 }
 
 bool PpuTiming::write_lcd_control(std::uint32_t address, std::uint16_t value) {
   if (!is_lcd_control_address(address)) {
     return false;
   }
-  lcd_control_.at(lcd_control_index(address)) = value;
+  lcd_control_.at(lcd_control_index(address)) =
+      static_cast<std::uint16_t>(value & lcd_control_read_mask(address));
   return true;
 }
 

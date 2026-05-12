@@ -35,7 +35,7 @@ constexpr std::array<std::uint32_t, 7> kSerialRegisterAddresses = {
     return true;
   }
   if (address >= 0x04000040U && address <= 0x04000054U) {
-    return address != 0x0400004EU;
+    return true;
   }
   return false;
 }

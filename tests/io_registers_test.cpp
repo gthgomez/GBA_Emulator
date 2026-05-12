@@ -77,6 +77,18 @@ int main() {
   expect_read16(io, IoRegisters::kBg1Cnt, 0x0004, "BG1CNT readback routes");
   expect(io.write32(IoRegisters::kBg0Cnt, 0x00040003), "BG0/BG1CNT word write routes");
   expect_read32(io, IoRegisters::kBg0Cnt, 0x00040003, "BG0/BG1CNT read32 routes");
+  expect(io.write16(IoRegisters::kBg0Cnt, 0xFFFF), "BG0CNT accepts suite mask probe");
+  expect_read16(io, IoRegisters::kBg0Cnt, 0xDFFF, "BG0CNT masks unused overflow bit");
+  expect(io.write16(IoRegisters::kBg1Cnt, 0xFFFF), "BG1CNT accepts suite mask probe");
+  expect_read16(io, IoRegisters::kBg1Cnt, 0xDFFF, "BG1CNT masks unused overflow bit");
+  expect(io.write16(0x04000048, 0xFFFF), "WININ accepts suite mask probe");
+  expect_read16(io, 0x04000048, 0x3F3F, "WININ masks unused window bits");
+  expect(io.write16(0x0400004A, 0xFFFF), "WINOUT accepts suite mask probe");
+  expect_read16(io, 0x0400004A, 0x3F3F, "WINOUT masks unused window bits");
+  expect(io.write16(0x04000050, 0xFFFF), "BLDCNT accepts suite mask probe");
+  expect_read16(io, 0x04000050, 0x3FFF, "BLDCNT masks unused high bits");
+  expect(io.write16(0x04000052, 0xFFFF), "BLDALPHA accepts suite mask probe");
+  expect_read16(io, 0x04000052, 0x1F1F, "BLDALPHA masks coefficient fields");
   expect(!io.write16(IoRegisters::kVcount, 12), "VCOUNT write is rejected as read-only");
   expect(!io.write32(IoRegisters::kDispstat + 2U, 0x12345678),
          "unaligned word IO write is rejected");
