@@ -201,10 +201,9 @@ Latest phase status:
 - `timers` is green at `936/936` in
   `build/test-results/mgba-suite-20260511-231709.json`, with no unsupported
   instructions or fetch failures.
-- `timing` is still red at `594/2020` in
-  `build/test-results/mgba-suite-20260509-174534.json`. The first failure is
-  `nop ARM/ROM P..`, and JSON grouping now separates ROM prefetch, ROM data access,
-  ROM nonsequential, multiply, BIOS HLE, DMA, internal-memory, and other timing gaps.
+- `timing` is green at `2020/2020` in
+  `build/test-results/mgba-suite-20260512-052423.json`, with no unsupported
+  instructions or fetch failures.
 
 ## Milestone 7: IO, SIO, And Video Suite Support
 
@@ -281,5 +280,6 @@ Expected outcome:
 ## Recommended Immediate Work
 
 Roadmap 1 is now a measurement system rather than the main blocker. Continue Roadmap 2
-from the first known red subsystem group: timing. Keep Roadmap 1 commands as the
-regression harness while hardware behavior is fixed.
+from the next known red subsystem groups: load/store and LDM/STM evidence, then
+IO/SIO/video hardware behavior. Keep Roadmap 1 commands as the regression harness while
+hardware behavior is fixed.

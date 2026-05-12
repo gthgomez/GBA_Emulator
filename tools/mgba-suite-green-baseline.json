@@ -9,12 +9,14 @@
     "shifter",
     "carry",
     "multiply-long",
-    "timer-irq"
+    "timer-irq",
+    "timers",
+    "timing"
   ],
   "include_performance": true,
   "notes": [
     "Only targets with verified green evidence belong in green_suites.",
     "run-credibility-matrix.ps1 -FailOnRegression fails when one of these targets is missing or no longer GREEN.",
-    "Known red targets such as timing, timers, IO/SIO, misc-edge, and video remain visible without blocking this regression gate."
+    "Known red targets such as IO/SIO, misc-edge, and video remain visible without blocking this regression gate."
   ]
 }

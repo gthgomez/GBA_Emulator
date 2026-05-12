@@ -53,6 +53,7 @@ Latest verified green targets:
 - mGBA `multiply-long`: `72/72`
 - mGBA `timer-irq`: `90/90`
 - mGBA `timers`: `936/936`
+- mGBA `timing`: `2020/2020`
 - Synthetic core performance report: PASS, including deterministic checksums
 
 Latest matrix artifacts:
@@ -60,16 +61,14 @@ Latest matrix artifacts:
 - Green frontier:
   `build/test-results/credibility-matrix-20260508-152541.json`
 - Next-target frontier:
-  `build/test-results/mgba-suite-20260509-174534.json` (`timing`),
+  `build/test-results/mgba-suite-20260512-052423.json` (`timing`),
   `build/test-results/mgba-suite-20260511-231709.json` (`timers`),
   `build/test-results/mgba-suite-20260509-173711.json` (`timer-irq`)
 
 Latest next-target status:
 
-- `timing`: red, reaches real timing failures with no unsupported instructions or fetch
-  failures. Latest verified result is `594/2020`; the first failure is
-  `nop ARM/ROM P..`. Grouped failures now split into ROM prefetch, ROM data access,
-  ROM nonsequential, multiply, BIOS HLE, DMA, internal-memory, and other timing buckets.
+- `timing`: green at `2020/2020` with zero unsupported instructions and zero fetch
+  failures in `build/test-results/mgba-suite-20260512-052423.json`.
 - `timers`: green at `936/936` with zero unsupported instructions and zero fetch
   failures in `build/test-results/mgba-suite-20260511-231709.json`.
 - `timer-irq`: green at `90/90` with zero unsupported instructions and zero fetch
@@ -79,9 +78,9 @@ Latest next-target status:
 
 Current credibility statement:
 
-Memory, DMA, BIOS math, timer IRQ, timers, and the contained ARM
+Memory, DMA, BIOS math, timing, timer IRQ, timers, and the contained ARM
 shifter/carry/multiply-long suites are strong. Whole-emulator accuracy is not yet
-proven against the top open-source engines because timing, broader load-store/LDM/STM
+proven against the top open-source engines because broader load-store/LDM/STM
 behavior, PPU, APU, save/cart edge cases, and ROM-workload comparisons still need green
 evidence.
 
@@ -277,6 +276,6 @@ Work in this loop:
 7. Rerun the green-frontier matrix to prove no regression.
 8. Only then update docs or baselines.
 
-The next implementation group remains timing/timers/IRQ. The CPU shifter/carry/
-multiply-long group is green; after timer timing is credible, move to load-store,
-LDM/STM, IO/SIO/video, and all-suite automation.
+The next implementation group moves past timing/timers/IRQ. The CPU
+shifter/carry/multiply-long group and timing group are green; continue with
+load-store/LDM/STM evidence, IO/SIO/video hardware suites, and all-suite automation.
