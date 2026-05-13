@@ -1,5 +1,6 @@
 #include "gba/core/core_scheduler.hpp"
 
+#include "gba/core/io_registers.hpp"
 #include "gba/core/memory_bus.hpp"
 #include "gba/core/ppu_timing.hpp"
 #include "gba/core/state_hash.hpp"
@@ -1042,6 +1043,7 @@ CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
       ppu_(ppu),
       apu_(apu),
       bios_(nullptr),
+      io_(nullptr),
       scheduler_cycles_(0),
       halted_(false),
       waitcnt_(nullptr),
@@ -1080,6 +1082,7 @@ CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
       ppu_(ppu),
       apu_(apu),
       bios_(nullptr),
+      io_(nullptr),
       scheduler_cycles_(0),
       halted_(false),
       waitcnt_(&waitcnt),
@@ -1118,6 +1121,7 @@ CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
       ppu_(ppu),
       apu_(apu),
       bios_(&bios),
+      io_(nullptr),
       scheduler_cycles_(0),
       halted_(false),
       waitcnt_(&waitcnt),
@@ -1288,6 +1292,10 @@ bool CoreScheduler::wake_from_halt_if_irq_pending() {
   return true;
 }
 
+void CoreScheduler::set_io_registers(IoRegisters& io) {
+  io_ = &io;
+}
+
 CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
   if (cycles == 0) {
     return {0, std::nullopt, 0, {}, {}};
@@ -1298,6 +1306,9 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
   const bool irq_line_active_before =
       interrupts_.irq_line() && !cpu_.irq_disabled();
   const Timers::TickResult timer_tick = timers_.tick(cycles, interrupts_);
+  if (io_ != nullptr) {
+    io_->tick(cycles);
+  }
   const PpuTickEvents ppu_events = ppu_.tick(cycles, interrupts_);
   std::uint32_t apu_timer_events = 0;
   DirectSoundTimerResult last_direct_sound{};
@@ -2128,8 +2139,9 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
 
   switch (call.service) {
     case 0x02:
-      halt_until_interrupt();
-      return executed(1);
+      return wait_for_interrupt_mask(interrupts_.interrupt_enable(), false)
+                 ? executed(1)
+                 : unsupported();
     case 0x04: {
       const bool discard = cpu_.register_value(0) != 0;
       const std::uint16_t mask = static_cast<std::uint16_t>(cpu_.register_value(1));

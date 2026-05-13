@@ -35,6 +35,11 @@ void expect_read32(const gba::core::IoRegisters& io, std::uint32_t address,
   expect(value.value() == expected, message);
 }
 
+void expect_no_read32(const gba::core::IoRegisters& io, std::uint32_t address,
+                      std::string_view message) {
+  expect(!io.read32(address).has_value(), message);
+}
+
 void expect_memory_read32(const gba::core::MemoryBus& memory, std::uint32_t address,
                           std::uint32_t expected, std::string_view message) {
   const std::optional<std::uint32_t> value = memory.read32(address);
@@ -143,9 +148,9 @@ int main() {
   expect(io.write32(IoRegisters::kDmaBase, 0x02000010), "DMA0SAD word write routes");
   expect(io.write32(IoRegisters::kDmaBase + 4U, 0x03000010), "DMA0DAD word write routes");
   expect(io.write16(IoRegisters::kDmaBase + 8U, 1), "DMA0CNT_L write routes");
-  expect_read32(io, IoRegisters::kDmaBase, 0x02000010, "DMA0 source read32 routes");
-  expect_read32(io, IoRegisters::kDmaBase + 4U, 0x03000010, "DMA0 destination read32 routes");
-  expect_read16(io, IoRegisters::kDmaBase + 8U, 1, "DMA0 word count read routes");
+  expect_no_read32(io, IoRegisters::kDmaBase, "DMA0 source read32 returns open bus");
+  expect_no_read32(io, IoRegisters::kDmaBase + 4U, "DMA0 destination read32 returns open bus");
+  expect_read16(io, IoRegisters::kDmaBase + 8U, 0, "DMA0 word count reads as zero");
   expect(io.write16(IoRegisters::kDmaBase + 10U, 0xC400), "DMA0CNT_H write routes");
   expect(dma.enabled(0), "DMA0 enable bit routes through IO");
   expect(dma.transfer_32bit(0), "DMA0 32-bit mode routes through IO");
@@ -172,11 +177,40 @@ int main() {
   expect(interrupts.requested(InterruptSource::keypad),
          "KEYCNT AND condition requests keypad IRQ when selected keys are pressed");
   expect(io.write16(IoRegisters::kRcnt, 0x8000), "RCNT write routes to serial IO state");
-  expect_read16(io, IoRegisters::kRcnt, 0x8000, "RCNT readback routes");
+  expect_read16(io, IoRegisters::kRcnt, 0x81FF, "RCNT read masks general-purpose mode");
   expect(io.write16(IoRegisters::kSoundcntH, 0x0300), "SOUNDCNT_H write routes");
   expect_read16(io, IoRegisters::kSoundcntH, 0x0300, "SOUNDCNT_H read routes");
   expect(io.write16(IoRegisters::kSoundbias, 0x02FF), "SOUNDBIAS write routes");
   expect_read16(io, IoRegisters::kSoundbias, 0x02FF, "SOUNDBIAS read routes");
+  expect(io.write16(0x04000120, 0xFFFF), "SIODATA32_L write routes");
+  expect_read16(io, 0x04000120, 0, "SIODATA32_L idle normal-8 read is zero");
+  expect(io.write16(0x04000122, 0xFFFF), "SIODATA32_H write routes");
+  expect_read16(io, 0x04000122, 0, "SIODATA32_H idle normal-8 read is zero");
+  expect(io.write16(0x04000128, 0xDFFF), "SIOCNT normal-32 probe write routes");
+  expect_read16(io, 0x04000128, 0x5F8F, "SIOCNT read masks idle status bits");
+  expect(io.write16(0x04000134, 0xBFFF), "RCNT general-purpose probe write routes");
+  expect_read16(io, 0x04000134, 0x81FF, "RCNT read masks general-purpose idle bits");
+  expect(io.write16(0x04000140, 0xFFFF), "JOYCNT write is accepted");
+  expect_read16(io, 0x04000140, 0x0040, "JOYCNT idle read exposes receive-ready bit");
+  expect(io.write16(0x04000150, 0xFFFF), "JOY_RECV_L write is accepted");
+  expect_read16(io, 0x04000150, 0, "JOY_RECV_L idle read is zero");
+  expect(!interrupts.requested(InterruptSource::serial), "serial IRQ starts clear");
+  expect(io.write16(0x04000128, 0x4081), "SIOCNT starts normal 8-bit transfer");
+  io.tick(551);
+  expect(!interrupts.requested(InterruptSource::serial),
+         "SIO transfer waits for full bit-clock duration");
+  io.tick(1);
+  expect(interrupts.requested(InterruptSource::serial),
+         "SIO transfer completion requests serial IRQ when enabled");
+  interrupts.write_interrupt_flags(irq_bit(InterruptSource::serial));
+  expect(io.write16(0x04000128, 0x0081), "SIOCNT starts transfer with IRQ disabled");
+  io.tick(552);
+  expect(!interrupts.requested(InterruptSource::serial),
+         "SIO transfer completion does not request IRQ when disabled");
+  expect(io.write16(0x04000128, 0x6081), "SIOCNT no-peer multiplayer start is accepted");
+  io.tick(0x10000);
+  expect(!interrupts.requested(InterruptSource::serial),
+         "no-peer multiplayer transfer does not invent serial IRQ");
   expect(io.write32(IoRegisters::kFifoA, 0x04030201), "FIFO A word write routes");
   expect(apu.fifo_size(DirectSoundChannel::a) == 4, "FIFO A received four samples");
   expect(io.write32(IoRegisters::kFifoB, 0x08070605), "FIFO B word write routes");

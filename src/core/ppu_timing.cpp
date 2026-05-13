@@ -46,6 +46,8 @@ constexpr std::uint32_t kVcountAddress = 0x04000006;
 
 [[nodiscard]] constexpr std::uint16_t lcd_control_read_mask(std::uint32_t address) {
   switch (address) {
+    case 0x04000000U:
+      return 0xFFFFU;
     case 0x04000002U:
       return 0x0001U;
     case 0x04000008U:
@@ -60,6 +62,24 @@ constexpr std::uint32_t kVcountAddress = 0x04000006;
       return 0x1F1FU;
     default:
       return 0xFFFFU;
+  }
+}
+
+[[nodiscard]] constexpr bool is_lcd_control_readable(std::uint32_t address) {
+  switch (address) {
+    case 0x04000000U:
+    case 0x04000002U:
+    case 0x04000008U:
+    case 0x0400000AU:
+    case 0x0400000CU:
+    case 0x0400000EU:
+    case 0x04000048U:
+    case 0x0400004AU:
+    case 0x04000050U:
+    case 0x04000052U:
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -81,7 +101,7 @@ void PpuTiming::write_dispstat(std::uint16_t value) {
 }
 
 std::optional<std::uint16_t> PpuTiming::read_lcd_control(std::uint32_t address) const {
-  if (!is_lcd_control_address(address)) {
+  if (!is_lcd_control_address(address) || !is_lcd_control_readable(address)) {
     return std::nullopt;
   }
   return static_cast<std::uint16_t>(lcd_control_.at(lcd_control_index(address)) &

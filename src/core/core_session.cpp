@@ -41,6 +41,7 @@ CoreSession::CoreSession()
       io_(interrupts_, timers_, dma_, ppu_, apu_, waitcnt_, keypad_),
       scheduler_(cpu_, memory_, interrupts_, timers_, dma_, ppu_, apu_, waitcnt_, bios_) {
   memory_.set_io_callbacks(io_callbacks(io_));
+  scheduler_.set_io_registers(io_);
 }
 
 void CoreSession::reset() {
@@ -59,6 +60,7 @@ void CoreSession::reset() {
   waitcnt_.reset();
   io_.reset();
   scheduler_.reset_scheduler_cycles();
+  scheduler_.set_io_registers(io_);
 }
 
 Arm7tdmi& CoreSession::cpu() {
@@ -174,6 +176,7 @@ void CoreSession::load_state(const CoreSessionState& state) {
   waitcnt_ = state.waitcnt;
   io_.load_state(state.io);
   scheduler_.load_state(state.scheduler);
+  scheduler_.set_io_registers(io_);
 }
 
 std::uint64_t CoreSession::state_hash() const {

@@ -20,7 +20,8 @@
     "Phase 66 updates core_session_state_hash checksum because BIOS HLE mode, IRQ HLE trampoline state, and debug aperture output are now part of modeled core-session state.",
     "Phase 67 updates core_session_state_hash checksum after BIOS HLE scheduler integration and DMA latch correctness work settled the deterministic modeled-state checksum.",
     "Phase 0 roadmap stabilization updates scheduler_prefetch_cart_loop, cpu_waitcnt_elapsed_estimate, and core_session_state_hash checksums after the active timing/timer branch added runtime multiply timing, timer IO load phasing, prefetch recovery/suppression state, and expanded scheduler state hashing.",
-    "Timing/timers stabilization updates core_session_state_hash checksum after scheduler state began tracking the paced HLE IRQ spaced-data service count used by the mGBA timer and timing suites."
+    "Timing/timers stabilization updates core_session_state_hash checksum after scheduler state began tracking the paced HLE IRQ spaced-data service count used by the mGBA timer and timing suites.",
+    "SIO timing stabilization updates core_session_state_hash checksum because serial transfer active state and remaining cycles are now part of modeled deterministic core-session state."
   ],
   "rows": [
     {
@@ -110,7 +111,7 @@
     {
       "benchmark": "core_session_state_hash",
       "expected_operations": 10000,
-      "expected_checksum": "15808",
+      "expected_checksum": "58800",
       "baseline_ns_per_operation": 419608.05,
       "max_ns_per_operation": 950000.0
     }

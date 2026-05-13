@@ -16,6 +16,8 @@ namespace gba::core {
 
 struct IoRegistersState {
   std::array<std::uint16_t, 7> serial{};
+  bool sio_transfer_active = false;
+  std::uint32_t sio_transfer_cycles_remaining = 0;
 };
 
 class IoRegisters {
@@ -51,6 +53,7 @@ class IoRegisters {
   [[nodiscard]] IoRegistersState save_state() const;
   void load_state(const IoRegistersState& state);
   [[nodiscard]] std::uint64_t state_hash() const;
+  void tick(std::uint32_t cycles);
   [[nodiscard]] std::optional<std::uint16_t> read16(std::uint32_t address) const;
   [[nodiscard]] std::optional<std::uint32_t> read32(std::uint32_t address) const;
   [[nodiscard]] bool write16(std::uint32_t address, std::uint16_t value);
@@ -65,6 +68,8 @@ class IoRegisters {
   WaitStateControl& waitcnt_;
   Keypad& keypad_;
   std::array<std::uint16_t, 7> serial_;
+  bool sio_transfer_active_;
+  std::uint32_t sio_transfer_cycles_remaining_;
 };
 
 }  // namespace gba::core

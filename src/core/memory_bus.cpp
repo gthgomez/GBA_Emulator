@@ -712,7 +712,9 @@ bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
 
   const AddressInfo info = describe(address);
   if (info.region == Region::io && io_callbacks_.write16 != nullptr) {
-    return io_callbacks_.write16(io_callbacks_.context, address, value);
+    [[maybe_unused]] const bool handled =
+        io_callbacks_.write16(io_callbacks_.context, address, value);
+    return true;
   }
   if (info.region == Region::unknown) {
     return true;
@@ -768,7 +770,9 @@ bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
 
   const AddressInfo info = describe(address);
   if (info.region == Region::io && io_callbacks_.write32 != nullptr) {
-    return io_callbacks_.write32(io_callbacks_.context, address, value);
+    [[maybe_unused]] const bool handled =
+        io_callbacks_.write32(io_callbacks_.context, address, value);
+    return true;
   }
   if (info.region == Region::unknown) {
     return true;

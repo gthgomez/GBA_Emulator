@@ -894,6 +894,19 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
   return static_cast<std::uint16_t>((open_bus.value() >> shift) & 0xFFFFU);
 }
 
+[[nodiscard]] std::optional<std::uint16_t> read16_or_thumb_pipeline_open_bus(
+    const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
+  const std::optional<std::uint16_t> value = memory.read16(address);
+  if (value.has_value()) {
+    return value;
+  }
+  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  if (!open_bus.has_value()) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint16_t>((open_bus.value() >> 16U) & 0xFFFFU);
+}
+
 [[nodiscard]] std::optional<std::uint32_t> read32_or_pipeline_open_bus(
     const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
   const std::optional<std::uint32_t> value = memory.read32(address);
@@ -2823,7 +2836,8 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
   if (decoded.load) {
     switch (decoded.kind) {
       case ThumbMemoryTransferKind::word: {
-        const std::optional<std::uint32_t> value = memory.read32(address);
+        const std::optional<std::uint32_t> value =
+            read32_or_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -2831,7 +2845,8 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
         return ExecuteStatus::executed;
       }
       case ThumbMemoryTransferKind::byte: {
-        const std::optional<std::uint8_t> value = memory.read8(address);
+        const std::optional<std::uint8_t> value =
+            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -2839,7 +2854,8 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
         return ExecuteStatus::executed;
       }
       case ThumbMemoryTransferKind::halfword: {
-        const std::optional<std::uint16_t> value = memory.read16(address);
+        const std::optional<std::uint16_t> value =
+            read16_or_thumb_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -2847,7 +2863,8 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
         return ExecuteStatus::executed;
       }
       case ThumbMemoryTransferKind::signed_byte: {
-        const std::optional<std::uint8_t> value = memory.read8(address);
+        const std::optional<std::uint8_t> value =
+            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -2855,7 +2872,8 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
         return ExecuteStatus::executed;
       }
       case ThumbMemoryTransferKind::signed_halfword: {
-        const std::optional<std::uint16_t> value = memory.read16(address);
+        const std::optional<std::uint16_t> value =
+            read16_or_thumb_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }

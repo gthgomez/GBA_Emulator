@@ -13,6 +13,7 @@
 namespace gba::core {
 
 class MemoryBus;
+class IoRegisters;
 class PpuTiming;
 class Timers;
 class WaitStateControl;
@@ -130,6 +131,7 @@ class CoreScheduler {
   [[nodiscard]] bool halted() const;
   void halt_until_interrupt();
   [[nodiscard]] bool wake_from_halt_if_irq_pending();
+  void set_io_registers(IoRegisters& io);
 
   [[nodiscard]] CoreDeviceTickResult advance_devices(std::uint32_t cycles);
   [[nodiscard]] DmaRunResult run_immediate_dma();
@@ -156,6 +158,7 @@ class CoreScheduler {
   PpuTiming& ppu_;
   Apu& apu_;
   BiosController* bios_;
+  IoRegisters* io_;
   std::uint64_t scheduler_cycles_;
   bool halted_;
   const WaitStateControl* waitcnt_;

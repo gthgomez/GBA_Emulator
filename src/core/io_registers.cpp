@@ -15,6 +15,29 @@ constexpr std::array<std::uint32_t, 7> kSerialRegisterAddresses = {
     0x04000120U, 0x04000122U, 0x04000124U, 0x04000126U,
     0x04000128U, 0x0400012AU, IoRegisters::kRcnt,
 };
+constexpr std::uint32_t kSiodata32Low = 0x04000120U;
+constexpr std::uint32_t kSiodata32High = 0x04000122U;
+constexpr std::uint32_t kSiomulti2 = 0x04000124U;
+constexpr std::uint32_t kSiomulti3 = 0x04000126U;
+constexpr std::uint32_t kSiocnt = 0x04000128U;
+constexpr std::uint32_t kSiodata8 = 0x0400012AU;
+constexpr std::uint32_t kJoycnt = 0x04000140U;
+constexpr std::uint32_t kJoyRecvLow = 0x04000150U;
+constexpr std::uint32_t kJoyRecvHigh = 0x04000152U;
+constexpr std::uint32_t kJoyTransLow = 0x04000154U;
+constexpr std::uint32_t kJoyTransHigh = 0x04000156U;
+constexpr std::uint32_t kJoystat = 0x0400015AU;
+constexpr std::uint16_t kSiocntModeMask = 0x3000U;
+constexpr std::uint16_t kRcModeMask = 0xC000U;
+constexpr std::uint16_t kSioIdleControlBits = 0x4F8FU;
+constexpr std::uint16_t kJoycntIdle = 0x0040U;
+constexpr std::uint16_t kSioStartBit = 0x0080U;
+constexpr std::uint16_t kSioInternalClockBit = 0x0001U;
+constexpr std::uint16_t kSioFastClockBit = 0x0002U;
+constexpr std::uint16_t kSioIrqEnableBit = 0x4000U;
+constexpr std::uint32_t kSioSlowClockCyclesPerBit = 64U;
+constexpr std::uint32_t kSioFastClockCyclesPerBit = 8U;
+constexpr std::uint32_t kSioCompletionLatencyCycles = 40U;
 
 [[nodiscard]] constexpr bool is_halfword_aligned(std::uint32_t address) {
   return (address & 0x1U) == 0;
@@ -72,6 +95,105 @@ constexpr std::array<std::uint32_t, 7> kSerialRegisterAddresses = {
     }
   }
   return false;
+}
+
+[[nodiscard]] constexpr std::uint16_t serial_mode(std::uint16_t siocnt) {
+  return static_cast<std::uint16_t>(siocnt & kSiocntModeMask);
+}
+
+[[nodiscard]] constexpr std::uint16_t read_siocnt(std::uint16_t value) {
+  const std::uint16_t mode = serial_mode(value);
+  const std::uint16_t uart_external_clock =
+      mode == 0x3000U ? static_cast<std::uint16_t>(value & 0x0020U) : 0;
+  return static_cast<std::uint16_t>(kSioIdleControlBits | mode | uart_external_clock);
+}
+
+[[nodiscard]] constexpr std::uint16_t read_rcnt(std::uint16_t rcnt,
+                                                std::uint16_t siocnt) {
+  switch (rcnt & kRcModeMask) {
+    case 0x8000U:
+      return 0x81FFU;
+    case 0xC000U:
+      return 0xC1FCU;
+    default:
+      break;
+  }
+  const std::uint16_t mode = serial_mode(siocnt);
+  return mode == 0x0000U || mode == 0x1000U ? 0x01F5U : 0x01FFU;
+}
+
+[[nodiscard]] constexpr std::uint16_t read_serial_data(std::uint32_t address,
+                                                       std::uint16_t siocnt,
+                                                       std::uint16_t stored) {
+  const std::uint16_t mode = serial_mode(siocnt);
+  switch (address) {
+    case kSiodata32Low:
+    case kSiodata32High:
+      return mode == 0x1000U ? stored : 0;
+    case kSiomulti2:
+    case kSiomulti3:
+      return 0;
+    case kSiodata8:
+      return mode == 0x3000U ? 0 : stored;
+    default:
+      return stored;
+  }
+}
+
+[[nodiscard]] constexpr std::optional<std::uint32_t> serial_transfer_cycles(
+    std::uint16_t siocnt) {
+  if ((siocnt & kSioStartBit) == 0 || (siocnt & kSioInternalClockBit) == 0) {
+    return std::nullopt;
+  }
+
+  const std::uint16_t mode = serial_mode(siocnt);
+  std::uint32_t bits = 0;
+  switch (mode) {
+    case 0x0000U:
+      bits = 8;
+      break;
+    case 0x1000U:
+      bits = 32;
+      break;
+    default:
+      return std::nullopt;
+  }
+
+  const std::uint32_t cycles_per_bit =
+      (siocnt & kSioFastClockBit) != 0 ? kSioFastClockCyclesPerBit
+                                       : kSioSlowClockCyclesPerBit;
+  return bits * cycles_per_bit + kSioCompletionLatencyCycles;
+}
+
+[[nodiscard]] constexpr bool wave_ram_index(std::uint32_t address, std::size_t& index) {
+  if (address < 0x04000090U || address > 0x0400009EU || !is_halfword_aligned(address)) {
+    return false;
+  }
+  index = static_cast<std::size_t>((address - 0x04000090U) / 2U);
+  return true;
+}
+
+[[nodiscard]] constexpr std::optional<std::uint16_t> zero_read_hole(
+    std::uint32_t address) {
+  switch (address) {
+    case 0x04000066U:
+    case 0x0400006AU:
+    case 0x0400006EU:
+    case 0x04000076U:
+    case 0x0400007AU:
+    case 0x0400007EU:
+    case 0x04000086U:
+    case 0x0400008AU:
+    case 0x04000136U:
+    case 0x04000142U:
+    case kJoystat:
+    case 0x04000206U:
+    case 0x0400020AU:
+    case 0x04000302U:
+      return 0;
+    default:
+      return std::nullopt;
+  }
 }
 
 [[nodiscard]] constexpr std::uint16_t low16(std::uint32_t value) {
@@ -150,18 +272,24 @@ IoRegisters::IoRegisters(InterruptController& interrupts, Timers& timers,
       apu_(apu),
       waitcnt_(waitcnt),
       keypad_(keypad),
-      serial_{} {}
+      serial_{},
+      sio_transfer_active_(false),
+      sio_transfer_cycles_remaining_(0) {}
 
 void IoRegisters::reset() {
   serial_.fill(0);
+  sio_transfer_active_ = false;
+  sio_transfer_cycles_remaining_ = 0;
 }
 
 IoRegistersState IoRegisters::save_state() const {
-  return {serial_};
+  return {serial_, sio_transfer_active_, sio_transfer_cycles_remaining_};
 }
 
 void IoRegisters::load_state(const IoRegistersState& state) {
   serial_ = state.serial;
+  sio_transfer_active_ = state.sio_transfer_active;
+  sio_transfer_cycles_remaining_ = state.sio_transfer_cycles_remaining;
 }
 
 std::uint64_t IoRegisters::state_hash() const {
@@ -169,7 +297,25 @@ std::uint64_t IoRegisters::state_hash() const {
   for (const std::uint16_t value : serial_) {
     hasher.add_u16(value);
   }
+  hasher.add_bool(sio_transfer_active_);
+  hasher.add_u32(sio_transfer_cycles_remaining_);
   return hasher.value();
+}
+
+void IoRegisters::tick(std::uint32_t cycles) {
+  if (!sio_transfer_active_ || cycles == 0) {
+    return;
+  }
+  if (cycles < sio_transfer_cycles_remaining_) {
+    sio_transfer_cycles_remaining_ -= cycles;
+    return;
+  }
+
+  sio_transfer_active_ = false;
+  sio_transfer_cycles_remaining_ = 0;
+  if ((serial_.at(4) & kSioIrqEnableBit) != 0) {
+    interrupts_.request(InterruptSource::serial);
+  }
 }
 
 std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
@@ -178,6 +324,26 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
   }
 
   switch (address) {
+    case 0x04000060U:
+      return 0x007FU;
+    case 0x04000062U:
+      return 0xFFC0U;
+    case 0x04000064U:
+      return 0x4000U;
+    case 0x04000068U:
+      return 0xFFC0U;
+    case 0x0400006CU:
+      return 0x4000U;
+    case 0x04000070U:
+      return 0x00E0U;
+    case 0x04000072U:
+      return 0xE000U;
+    case 0x04000074U:
+      return 0x4000U;
+    case 0x04000078U:
+      return 0xFF00U;
+    case 0x0400007CU:
+      return 0x40FFU;
     case kDispstat:
       return ppu_.dispstat();
     case kVcount:
@@ -206,6 +372,11 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
       break;
   }
 
+  if (const std::optional<std::uint16_t> zero = zero_read_hole(address);
+      zero.has_value()) {
+    return zero;
+  }
+
   if (const std::optional<std::uint16_t> value = ppu_.read_lcd_control(address);
       value.has_value()) {
     return value;
@@ -225,7 +396,30 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
 
   std::size_t serial = 0;
   if (serial_index(address, serial)) {
-    return serial_.at(serial);
+    if (address == kSiocnt) {
+      return read_siocnt(serial_.at(serial));
+    }
+    if (address == kRcnt) {
+      return read_rcnt(serial_.at(serial), serial_.at(4));
+    }
+    return read_serial_data(address, serial_.at(4), serial_.at(serial));
+  }
+
+  switch (address) {
+    case kJoycnt:
+      return kJoycntIdle;
+    case kJoyRecvLow:
+    case kJoyRecvHigh:
+    case kJoyTransLow:
+    case kJoyTransHigh:
+      return 0;
+    default:
+      break;
+  }
+
+  std::size_t wave_ram = 0;
+  if (wave_ram_index(address, wave_ram)) {
+    return apu_.wave_ram(wave_ram);
   }
 
   std::size_t channel = 0;
@@ -233,17 +427,15 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
   if (dma_index(address, channel, dma_offset)) {
     switch (dma_offset) {
       case 0:
-        return low16(dma_.source(channel));
       case 2:
-        return high16(dma_.source(channel));
       case 4:
-        return low16(dma_.destination(channel));
       case 6:
-        return high16(dma_.destination(channel));
+        return std::nullopt;
       case 8:
-        return dma_.word_count(channel);
+        return 0;
       case 10:
-        return dma_.control(channel);
+        return static_cast<std::uint16_t>(dma_.control(channel) |
+                                          (channel == 3 ? 0x0800U : 0U));
       default:
         return std::nullopt;
     }
@@ -333,6 +525,29 @@ bool IoRegisters::write16(std::uint32_t address, std::uint16_t value) {
   std::size_t serial = 0;
   if (serial_index(address, serial)) {
     serial_.at(serial) = value;
+    if (address == kSiocnt) {
+      const std::optional<std::uint32_t> transfer_cycles =
+          serial_transfer_cycles(value);
+      sio_transfer_active_ = transfer_cycles.has_value();
+      sio_transfer_cycles_remaining_ = transfer_cycles.value_or(0);
+    }
+    return true;
+  }
+
+  switch (address) {
+    case kJoycnt:
+    case kJoyRecvLow:
+    case kJoyRecvHigh:
+    case kJoyTransLow:
+    case kJoyTransHigh:
+      return true;
+    default:
+      break;
+  }
+
+  std::size_t wave_ram = 0;
+  if (wave_ram_index(address, wave_ram)) {
+    apu_.write_wave_ram(wave_ram, value);
     return true;
   }
 

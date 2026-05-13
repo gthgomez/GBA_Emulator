@@ -147,6 +147,7 @@ g++ -std=c++17 -Wall -Wextra -Werror `
   (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
   (Join-Path $repoRoot "src\core\dma_controller.cpp") `
   (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
+  (Join-Path $repoRoot "src\core\io_registers.cpp") `
   (Join-Path $repoRoot "src\core\keypad.cpp") `
   (Join-Path $repoRoot "src\core\memory_bus.cpp") `
   (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
