@@ -363,6 +363,39 @@ struct DataAccessTimingProbe {
   return opcode >= 0x8U && opcode <= 0xBU;
 }
 
+[[nodiscard]] bool arm_immediate_data_processing_without_pc_write(
+    std::uint32_t instruction) {
+  constexpr std::uint32_t kImmediateDataProcessingMask = 0x0E000000U;
+  constexpr std::uint32_t kImmediateDataProcessingPattern = 0x02000000U;
+  if ((instruction & kImmediateDataProcessingMask) !=
+      kImmediateDataProcessingPattern) {
+    return false;
+  }
+  constexpr std::uint32_t kRdMask = 0x0000F000U;
+  constexpr std::uint32_t kPcRd = 0x0000F000U;
+  return (instruction & kRdMask) != kPcRd;
+}
+
+[[nodiscard]] bool simple_arm_no_data_instruction(std::uint32_t instruction) {
+  return arm_immediate_data_processing_without_pc_write(instruction);
+}
+
+[[nodiscard]] bool simple_thumb_alu_without_pc_write(std::uint16_t instruction) {
+  const std::uint16_t top3 = instruction >> 13U;
+  return top3 <= 0x1U || ((instruction >> 10U) & 0x3FU) == 0x10U;
+}
+
+[[nodiscard]] bool hle_irq_timing_sensitive_state(
+    bool hle_irq_return_latency_pending, bool hle_irq_post_return_latency_armed,
+    bool hle_irq_post_return_chain_active) {
+  return hle_irq_return_latency_pending || hle_irq_post_return_latency_armed ||
+         hle_irq_post_return_chain_active;
+}
+
+[[nodiscard]] bool immediate_dma_pending(const DmaController& dma) {
+  return dma.immediate_pending();
+}
+
 [[nodiscard]] bool access_covers_address(std::uint32_t address,
                                          AccessWidth width,
                                          std::uint32_t target) {
@@ -869,7 +902,11 @@ void merge_device_ticks(CoreDeviceTickResult& target,
   target.triggered_dma.units_transferred += source.triggered_dma.units_transferred;
   target.triggered_dma.bus_cycles += source.triggered_dma.bus_cycles;
   target.triggered_dma.unsupported_request =
-      target.triggered_dma.unsupported_request || source.triggered_dma.unsupported_request;
+       target.triggered_dma.unsupported_request || source.triggered_dma.unsupported_request;
+}
+
+[[nodiscard]] constexpr bool game_pak_rom_address(std::uint32_t address) {
+  return address >= 0x08000000U && address <= 0x0DFFFFFFU;
 }
 
 bool should_charge_prefetch_execute_bubble(
@@ -885,7 +922,7 @@ bool should_charge_prefetch_execute_bubble(
       (!prefetch_hit || remaining_prefetch_halfwords == 0)) {
     return false;
   }
-  return MemoryBus::describe(fetch_address).region == Region::game_pak_rom;
+  return game_pak_rom_address(fetch_address);
 }
 
 bool should_overlap_thumb_internal_data_load(
@@ -1615,6 +1652,42 @@ CoreSchedulerStepResult CoreScheduler::step_arm(
     std::uint32_t instruction,
     std::optional<ArmElapsedCycleEstimate> elapsed_override) {
   const std::uint32_t pre_step_pc = cpu_.register_value(Arm7tdmi::kPc);
+  if (waitcnt_ == nullptr && !elapsed_override.has_value() &&
+      simple_arm_no_data_instruction(instruction) &&
+      !immediate_dma_pending(dma_) &&
+      !hle_irq_timing_sensitive_state(hle_irq_return_latency_pending_,
+                                      hle_irq_post_return_latency_armed_,
+                                      hle_irq_post_return_chain_active_)) {
+    ArmStepResult cpu_step = cpu_.step_arm(instruction);
+    CoreDeviceTickResult devices{0, std::nullopt};
+    bool irq_serviced = false;
+
+    if (cpu_step.status == ExecuteStatus::skipped_condition &&
+        cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+    }
+
+    if (cpu_step.status == ExecuteStatus::executed && cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+      const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == pre_step_pc;
+      if (sequential_pc && auto_irq_ready()) {
+        cpu_.set_register(Arm7tdmi::kPc, pre_step_pc + 4U);
+      }
+      irq_serviced =
+          sequential_pc && auto_irq_ready() && service_pending_irq();
+      if (irq_serviced) {
+        reset_auto_irq_latency();
+      }
+      if (!irq_serviced && sequential_pc &&
+          cpu_.register_value(Arm7tdmi::kPc) == pre_step_pc + 4U) {
+        cpu_.set_register(Arm7tdmi::kPc, pre_step_pc);
+      }
+    }
+
+    return {cpu_step, devices, {}, irq_serviced, scheduler_cycles_,
+            std::nullopt};
+  }
+
   const std::optional<DataAccessTimingProbe> data_access =
       first_arm_data_access_for_timing(cpu_, instruction);
   const bool timer_io_access =
@@ -1805,6 +1878,42 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
     std::uint16_t instruction, bool prefetch_internal_load_overlap,
     std::optional<ArmElapsedCycleEstimate> elapsed_override) {
   const std::uint32_t pre_step_pc = cpu_.register_value(Arm7tdmi::kPc);
+  if (waitcnt_ == nullptr && !prefetch_internal_load_overlap &&
+      !elapsed_override.has_value() && simple_thumb_alu_without_pc_write(instruction) &&
+      !immediate_dma_pending(dma_) &&
+      !hle_irq_timing_sensitive_state(hle_irq_return_latency_pending_,
+                                      hle_irq_post_return_latency_armed_,
+                                      hle_irq_post_return_chain_active_)) {
+    ArmStepResult cpu_step = cpu_.step_thumb(instruction);
+    CoreDeviceTickResult devices{0, std::nullopt};
+    bool irq_serviced = false;
+
+    if (cpu_step.status == ExecuteStatus::skipped_condition &&
+        cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+    }
+
+    if (cpu_step.status == ExecuteStatus::executed && cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+      const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == pre_step_pc;
+      if (sequential_pc && auto_irq_ready()) {
+        cpu_.set_register(Arm7tdmi::kPc, pre_step_pc + 2U);
+      }
+      irq_serviced =
+          sequential_pc && auto_irq_ready() && service_pending_irq();
+      if (irq_serviced) {
+        reset_auto_irq_latency();
+      }
+      if (!irq_serviced && sequential_pc &&
+          cpu_.register_value(Arm7tdmi::kPc) == pre_step_pc + 2U) {
+        cpu_.set_register(Arm7tdmi::kPc, pre_step_pc);
+      }
+    }
+
+    return {cpu_step, devices, {}, irq_serviced, scheduler_cycles_,
+            std::nullopt};
+  }
+
   const std::optional<DataAccessTimingProbe> data_access =
       first_thumb_data_access_for_timing(cpu_, instruction);
   const bool timer_io_access =
@@ -2566,6 +2675,50 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
             true, false, false, false, false, false, 0, false};
   }
 
+  if (waitcnt_ == nullptr &&
+      arm_immediate_data_processing_without_pc_write(instruction.value()) &&
+      !immediate_dma_pending(dma_) &&
+      !hle_irq_timing_sensitive_state(hle_irq_return_latency_pending_,
+                                      hle_irq_post_return_latency_armed_,
+                                      hle_irq_post_return_chain_active_)) {
+    ArmStepResult cpu_step = cpu_.step_arm(instruction.value());
+    CoreDeviceTickResult devices{0, std::nullopt};
+    bool irq_serviced = false;
+
+    if (cpu_step.status == ExecuteStatus::skipped_condition &&
+        cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+    }
+
+    if (cpu_step.status == ExecuteStatus::executed &&
+        cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+      const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+      if (sequential_pc && auto_irq_ready()) {
+        cpu_.set_register(Arm7tdmi::kPc, fetch_address + 4U);
+      }
+      irq_serviced = sequential_pc && auto_irq_ready() && service_pending_irq();
+      if (irq_serviced) {
+        reset_auto_irq_latency();
+      }
+      if (!irq_serviced && sequential_pc &&
+          cpu_.register_value(Arm7tdmi::kPc) == fetch_address + 4U) {
+        cpu_.set_register(Arm7tdmi::kPc, fetch_address);
+      }
+    }
+
+    CoreSchedulerStepResult step{cpu_step, devices, {}, irq_serviced,
+                                 scheduler_cycles_, std::nullopt};
+    const bool should_advance_pc =
+        step.cpu_step.status != ExecuteStatus::unsupported &&
+        cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+    if (should_advance_pc) {
+      cpu_.set_register(Arm7tdmi::kPc, fetch_address + 4U);
+    }
+    return {CoreInstructionSet::arm, 4, fetch_address, instruction, step, 0,
+            false, should_advance_pc, false, false, false, false, 0, false};
+  }
+
   bool fetch_timing_applied = false;
   bool fetch_sequential = false;
   bool prefetch_enabled = false;
@@ -2574,9 +2727,68 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
   const std::uint32_t fetch_cycles = apply_fetch_timing(
       fetch_address, 4, fetch_timing_applied, fetch_sequential, prefetch_enabled,
       prefetch_hit, boundary_forced_nonsequential);
+  const bool simple_immediate_data_processing =
+      arm_immediate_data_processing_without_pc_write(instruction.value());
   const std::optional<ArmElapsedCycleEstimate> elapsed_override =
-      arm_rom_multiply_elapsed_override(cpu_, instruction.value(), fetch_address,
-                                        waitcnt_);
+      simple_immediate_data_processing
+          ? std::nullopt
+          : arm_rom_multiply_elapsed_override(cpu_, instruction.value(),
+                                              fetch_address, waitcnt_);
+  if (simple_immediate_data_processing &&
+      !immediate_dma_pending(dma_) &&
+      !hle_irq_timing_sensitive_state(hle_irq_return_latency_pending_,
+                                      hle_irq_post_return_latency_armed_,
+                                      hle_irq_post_return_chain_active_)) {
+    ArmStepResult cpu_step = cpu_.step_arm(instruction.value());
+    CoreDeviceTickResult devices{0, std::nullopt};
+    bool irq_serviced = false;
+
+    if (cpu_step.status == ExecuteStatus::skipped_condition &&
+        cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+    }
+    if (cpu_step.status == ExecuteStatus::executed && cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+      const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+      if (sequential_pc && auto_irq_ready()) {
+        cpu_.set_register(Arm7tdmi::kPc, fetch_address + 4U);
+      }
+      irq_serviced = sequential_pc && auto_irq_ready() && service_pending_irq();
+      if (irq_serviced) {
+        reset_auto_irq_latency();
+      }
+      if (!irq_serviced && sequential_pc &&
+          cpu_.register_value(Arm7tdmi::kPc) == fetch_address + 4U) {
+        cpu_.set_register(Arm7tdmi::kPc, fetch_address);
+      }
+    }
+
+    const bool should_advance_pc =
+        cpu_step.status != ExecuteStatus::unsupported &&
+        cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+    CoreSchedulerStepResult step{cpu_step, devices, {}, irq_serviced,
+                                 scheduler_cycles_, std::nullopt};
+    if (should_charge_prefetch_execute_bubble(fetch_address, waitcnt_, step,
+                                              should_advance_pc, prefetch_hit, 4,
+                                              prefetch_buffer_halfwords_)) {
+      const CoreDeviceTickResult bubble = advance_devices(1);
+      merge_device_ticks(step.devices, bubble);
+      ++step.cpu_step.elapsed_cycles;
+      ++step.cpu_step.total_elapsed_cycles;
+      step.scheduler_cycles = scheduler_cycles_;
+    }
+    if (should_advance_pc) {
+      cpu_.set_register(Arm7tdmi::kPc, fetch_address + 4U);
+      refill_prefetch_after_step(fetch_address, 4, step);
+    } else {
+      reset_fetch_timing_sequence();
+    }
+
+    return {CoreInstructionSet::arm, 4, fetch_address, instruction, step,
+            fetch_cycles, false, should_advance_pc, fetch_timing_applied,
+            fetch_sequential, prefetch_enabled, prefetch_hit,
+            prefetch_buffer_halfwords_, boundary_forced_nonsequential};
+  }
   CoreSchedulerStepResult step = step_arm(instruction.value(), elapsed_override);
   const bool should_advance_pc =
       step.cpu_step.status != ExecuteStatus::unsupported &&
@@ -2656,6 +2868,52 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
     previous_thumb_internal_load_ = false;
     return {CoreInstructionSet::thumb, 2, fetch_address, std::nullopt, std::nullopt,
             0, true, false, false, false, false, false, 0, false};
+  }
+
+  if (waitcnt_ == nullptr && !suppress_next_thumb_prefetch_execute_bubble_ &&
+      !previous_thumb_internal_load_ &&
+      simple_thumb_alu_without_pc_write(instruction.value()) &&
+      !immediate_dma_pending(dma_) &&
+      !hle_irq_timing_sensitive_state(hle_irq_return_latency_pending_,
+                                      hle_irq_post_return_latency_armed_,
+                                      hle_irq_post_return_chain_active_)) {
+    ArmStepResult cpu_step = cpu_.step_thumb(instruction.value());
+    CoreDeviceTickResult devices{0, std::nullopt};
+    bool irq_serviced = false;
+
+    if (cpu_step.status == ExecuteStatus::skipped_condition &&
+        cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+    }
+
+    if (cpu_step.status == ExecuteStatus::executed &&
+        cpu_step.elapsed_cycles > 0) {
+      devices = advance_devices(cpu_step.elapsed_cycles);
+      const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+      if (sequential_pc && auto_irq_ready()) {
+        cpu_.set_register(Arm7tdmi::kPc, fetch_address + 2U);
+      }
+      irq_serviced = sequential_pc && auto_irq_ready() && service_pending_irq();
+      if (irq_serviced) {
+        reset_auto_irq_latency();
+      }
+      if (!irq_serviced && sequential_pc &&
+          cpu_.register_value(Arm7tdmi::kPc) == fetch_address + 2U) {
+        cpu_.set_register(Arm7tdmi::kPc, fetch_address);
+      }
+    }
+
+    CoreSchedulerStepResult step{cpu_step, devices, {}, irq_serviced,
+                                 scheduler_cycles_, std::nullopt};
+    const bool should_advance_pc =
+        step.cpu_step.status != ExecuteStatus::unsupported &&
+        cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+    if (should_advance_pc) {
+      cpu_.set_register(Arm7tdmi::kPc, fetch_address + 2U);
+    }
+    previous_thumb_internal_load_ = false;
+    return {CoreInstructionSet::thumb, 2, fetch_address, instruction.value(), step,
+            0, false, should_advance_pc, false, false, false, false, 0, false};
   }
 
   bool fetch_timing_applied = false;
