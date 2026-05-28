@@ -49,6 +49,25 @@ struct TimerIoCallbackContext {
   gba::core::Timers* timers = nullptr;
 };
 
+struct PpuIoCallbackContext {
+  gba::core::PpuTiming* ppu = nullptr;
+};
+
+std::optional<std::uint16_t> read_ppu_io16(void* context,
+                                           std::uint32_t address) {
+  constexpr std::uint32_t kDispstat = 0x04000004U;
+  if (context == nullptr || address != kDispstat) {
+    return std::nullopt;
+  }
+
+  const auto* callback_context =
+      static_cast<const PpuIoCallbackContext*>(context);
+  if (callback_context->ppu == nullptr) {
+    return std::nullopt;
+  }
+  return callback_context->ppu->dispstat();
+}
+
 std::optional<std::uint16_t> read_timer_io16(void* context,
                                              std::uint32_t address) {
   constexpr std::uint32_t kTimerBase = 0x04000100U;
@@ -132,6 +151,7 @@ int main() {
   constexpr std::uint16_t kThumbStrR0R1Imm0 = 0x6008U;
   constexpr std::uint16_t kThumbLdrR2R1Imm0 = 0x680AU;
   constexpr std::uint16_t kThumbLdrR2R4Imm0 = 0x6822U;
+  constexpr std::uint16_t kThumbLdrhR0R1Imm0 = 0x8808U;
   constexpr std::uint16_t kThumbLdmiaR2R3R7 = 0xCAF8U;
   constexpr std::uint16_t kThumbSwi0 = 0xDF00U;
   constexpr std::uint16_t kThumbBranchPlusOneHalfword = 0xE001U;
@@ -360,8 +380,8 @@ int main() {
   apu.reset();
   dma.reset();
   interrupts.reset();
-  TimerIoCallbackContext timer_io_context{&timers};
-  memory.set_io_callbacks({&timer_io_context, read_timer_io16,
+  TimerIoCallbackContext timer0_data_phase_context{&timers};
+  memory.set_io_callbacks({&timer0_data_phase_context, read_timer_io16,
                            read_timer_io32, nullptr, nullptr});
   // Mirrors the 10b,0x0012 loose-loop trace: phase 179, counter FFFF,
   // and five cycles until the 1024-prescaler overflow.
@@ -1918,6 +1938,57 @@ int main() {
   dma.reset();
   interrupts.reset();
   timed_scheduler.reset_scheduler_cycles();
+  expect(memory.write16(kSyntheticProgramBase, kThumbBranchPlusOneHalfword),
+         "timed scheduler seeds line-rollover Thumb branch in IWRAM");
+  expect(memory.write16(kSyntheticProgramBase + 6U, kThumbMovR2Imm3),
+         "timed scheduler seeds line-rollover Thumb branch target");
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler enters Thumb for line-rollover branch fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  ppu.tick(PpuTiming::kCyclesPerLine - 1U, interrupts);
+  const gba::core::CoreSchedulerFetchStepResult rollover_thumb_branch =
+      timed_scheduler.step_from_pc();
+  expect(rollover_thumb_branch.step.has_value(),
+         "line-rollover Thumb branch reports scheduler step");
+  expect(rollover_thumb_branch.step->cpu_step.elapsed_cycles == 3,
+         "ordinary internal Thumb branch crossing line rollover keeps core branch timing");
+  expect(ppu.line_cycle() == 2,
+         "ordinary line-rollover Thumb branch advances devices without status stall");
+
+  cpu.reset();
+  memory.reset();
+  timers.reset();
+  ppu.reset();
+  apu.reset();
+  dma.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(memory.write16(kSyntheticProgramBase, kThumbBranchPlusOneHalfword),
+         "timed scheduler seeds HBlank-sensitive line-rollover Thumb branch");
+  expect(memory.write16(kSyntheticProgramBase + 6U, kThumbMovR2Imm3),
+         "timed scheduler seeds HBlank-sensitive line-rollover branch target");
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler enters Thumb for HBlank-sensitive branch fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  ppu.write_dispstat(0x0010U);
+  ppu.tick(PpuTiming::kCyclesPerLine - 1U, interrupts);
+  const gba::core::CoreSchedulerFetchStepResult hblank_rollover_thumb_branch =
+      timed_scheduler.step_from_pc();
+  expect(hblank_rollover_thumb_branch.step.has_value(),
+         "HBlank-sensitive line-rollover Thumb branch reports scheduler step");
+  expect(hblank_rollover_thumb_branch.step->cpu_step.elapsed_cycles == 5,
+         "HBlank-sensitive internal Thumb branch carries the rollover stall");
+  expect(ppu.line_cycle() == 4,
+         "HBlank-sensitive line-rollover Thumb branch advances through the stall");
+
+  cpu.reset();
+  memory.reset();
+  timers.reset();
+  ppu.reset();
+  apu.reset();
+  dma.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
   expect(memory.write16(kEwramProgramBase, kThumbMovR2Imm3),
          "timed scheduler seeds Thumb instruction in EWRAM");
   expect(cpu.set_cpsr(kThumbStateSupervisor), "timed scheduler enters Thumb for EWRAM");
@@ -1930,6 +2001,332 @@ int main() {
          "EWRAM Thumb opcode fetch charges halfword bus cost minus unit CPU cycle");
   expect(timed_scheduler.scheduler_cycles() == 3,
          "EWRAM Thumb dispatch totals documented halfword fetch cost");
+
+  cpu.reset();
+  memory.reset();
+  timers.reset();
+  ppu.reset();
+  apu.reset();
+  dma.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  PpuIoCallbackContext ppu_io_context{&ppu};
+  memory.set_io_callbacks({&ppu_io_context, read_ppu_io16, nullptr, nullptr,
+                           nullptr});
+  expect(memory.write16(kSyntheticProgramBase, kThumbLdrhR0R1Imm0),
+         "timed scheduler seeds Thumb DISPSTAT load instruction in IWRAM");
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler enters Thumb for DISPSTAT data-phase fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000004U);
+  ppu.tick(PpuTiming::kHblankFlagCycles - 4U, interrupts);
+  expect((ppu.dispstat() & 0x0002U) == 0,
+         "DISPSTAT stable fixture starts before the CPU-visible HBlank flag");
+  const gba::core::CoreSchedulerFetchStepResult stable_dispstat_load =
+      timed_scheduler.step_from_pc();
+  expect(stable_dispstat_load.step.has_value(),
+         "stable Thumb DISPSTAT load reports scheduler step");
+  expect(stable_dispstat_load.step->data_access.has_value(),
+         "stable Thumb DISPSTAT load reports data access");
+  expect(stable_dispstat_load.step->data_access->pre_access_cycles == 2,
+         "stable Thumb DISPSTAT load samples at the LCD status data phase");
+  expect(stable_dispstat_load.step->cpu_step.elapsed_cycles == 3,
+         "stable Thumb DISPSTAT load keeps ordinary IO timing");
+  expect((cpu.register_value(0) & 0x0002U) == 0,
+         "stable Thumb DISPSTAT load does not see HBlank early");
+
+  cpu.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for DISPSTAT completion fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000004U);
+  ppu.tick(PpuTiming::kHblankFlagCycles - 3U, interrupts);
+  expect((ppu.dispstat() & 0x0002U) == 0,
+         "DISPSTAT completion fixture starts before the HBlank flag");
+  const gba::core::CoreSchedulerFetchStepResult completing_dispstat_load =
+      timed_scheduler.step_from_pc();
+  expect(completing_dispstat_load.step.has_value(),
+         "completing Thumb DISPSTAT load reports scheduler step");
+  expect(completing_dispstat_load.step->data_access.has_value(),
+         "completing Thumb DISPSTAT load reports data access");
+  expect(completing_dispstat_load.step->data_access->pre_access_cycles == 3,
+         "Thumb DISPSTAT load completing on the status edge samples completion");
+  expect(completing_dispstat_load.step->cpu_step.elapsed_cycles == 4,
+         "Thumb DISPSTAT load completing on the status edge carries the transition stall");
+  expect((cpu.register_value(0) & 0x0002U) != 0,
+         "Thumb DISPSTAT completion load observes HBlank at completion");
+
+  cpu.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for DISPSTAT transition fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000004U);
+  ppu.tick(PpuTiming::kHblankFlagCycles - 2U, interrupts);
+  expect((ppu.dispstat() & 0x0002U) == 0,
+         "exact-edge DISPSTAT fixture starts before the CPU-visible HBlank flag");
+  const gba::core::CoreSchedulerFetchStepResult exact_edge_dispstat_load =
+      timed_scheduler.step_from_pc();
+  expect(exact_edge_dispstat_load.step.has_value(),
+         "exact-edge Thumb DISPSTAT load reports scheduler step");
+  expect(exact_edge_dispstat_load.step->data_access.has_value(),
+         "exact-edge Thumb DISPSTAT load reports data access");
+  expect(exact_edge_dispstat_load.step->data_access->pre_access_cycles == 0,
+         "exact-edge Thumb DISPSTAT load keeps the old HBlank bit");
+  expect((cpu.register_value(0) & 0x0002U) == 0,
+         "exact-edge Thumb DISPSTAT load observes HBlank clear");
+
+  cpu.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for DISPSTAT transition fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000004U);
+  ppu.tick(PpuTiming::kHblankFlagCycles - 1U, interrupts);
+  expect((ppu.dispstat() & 0x0002U) == 0,
+         "DISPSTAT fixture starts before the CPU-visible HBlank flag");
+  const gba::core::CoreSchedulerFetchStepResult dispstat_load =
+      timed_scheduler.step_from_pc();
+  expect(dispstat_load.step.has_value(),
+         "Thumb DISPSTAT load reports scheduler step");
+  expect(dispstat_load.step->data_access.has_value(),
+         "Thumb DISPSTAT load reports data access");
+  expect(dispstat_load.step->data_access->pre_access_cycles == 2,
+         "Thumb DISPSTAT load samples at the LCD status data phase");
+  expect(dispstat_load.step->cpu_step.elapsed_cycles == 4,
+         "Thumb DISPSTAT load crossing the status transition carries the status stall");
+  expect((cpu.register_value(0) & 0x0002U) != 0,
+         "Thumb DISPSTAT load observes HBlank after its data phase");
+
+  cpu.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for DISPSTAT rollover fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000004U);
+  ppu.write_dispstat(0x0010U);
+  ppu.tick(PpuTiming::kCyclesPerLine - 1U, interrupts);
+  expect((ppu.dispstat() & 0x0002U) != 0,
+         "DISPSTAT rollover fixture starts with HBlank set");
+  const gba::core::CoreSchedulerFetchStepResult rollover_dispstat_load =
+      timed_scheduler.step_from_pc();
+  expect(rollover_dispstat_load.step.has_value(),
+         "rollover Thumb DISPSTAT load reports scheduler step");
+  expect(rollover_dispstat_load.step->data_access.has_value(),
+         "rollover Thumb DISPSTAT load reports data access");
+  expect(rollover_dispstat_load.step->data_access->pre_access_cycles == 2,
+         "rollover Thumb DISPSTAT load keeps the LCD status data phase");
+  expect(rollover_dispstat_load.step->cpu_step.elapsed_cycles == 6,
+         "rollover Thumb DISPSTAT load carries the line status stall");
+  expect((cpu.register_value(0) & 0x0002U) == 0,
+         "rollover Thumb DISPSTAT load observes the cleared HBlank bit");
+
+  cpu.reset();
+  timers.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  TimerIoCallbackContext late_hblank_timer_context{&timers};
+  memory.set_io_callbacks({&late_hblank_timer_context, read_timer_io16,
+                           read_timer_io32, nullptr, nullptr});
+  expect(memory.write16(kSyntheticProgramBase, kThumbLdrhR0R1Imm0),
+         "timed scheduler seeds Thumb late-HBlank timer load instruction");
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler enters Thumb for late-HBlank timer load fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000100U);
+  timers.write_reload(0, 0);
+  timers.write_control(0, 0x0080);
+  timers.tick(0x0100U, interrupts);
+  interrupts.write_interrupt_enable(
+      1U << static_cast<std::uint8_t>(InterruptSource::hblank));
+  ppu.tick(PpuTiming::kVisibleCycles + 64U, interrupts);
+  const gba::core::CoreSchedulerFetchStepResult late_hblank_timer_load =
+      timed_scheduler.step_from_pc();
+  expect(late_hblank_timer_load.step.has_value(),
+         "late-HBlank timer load reports scheduler step");
+  expect(late_hblank_timer_load.step->data_access.has_value(),
+         "late-HBlank timer load reports data access");
+  expect(late_hblank_timer_load.step->data_access->pre_access_cycles == 3,
+         "IME-masked late-HBlank timer load samples at the data phase");
+  expect(cpu.register_value(0) == 0x0103U,
+         "IME-masked late-HBlank timer load observes timer after data phase");
+
+  cpu.reset();
+  timers.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for early-HBlank timer load fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000100U);
+  timers.write_reload(0, 0);
+  timers.write_control(0, 0x0080);
+  timers.tick(0x0100U, interrupts);
+  interrupts.write_interrupt_enable(
+      1U << static_cast<std::uint8_t>(InterruptSource::hblank));
+  ppu.tick(PpuTiming::kVisibleCycles + 58U, interrupts);
+  const gba::core::CoreSchedulerFetchStepResult early_hblank_timer_load =
+      timed_scheduler.step_from_pc();
+  expect(early_hblank_timer_load.step.has_value(),
+         "early-HBlank timer load reports scheduler step");
+  expect(early_hblank_timer_load.step->data_access.has_value(),
+         "early-HBlank timer load reports data access");
+  expect(early_hblank_timer_load.step->data_access->pre_access_cycles == 3,
+         "IME-masked early-HBlank timer load samples at the data phase");
+  expect(cpu.register_value(0) == 0x0103U,
+         "IME-masked early-HBlank timer load observes timer after data phase");
+
+  cpu.reset();
+  timers.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for clear-side VBlank timer load");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000100U);
+  timers.write_reload(0, 0);
+  timers.write_control(0, 0x0080);
+  timers.tick(0x0100U, interrupts);
+  interrupts.write_interrupt_enable(
+      1U << static_cast<std::uint8_t>(InterruptSource::hblank));
+  interrupts.request(InterruptSource::hblank);
+  ppu.tick(PpuTiming::kCyclesPerLine * 162U + 10U, interrupts);
+  expect(ppu.vblank() && !ppu.hblank(),
+         "clear-side timer fixture starts on a VBlank line before the HBlank flag");
+  const gba::core::CoreSchedulerFetchStepResult clear_side_timer_load =
+      timed_scheduler.step_from_pc();
+  expect(clear_side_timer_load.step.has_value(),
+         "clear-side VBlank timer load reports scheduler step");
+  expect(clear_side_timer_load.step->data_access.has_value(),
+         "clear-side VBlank timer load reports data access");
+  expect(clear_side_timer_load.step->data_access->pre_access_cycles == 4,
+         "pending HBlank clear-side timer load samples at the line-clear settle point");
+  expect(cpu.register_value(0) == 0x0104U,
+         "pending HBlank clear-side timer load observes timer after clear settle");
+
+  cpu.reset();
+  timers.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for long HBlank poll timer load");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000100U);
+  timers.write_reload(0, 0);
+  timers.write_control(0, 0x0080);
+  timers.tick(0x0100U, interrupts);
+  interrupts.write_interrupt_enable(
+      1U << static_cast<std::uint8_t>(InterruptSource::hblank));
+  ppu.tick(PpuTiming::kHblankFlagCycles + 10U, interrupts);
+  gba::core::CoreSchedulerState long_hblank_poll_state =
+      timed_scheduler.save_state();
+  long_hblank_poll_state.timer_io_access_gap_cycles =
+      PpuTiming::kHblankFlagCycles - 5U;
+  timed_scheduler.load_state(long_hblank_poll_state);
+  const gba::core::CoreSchedulerFetchStepResult long_hblank_timer_load =
+      timed_scheduler.step_from_pc();
+  expect(long_hblank_timer_load.step.has_value(),
+         "long HBlank poll timer load reports scheduler step");
+  expect(long_hblank_timer_load.step->data_access.has_value(),
+         "long HBlank poll timer load reports data access");
+  expect(long_hblank_timer_load.step->data_access->pre_access_cycles == 2,
+         "long HBlank poll timer load samples before normal completion");
+  expect(cpu.register_value(0) == 0x0102U,
+         "long HBlank poll timer load observes timer at the early sample point");
+
+  cpu.reset();
+  timers.reset();
+  ppu.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler re-enters Thumb for IME-enabled late-HBlank timer load");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(1, 0x04000100U);
+  timers.write_reload(0, 0);
+  timers.write_control(0, 0x0080);
+  timers.tick(0x0100U, interrupts);
+  ppu.tick(PpuTiming::kVisibleCycles + 64U, interrupts);
+  interrupts.write_ime(1);
+  const gba::core::CoreSchedulerFetchStepResult ime_enabled_timer_load =
+      timed_scheduler.step_from_pc();
+  expect(ime_enabled_timer_load.step.has_value(),
+         "IME-enabled late-HBlank timer load reports scheduler step");
+  expect(ime_enabled_timer_load.step->data_access.has_value(),
+         "IME-enabled late-HBlank timer load reports data access");
+  expect(ime_enabled_timer_load.step->data_access->pre_access_cycles == 0,
+         "IME-enabled late-HBlank timer load keeps ordinary timer sampling");
+  expect(cpu.register_value(0) == 0x0100U,
+         "IME-enabled late-HBlank timer load observes timer without data-phase delay");
+  memory.clear_io_callbacks();
+
+  cpu.reset();
+  memory.reset();
+  timers.reset();
+  ppu.reset();
+  apu.reset();
+  dma.reset();
+  interrupts.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(memory.write16(kSyntheticProgramBase, kThumbStrR0R1Imm0),
+         "timed scheduler seeds Thumb store instruction in IWRAM");
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler enters Thumb for internal-store fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(0, 0x11223344U);
+  cpu.set_register(1, kSyntheticProgramBase + 0x100U);
+  const gba::core::CoreSchedulerFetchStepResult iwram_thumb_store =
+      timed_scheduler.step_from_pc();
+  expect(iwram_thumb_store.step.has_value(),
+         "IWRAM Thumb store reports scheduler step");
+  expect(iwram_thumb_store.step->cpu_step.status == ExecuteStatus::executed,
+         "IWRAM Thumb store executes");
+  expect(iwram_thumb_store.step->cpu_step.memory_timing_applied,
+         "IWRAM Thumb store uses internal data timing");
+  expect(iwram_thumb_store.step->cpu_step.elapsed_cycles == 2,
+         "IWRAM Thumb store charges the internal store bus cycle");
+  expect(timed_scheduler.scheduler_cycles() == 2,
+         "IWRAM Thumb store dispatch accounts for internal timing");
+  expect_read32(memory, kSyntheticProgramBase + 0x100U, 0x11223344U,
+                "IWRAM Thumb store writes through the timed scheduler");
+
+  cpu.reset();
+  ppu.reset();
+  timed_scheduler.reset_scheduler_cycles();
+  expect(memory.write16(kSyntheticProgramBase, kThumbStrR0R1Imm0),
+         "timed scheduler seeds HBlank Thumb store instruction in IWRAM");
+  expect(cpu.set_cpsr(kThumbStateSupervisor),
+         "timed scheduler enters Thumb for HBlank internal-store fixture");
+  cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+  cpu.set_register(0, 0x55667788U);
+  cpu.set_register(1, kSyntheticProgramBase + 0x104U);
+  ppu.tick(PpuTiming::kVisibleCycles, interrupts);
+  interrupts.request(InterruptSource::hblank);
+  const gba::core::CoreSchedulerFetchStepResult hblank_iwram_thumb_store =
+      timed_scheduler.step_from_pc();
+  expect(hblank_iwram_thumb_store.step.has_value(),
+         "HBlank IWRAM Thumb store reports scheduler step");
+  expect(hblank_iwram_thumb_store.step->cpu_step.status == ExecuteStatus::executed,
+         "HBlank IWRAM Thumb store executes");
+  expect(hblank_iwram_thumb_store.step->cpu_step.memory_timing_applied,
+         "HBlank IWRAM Thumb store uses internal data timing");
+  expect(hblank_iwram_thumb_store.step->cpu_step.elapsed_cycles == 1,
+         "HBlank IWRAM Thumb store overlaps the internal store bus cycle");
+  expect_read32(memory, kSyntheticProgramBase + 0x104U, 0x55667788U,
+                "HBlank IWRAM Thumb store writes through the timed scheduler");
 
   std::cout << "core_scheduler_test: PASS\n";
   return 0;

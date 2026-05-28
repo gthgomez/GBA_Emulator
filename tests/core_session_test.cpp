@@ -33,7 +33,9 @@ int main() {
   using gba::core::CoreSession;
   using gba::core::ExecuteStatus;
   using gba::core::GamePakSaveType;
+  using gba::core::InterruptSource;
   using gba::core::IoRegisters;
+  using gba::core::PpuTiming;
 
   constexpr std::uint32_t kProgramBase = 0x08000000U;
   constexpr std::uint32_t kAddR0R0Imm1 = 0xE2800001U;
@@ -45,6 +47,9 @@ int main() {
   constexpr std::uint32_t kArmSwiDiv = 0xEF060000U;
   constexpr std::uint32_t kArmSwiArcTan = 0xEF090000U;
   constexpr std::uint32_t kArmSwiArcTan2 = 0xEF0A0000U;
+  constexpr std::uint16_t kThumbSwiHalt = 0xDF02U;
+  constexpr std::uint16_t kHblankIrqBit =
+      static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(InterruptSource::hblank));
 
   CoreSession session;
   expect(session.state_hash() == session.state_hash(), "state hash is stable");
@@ -182,6 +187,55 @@ int main() {
          "IRQ-HLE dispatch accounts for BIOS vector dispatch latency");
   expect(irq_hle->cpu().register_value(Arm7tdmi::kPc) == 0x08000040,
          "IRQ-HLE dispatch jumps to user IRQ handler pointer");
+
+  auto hblank_halt_before = std::make_unique<CoreSession>();
+  hblank_halt_before->bios().set_mode(BiosExecutionMode::hle);
+  std::vector<std::uint8_t> halt_rom(256);
+  halt_rom.at(0) = static_cast<std::uint8_t>(kThumbSwiHalt & 0xFFU);
+  halt_rom.at(1) = static_cast<std::uint8_t>((kThumbSwiHalt >> 8U) & 0xFFU);
+  expect(hblank_halt_before->memory().load_game_pak_rom(halt_rom),
+         "HBlank Halt-HLE ROM loads");
+  expect(hblank_halt_before->cpu().set_cpsr(0x00000030),
+         "HBlank Halt-HLE fixture enters Thumb system mode");
+  hblank_halt_before->cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+  hblank_halt_before->interrupts().write_interrupt_enable(kHblankIrqBit);
+  hblank_halt_before->interrupts().write_ime(1);
+  hblank_halt_before->ppu().tick(static_cast<std::uint32_t>(PpuTiming::kCyclesPerLine) *
+                                     PpuTiming::kVisibleLines +
+                                 PpuTiming::kVisibleCycles - 1U,
+                                 hblank_halt_before->interrupts());
+  hblank_halt_before->ppu().write_dispstat(0x0010);
+  const gba::core::CoreSchedulerFetchStepResult hblank_halt_before_step =
+      hblank_halt_before->step();
+  expect(hblank_halt_before_step.step->cpu_step.status == ExecuteStatus::executed,
+         "HBlank Halt-HLE before event executes");
+  expect(hblank_halt_before_step.step->cpu_step.elapsed_cycles == 93,
+         "HBlank Halt-HLE before raw event includes fetch and HLE return cycles");
+  expect(hblank_halt_before->ppu().line_cycle() == PpuTiming::kHblankFlagCycles + 50U,
+         "HBlank Halt-HLE entered before raw HBlank overlaps the event cycle");
+
+  auto hblank_halt_pending = std::make_unique<CoreSession>();
+  hblank_halt_pending->bios().set_mode(BiosExecutionMode::hle);
+  expect(hblank_halt_pending->memory().load_game_pak_rom(halt_rom),
+         "pending HBlank Halt-HLE ROM loads");
+  expect(hblank_halt_pending->cpu().set_cpsr(0x00000030),
+         "pending HBlank Halt-HLE fixture enters Thumb system mode");
+  hblank_halt_pending->cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+  hblank_halt_pending->interrupts().write_interrupt_enable(kHblankIrqBit);
+  hblank_halt_pending->interrupts().write_ime(1);
+  hblank_halt_pending->ppu().tick(static_cast<std::uint32_t>(PpuTiming::kCyclesPerLine) *
+                                      PpuTiming::kVisibleLines +
+                                  PpuTiming::kVisibleCycles,
+                                  hblank_halt_pending->interrupts());
+  hblank_halt_pending->interrupts().request(InterruptSource::hblank);
+  const gba::core::CoreSchedulerFetchStepResult hblank_halt_pending_step =
+      hblank_halt_pending->step();
+  expect(hblank_halt_pending_step.step->cpu_step.status == ExecuteStatus::executed,
+         "pending HBlank Halt-HLE executes");
+  expect(hblank_halt_pending_step.step->cpu_step.elapsed_cycles == 93,
+         "pending HBlank Halt-HLE includes fetch and HLE return cycles");
+  expect(hblank_halt_pending->ppu().line_cycle() == PpuTiming::kHblankFlagCycles + 51U,
+         "pending HBlank Halt-HLE keeps the steady return phase");
 
   auto div_hle = std::make_unique<CoreSession>();
   div_hle->bios().set_mode(BiosExecutionMode::hle);

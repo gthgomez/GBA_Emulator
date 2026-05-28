@@ -178,6 +178,8 @@ MemoryBus::MemoryBus()
       flash_command_state_(FlashCommandState::idle),
       flash_id_mode_(false),
       flash_bank_(0),
+      open_bus_latch_(0),
+      open_bus_latch_valid_(false),
       io_callbacks_() {
   reset();
   clear_game_pak_save();
@@ -626,6 +628,22 @@ void MemoryBus::clear_debug_output() {
   mgba_debug_string_.fill(0);
 }
 
+void MemoryBus::drive_open_bus(std::uint32_t value) {
+  open_bus_latch_ = value;
+  open_bus_latch_valid_ = true;
+}
+
+void MemoryBus::clear_open_bus_latch() {
+  open_bus_latch_valid_ = false;
+}
+
+std::optional<std::uint32_t> MemoryBus::open_bus_latch() const {
+  if (!open_bus_latch_valid_) {
+    return std::nullopt;
+  }
+  return open_bus_latch_;
+}
+
 std::uint64_t MemoryBus::state_hash() const {
   StateHasher hasher;
   hasher.add_bytes(ewram_);
@@ -638,6 +656,8 @@ std::uint64_t MemoryBus::state_hash() const {
   hasher.add_u8(static_cast<std::uint8_t>(flash_command_state_));
   hasher.add_u8(flash_id_mode_ ? 1U : 0U);
   hasher.add_u8(flash_bank_);
+  hasher.add_bool(open_bus_latch_valid_);
+  hasher.add_u32(open_bus_latch_);
   hasher.add_bytes(game_pak_save_);
   hasher.add_bytes(mgba_debug_string_);
   hasher.add_bytes(debug_output_);
@@ -835,6 +855,8 @@ void MemoryBus::soft_reset() {
   palette_.fill(0);
   vram_.fill(0);
   oam_.fill(0);
+  open_bus_latch_ = 0;
+  open_bus_latch_valid_ = false;
   clear_debug_output();
   reset_flash_protocol();
 }

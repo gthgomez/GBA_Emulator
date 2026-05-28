@@ -52,6 +52,26 @@ const char* execute_status_name(gba::core::ExecuteStatus status) {
   return "unknown";
 }
 
+const char* cpu_mode_name(gba::core::CpuMode mode) {
+  switch (mode) {
+    case gba::core::CpuMode::user:
+      return "user";
+    case gba::core::CpuMode::fiq:
+      return "fiq";
+    case gba::core::CpuMode::irq:
+      return "irq";
+    case gba::core::CpuMode::supervisor:
+      return "supervisor";
+    case gba::core::CpuMode::abort:
+      return "abort";
+    case gba::core::CpuMode::undefined:
+      return "undefined";
+    case gba::core::CpuMode::system:
+      return "system";
+  }
+  return "unknown";
+}
+
 const char* save_type_name(gba::core::GamePakSaveType type) {
   switch (type) {
     case gba::core::GamePakSaveType::none:
@@ -77,6 +97,7 @@ struct RunnerLastStep {
   std::optional<std::uint32_t> instruction = std::nullopt;
   bool fetch_failed = false;
   std::optional<gba::core::ExecuteStatus> status = std::nullopt;
+  gba::core::CpuMode cpu_mode = gba::core::CpuMode::system;
   std::uint32_t pc = 0;
   std::array<std::uint32_t, 8> low_registers{};
   std::uint32_t sp = 0;
@@ -93,6 +114,15 @@ struct RunnerLastStep {
   std::uint8_t prefetch_buffer_halfwords = 0;
   bool boundary_forced_nonsequential = false;
   std::uint32_t cpu_elapsed_cycles = 0;
+  std::uint16_t pre_ppu_line = 0;
+  std::uint16_t pre_ppu_line_cycle = 0;
+  std::uint16_t pre_dispstat = 0;
+  std::uint16_t pre_timer0 = 0;
+  std::uint16_t pre_interrupt_flags = 0;
+  std::uint16_t sample_ppu_line = 0;
+  std::uint16_t sample_ppu_line_cycle = 0;
+  std::uint16_t sample_dispstat = 0;
+  std::uint16_t sample_timer0 = 0;
   std::uint64_t scheduler_cycles = 0;
   std::uint32_t device_cycles = 0;
   std::uint32_t immediate_dma_bus_cycles = 0;
@@ -106,7 +136,9 @@ struct RunnerLastStep {
   bool hle_irq_chained_post_return_data_dispatch_pending = false;
   bool hle_irq_chained_post_return_spaced_data_dispatch_pending = false;
   bool hle_irq_long_timer_chained_return_pending = false;
+  bool hle_irq_slow_timer0_return_pending = false;
   bool hle_irq_post_return_chain_active = false;
+  std::uint8_t hle_irq_chained_spaced_data_service_count = 0;
   bool auto_irq_line_high = false;
   std::uint8_t auto_irq_latency_cycles = 0;
   std::uint32_t timer_io_access_gap_cycles = 0;
@@ -124,6 +156,7 @@ struct RunnerLastStep {
   bool data_access_timer_io = false;
   std::uint32_t data_access_pre_cycles = 0;
   std::uint32_t data_access_timer_io_gap_cycles = 0;
+  std::optional<std::uint32_t> sample_data_word = std::nullopt;
 };
 
 struct RunnerStop {
@@ -139,6 +172,77 @@ struct RunnerWatchChange {
   std::uint32_t current = 0;
   std::int32_t active_test = -1;
   std::int32_t active_subtest = -1;
+};
+
+struct RunnerDiagnostic {
+  std::uint32_t index = 0;
+  std::string kind;
+  std::int32_t active_test = -1;
+  std::int32_t active_subtest = -1;
+  std::uint32_t fetch_address = 0;
+  std::optional<std::uint32_t> instruction = std::nullopt;
+  gba::core::CpuMode cpu_mode = gba::core::CpuMode::system;
+  std::uint64_t scheduler_cycles = 0;
+  std::uint32_t fetch_cycles = 0;
+  std::uint32_t cpu_elapsed_cycles = 0;
+  std::uint32_t device_cycles = 0;
+  bool fetch_timing_applied = false;
+  bool fetch_sequential = false;
+  bool prefetch_enabled = false;
+  bool prefetch_hit = false;
+  std::uint8_t prefetch_buffer_halfwords = 0;
+  bool irq_serviced = false;
+  bool hle_irq_reentry_dispatch_pending = false;
+  bool hle_irq_return_latency_pending = false;
+  bool hle_irq_post_return_latency_armed = false;
+  bool hle_irq_post_return_dispatch_pending = false;
+  bool hle_irq_chained_post_return_dispatch_pending = false;
+  bool hle_irq_chained_post_return_data_dispatch_pending = false;
+  bool hle_irq_chained_post_return_spaced_data_dispatch_pending = false;
+  bool hle_irq_long_timer_chained_return_pending = false;
+  bool hle_irq_slow_timer0_return_pending = false;
+  bool hle_irq_post_return_chain_active = false;
+  std::uint8_t hle_irq_chained_spaced_data_service_count = 0;
+  bool auto_irq_line_high = false;
+  std::uint8_t auto_irq_latency_cycles = 0;
+  std::uint16_t interrupt_enable = 0;
+  std::uint16_t interrupt_flags = 0;
+  std::uint16_t ime = 0;
+  std::array<std::uint16_t, gba::core::Timers::kTimerCount> timer_controls{};
+  std::array<std::uint16_t, gba::core::Timers::kTimerCount> timer_enable_phases{};
+  std::array<std::uint32_t, gba::core::Timers::kTimerCount> timer_next_ticks{};
+  std::uint16_t pre_ppu_line = 0;
+  std::uint16_t pre_ppu_line_cycle = 0;
+  std::uint16_t pre_dispstat = 0;
+  std::uint16_t pre_timer0 = 0;
+  std::uint16_t pre_interrupt_flags = 0;
+  std::uint16_t sample_ppu_line = 0;
+  std::uint16_t sample_ppu_line_cycle = 0;
+  std::uint16_t sample_dispstat = 0;
+  std::uint16_t sample_timer0 = 0;
+  std::uint16_t ppu_line = 0;
+  std::uint16_t ppu_line_cycle = 0;
+  std::uint32_t sp = 0;
+  std::uint32_t r3 = 0;
+  std::array<std::uint32_t, 8> low_registers{};
+  std::uint32_t data_address = 0;
+  std::uint8_t data_width = 0;
+  bool data_load = false;
+  std::uint32_t data_pre_cycles = 0;
+  std::uint32_t data_timer_io_gap_cycles = 0;
+  std::uint16_t dispstat = 0;
+  std::uint16_t timer0 = 0;
+  std::optional<std::uint32_t> sample_data_word = std::nullopt;
+  std::optional<std::uint32_t> data_word = std::nullopt;
+  std::uint32_t dma3_source = 0;
+  std::uint32_t dma3_destination = 0;
+  std::uint16_t dma3_count = 0;
+  std::uint16_t dma3_control = 0;
+  std::uint32_t dma3_active_count = 0;
+  std::optional<std::uint32_t> dma3_source_word = std::nullopt;
+  std::optional<std::uint32_t> dma3_destination_word = std::nullopt;
+  std::optional<std::uint32_t> open_bus = std::nullopt;
+  std::optional<std::uint16_t> pipeline_halfword = std::nullopt;
 };
 
 struct InputEvent {
@@ -252,6 +356,206 @@ std::int32_t read_u8_or(const gba::core::MemoryBus& memory, std::uint32_t addres
   return value.value();
 }
 
+std::optional<std::uint32_t> diagnostic_word(const gba::core::MemoryBus& memory,
+                                             std::uint32_t address) {
+  return memory.read32(address & ~0x3U);
+}
+
+std::optional<std::uint32_t> sampled_io_word(
+    std::uint32_t address, std::uint8_t width,
+    const gba::core::PpuTiming& ppu, const gba::core::Timers& timers) {
+  constexpr std::uint32_t kDispstat = 0x04000004U;
+  constexpr std::uint32_t kTimerBase = 0x04000100U;
+  constexpr std::uint32_t kTimerEnd = 0x04000110U;
+  if (address <= kDispstat && address + width > kDispstat) {
+    return ppu.dispstat();
+  }
+  if (address >= kTimerBase && address < kTimerEnd) {
+    const std::uint32_t relative = address - kTimerBase;
+    const std::size_t timer = relative / 4U;
+    const std::uint32_t timer_offset = relative % 4U;
+    if (timer >= gba::core::Timers::kTimerCount) {
+      return std::nullopt;
+    }
+    if (timer_offset == 0) {
+      return timers.counter(timer);
+    }
+    if (timer_offset == 2) {
+      return timers.control(timer);
+    }
+  }
+  return std::nullopt;
+}
+
+void maybe_add_misc_edge_diagnostic(gba::core::CoreSession& session,
+                                    const gba::core::CoreSchedulerFetchStepResult& step,
+                                    const RunnerLastStep& last_step,
+                                    std::vector<RunnerDiagnostic>& diagnostics) {
+  const bool misc_edge_diag_enabled =
+      std::getenv("GBA_MISC_EDGE_DIAG") != nullptr;
+  const bool timer_diag_enabled = std::getenv("GBA_TIMERS_DIAG") != nullptr;
+  const bool timer_diag_target =
+      timer_diag_enabled && (last_step.active_test == 3 || last_step.active_test == 11);
+  const bool timer_diag_row =
+      timer_diag_target &&
+      ((step.step.has_value() && step.step->data_access.has_value() &&
+        step.step->data_access->timer_io) ||
+       last_step.cpu_mode == gba::core::CpuMode::irq ||
+       (step.step.has_value() && step.step->irq_serviced));
+
+  if ((!misc_edge_diag_enabled ||
+       (last_step.active_test != 0 && last_step.active_test != 1)) &&
+      !timer_diag_row) {
+    return;
+  }
+
+  const bool dma3_hblank = step.step.has_value() &&
+                           misc_edge_diag_enabled &&
+                           last_step.active_test == 0 &&
+                           step.step->devices.triggered_dma.channels_executed != 0;
+  const bool dma3_source_stack_access =
+      misc_edge_diag_enabled &&
+      last_step.active_test == 0 && step.step.has_value() &&
+      step.step->data_access.has_value() &&
+      step.step->data_access->address >= 0x03007000U &&
+      step.step->data_access->address < 0x03008000U;
+  const bool unmapped_thumb_ldmia =
+      misc_edge_diag_enabled &&
+      last_step.active_test == 0 &&
+      step.instruction_set == gba::core::CoreInstructionSet::thumb &&
+      step.instruction.has_value() && step.instruction.value() == 0xCB04U &&
+      last_step.low_registers.at(3) >= 0x10000000U &&
+      last_step.low_registers.at(3) < 0x20000000U;
+  const bool hle_vblank_intr_wait =
+      misc_edge_diag_enabled &&
+      last_step.active_test == 0 &&
+      step.instruction_set == gba::core::CoreInstructionSet::thumb &&
+      step.instruction.has_value() && step.instruction.value() == 0xDF05U;
+  const bool hblank_halt =
+      misc_edge_diag_enabled &&
+      last_step.active_test == 1 &&
+      step.instruction_set == gba::core::CoreInstructionSet::thumb &&
+      step.instruction.has_value() && step.instruction.value() == 0xDF02U;
+  const bool hblank_io_access =
+      misc_edge_diag_enabled &&
+      last_step.active_test == 1 && step.step.has_value() &&
+      step.step->data_access.has_value() &&
+      (step.step->data_access->address == 0x04000004U ||
+       step.step->data_access->address == 0x04000100U);
+  const bool hblank_bit_iwram =
+      std::getenv("GBA_MISC_EDGE_HBLANK_VERBOSE") != nullptr &&
+      last_step.active_test == 1 &&
+      step.fetch_address >= 0x03000100U &&
+      step.fetch_address < 0x030001E0U;
+  const bool hblank_irq_window =
+      std::getenv("GBA_MISC_EDGE_IRQ_VERBOSE") != nullptr &&
+      last_step.active_test == 1 &&
+      (last_step.cpu_mode == gba::core::CpuMode::irq ||
+       step.fetch_address == 0x0FFFFF00U ||
+       (step.step.has_value() && step.step->irq_serviced));
+
+  if (!dma3_hblank && !dma3_source_stack_access && !unmapped_thumb_ldmia &&
+      !hle_vblank_intr_wait && !hblank_halt && !hblank_io_access &&
+      !hblank_bit_iwram && !hblank_irq_window && !timer_diag_row) {
+    return;
+  }
+
+  RunnerDiagnostic diagnostic{};
+  diagnostic.index = last_step.index;
+  diagnostic.kind = dma3_hblank ? "hblank_dma3"
+                    : timer_diag_row ? "timer_window"
+                    : unmapped_thumb_ldmia ? "unmapped_thumb_ldmia"
+                    : hle_vblank_intr_wait ? "hle_vblank_intr_wait"
+                    : hblank_halt ? "hblank_halt"
+                    : hblank_io_access ? "hblank_io_access"
+                    : hblank_irq_window ? "hblank_irq_window"
+                    : hblank_bit_iwram ? "hblank_bit_iwram"
+                                           : "stack_access";
+  diagnostic.active_test = last_step.active_test;
+  diagnostic.active_subtest = last_step.active_subtest;
+  diagnostic.fetch_address = step.fetch_address;
+  diagnostic.instruction = step.instruction;
+  diagnostic.cpu_mode = last_step.cpu_mode;
+  diagnostic.scheduler_cycles = last_step.scheduler_cycles;
+  diagnostic.fetch_cycles = last_step.fetch_cycles;
+  diagnostic.cpu_elapsed_cycles = last_step.cpu_elapsed_cycles;
+  diagnostic.device_cycles = last_step.device_cycles;
+  diagnostic.fetch_timing_applied = last_step.fetch_timing_applied;
+  diagnostic.fetch_sequential = last_step.fetch_sequential;
+  diagnostic.prefetch_enabled = last_step.prefetch_enabled;
+  diagnostic.prefetch_hit = last_step.prefetch_hit;
+  diagnostic.prefetch_buffer_halfwords = last_step.prefetch_buffer_halfwords;
+  diagnostic.irq_serviced = last_step.irq_serviced;
+  diagnostic.hle_irq_reentry_dispatch_pending =
+      last_step.hle_irq_reentry_dispatch_pending;
+  diagnostic.hle_irq_return_latency_pending =
+      last_step.hle_irq_return_latency_pending;
+  diagnostic.hle_irq_post_return_latency_armed =
+      last_step.hle_irq_post_return_latency_armed;
+  diagnostic.hle_irq_post_return_dispatch_pending =
+      last_step.hle_irq_post_return_dispatch_pending;
+  diagnostic.hle_irq_chained_post_return_dispatch_pending =
+      last_step.hle_irq_chained_post_return_dispatch_pending;
+  diagnostic.hle_irq_chained_post_return_data_dispatch_pending =
+      last_step.hle_irq_chained_post_return_data_dispatch_pending;
+  diagnostic.hle_irq_chained_post_return_spaced_data_dispatch_pending =
+      last_step.hle_irq_chained_post_return_spaced_data_dispatch_pending;
+  diagnostic.hle_irq_long_timer_chained_return_pending =
+      last_step.hle_irq_long_timer_chained_return_pending;
+  diagnostic.hle_irq_slow_timer0_return_pending =
+      last_step.hle_irq_slow_timer0_return_pending;
+  diagnostic.hle_irq_post_return_chain_active =
+      last_step.hle_irq_post_return_chain_active;
+  diagnostic.hle_irq_chained_spaced_data_service_count =
+      last_step.hle_irq_chained_spaced_data_service_count;
+  diagnostic.auto_irq_line_high = last_step.auto_irq_line_high;
+  diagnostic.auto_irq_latency_cycles = last_step.auto_irq_latency_cycles;
+  diagnostic.interrupt_enable = last_step.interrupt_enable;
+  diagnostic.interrupt_flags = last_step.interrupt_flags;
+  diagnostic.ime = last_step.ime;
+  diagnostic.timer_controls = last_step.timer_controls;
+  diagnostic.timer_enable_phases = last_step.timer_enable_phases;
+  diagnostic.timer_next_ticks = last_step.timer_next_ticks;
+  diagnostic.pre_ppu_line = last_step.pre_ppu_line;
+  diagnostic.pre_ppu_line_cycle = last_step.pre_ppu_line_cycle;
+  diagnostic.pre_dispstat = last_step.pre_dispstat;
+  diagnostic.pre_timer0 = last_step.pre_timer0;
+  diagnostic.pre_interrupt_flags = last_step.pre_interrupt_flags;
+  diagnostic.sample_ppu_line = last_step.sample_ppu_line;
+  diagnostic.sample_ppu_line_cycle = last_step.sample_ppu_line_cycle;
+  diagnostic.sample_dispstat = last_step.sample_dispstat;
+  diagnostic.sample_timer0 = last_step.sample_timer0;
+  diagnostic.ppu_line = session.ppu().vcount();
+  diagnostic.ppu_line_cycle = session.ppu().line_cycle();
+  diagnostic.sp = last_step.sp;
+  diagnostic.r3 = last_step.low_registers.at(3);
+  diagnostic.low_registers = last_step.low_registers;
+  diagnostic.dispstat = session.ppu().dispstat();
+  diagnostic.timer0 = session.timers().counter(0);
+  diagnostic.sample_data_word = last_step.sample_data_word;
+  diagnostic.dma3_source = session.dma().source(3);
+  diagnostic.dma3_destination = session.dma().destination(3);
+  diagnostic.dma3_count = session.dma().word_count(3);
+  diagnostic.dma3_control = session.dma().control(3);
+  diagnostic.dma3_active_count = session.dma().active_count(3);
+  diagnostic.dma3_source_word =
+      diagnostic_word(session.memory(), diagnostic.dma3_source);
+  diagnostic.dma3_destination_word =
+      diagnostic_word(session.memory(), diagnostic.dma3_destination);
+  diagnostic.open_bus = session.memory().open_bus_latch();
+  diagnostic.pipeline_halfword = session.memory().read16(step.fetch_address + 4U);
+  if (step.step.has_value() && step.step->data_access.has_value()) {
+    diagnostic.data_address = step.step->data_access->address;
+    diagnostic.data_width = step.step->data_access->width_bytes;
+    diagnostic.data_load = step.step->data_access->load;
+    diagnostic.data_pre_cycles = step.step->data_access->pre_access_cycles;
+    diagnostic.data_timer_io_gap_cycles =
+        step.step->data_access->timer_io_gap_cycles;
+    diagnostic.data_word = diagnostic_word(session.memory(), diagnostic.data_address);
+  }
+  diagnostics.push_back(diagnostic);
+}
+
 gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& session,
                                                      std::uint32_t max_steps,
                                                      RunnerLastStep& last_step,
@@ -260,6 +564,7 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
                                                      RunnerStop& runner_stop,
                                                      std::deque<RunnerLastStep>& recent_steps,
                                                      std::vector<RunnerWatchChange>& watch_changes,
+                                                     std::vector<RunnerDiagnostic>& diagnostics,
                                                      std::size_t recent_step_limit) {
   gba::core::CoreSchedulerRunResult result{
       max_steps,
@@ -289,6 +594,16 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
       session.keypad().poll_interrupt(session.interrupts());
       ++next_event;
     }
+    const std::uint16_t pre_ppu_line = session.ppu().vcount();
+    const std::uint16_t pre_ppu_line_cycle = session.ppu().line_cycle();
+    const std::uint16_t pre_dispstat = session.ppu().dispstat();
+    const std::uint16_t pre_timer0 = session.timers().counter(0);
+    const std::uint16_t pre_interrupt_flags =
+        session.interrupts().interrupt_flags();
+    const gba::core::PpuTiming pre_access_ppu = session.ppu();
+    const gba::core::Timers pre_access_timers = session.timers();
+    const gba::core::InterruptController pre_access_interrupts =
+        session.interrupts();
     const gba::core::CoreSchedulerFetchStepResult step = session.step();
     last_step = RunnerLastStep{};
     last_step.index = index;
@@ -299,6 +614,7 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
     last_step.status = step.step.has_value()
                            ? std::optional<gba::core::ExecuteStatus>(step.step->cpu_step.status)
                            : std::nullopt;
+    last_step.cpu_mode = session.cpu().current_mode();
     last_step.pc = session.cpu().register_value(gba::core::Arm7tdmi::kPc);
     for (std::uint8_t reg = 0; reg < last_step.low_registers.size(); ++reg) {
       last_step.low_registers.at(reg) = session.cpu().register_value(reg);
@@ -316,6 +632,11 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
     last_step.prefetch_hit = step.prefetch_hit;
     last_step.prefetch_buffer_halfwords = step.prefetch_buffer_halfwords;
     last_step.boundary_forced_nonsequential = step.boundary_forced_nonsequential;
+    last_step.pre_ppu_line = pre_ppu_line;
+    last_step.pre_ppu_line_cycle = pre_ppu_line_cycle;
+    last_step.pre_dispstat = pre_dispstat;
+    last_step.pre_timer0 = pre_timer0;
+    last_step.pre_interrupt_flags = pre_interrupt_flags;
     last_step.scheduler_cycles = session.scheduler().scheduler_cycles();
     const gba::core::CoreSchedulerState scheduler_state =
         session.scheduler().save_state();
@@ -335,8 +656,12 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
         scheduler_state.hle_irq_chained_post_return_spaced_data_dispatch_pending;
     last_step.hle_irq_long_timer_chained_return_pending =
         scheduler_state.hle_irq_long_timer_chained_return_pending;
+    last_step.hle_irq_slow_timer0_return_pending =
+        scheduler_state.hle_irq_slow_timer0_return_pending;
     last_step.hle_irq_post_return_chain_active =
         scheduler_state.hle_irq_post_return_chain_active;
+    last_step.hle_irq_chained_spaced_data_service_count =
+        scheduler_state.hle_irq_chained_spaced_data_service_count;
     last_step.auto_irq_line_high = scheduler_state.auto_irq_line_high;
     last_step.auto_irq_latency_cycles =
         scheduler_state.auto_irq_latency_cycles;
@@ -370,8 +695,28 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
             step.step->data_access->pre_access_cycles;
         last_step.data_access_timer_io_gap_cycles =
             step.step->data_access->timer_io_gap_cycles;
+        gba::core::PpuTiming sample_ppu = pre_access_ppu;
+        gba::core::Timers sample_timers = pre_access_timers;
+        gba::core::InterruptController sample_interrupts =
+            pre_access_interrupts;
+        if (last_step.data_access_pre_cycles != 0) {
+          [[maybe_unused]] const gba::core::PpuTickEvents ppu_events =
+              sample_ppu.tick(last_step.data_access_pre_cycles,
+                              sample_interrupts);
+          [[maybe_unused]] const gba::core::Timers::TickResult timer_events =
+              sample_timers.tick(last_step.data_access_pre_cycles,
+                                 sample_interrupts);
+        }
+        last_step.sample_ppu_line = sample_ppu.vcount();
+        last_step.sample_ppu_line_cycle = sample_ppu.line_cycle();
+        last_step.sample_dispstat = sample_ppu.dispstat();
+        last_step.sample_timer0 = sample_timers.counter(0);
+        last_step.sample_data_word = sampled_io_word(
+            last_step.data_access_address, last_step.data_access_width_bytes,
+            sample_ppu, sample_timers);
       }
     }
+    maybe_add_misc_edge_diagnostic(session, step, last_step, diagnostics);
     if (last_step.locale_wctomb != previous_locale_wctomb) {
       watch_changes.push_back({index, last_step.pc, "locale_wctomb",
                                previous_locale_wctomb,
@@ -573,6 +918,149 @@ void print_watch_changes(const std::vector<RunnerWatchChange>& watch_changes) {
   std::cout << "suite_watch_changes_end\n";
 }
 
+void print_diagnostics(const std::vector<RunnerDiagnostic>& diagnostics) {
+  if (std::getenv("GBA_MISC_EDGE_DIAG") == nullptr &&
+      std::getenv("GBA_TIMERS_DIAG") == nullptr) {
+    return;
+  }
+  std::cout << "suite_diagnostics_begin\n";
+  for (const RunnerDiagnostic& diagnostic : diagnostics) {
+    std::cout << "suite_diag: index=" << diagnostic.index
+              << " kind=" << diagnostic.kind
+              << " active_test=" << diagnostic.active_test
+              << " active_subtest=" << diagnostic.active_subtest
+              << " mode=" << cpu_mode_name(diagnostic.cpu_mode)
+              << " fetch_pc=0x" << std::hex << diagnostic.fetch_address;
+    if (diagnostic.instruction.has_value()) {
+      std::cout << " instruction=0x" << diagnostic.instruction.value();
+    } else {
+      std::cout << " instruction=null";
+    }
+    std::cout << " scheduler_cycles=" << std::dec << diagnostic.scheduler_cycles
+              << " fetch_cycles=" << diagnostic.fetch_cycles
+              << " cpu_elapsed=" << diagnostic.cpu_elapsed_cycles
+              << " device_cycles=" << diagnostic.device_cycles
+              << " fetch_timing="
+              << (diagnostic.fetch_timing_applied ? "true" : "false")
+              << " fetch_sequential="
+              << (diagnostic.fetch_sequential ? "true" : "false")
+              << " prefetch_enabled="
+              << (diagnostic.prefetch_enabled ? "true" : "false")
+              << " prefetch_hit="
+              << (diagnostic.prefetch_hit ? "true" : "false")
+              << " prefetch_buffer="
+              << static_cast<unsigned>(diagnostic.prefetch_buffer_halfwords)
+              << " irq_serviced=" << (diagnostic.irq_serviced ? "true" : "false")
+              << " hle_reentry="
+              << (diagnostic.hle_irq_reentry_dispatch_pending ? "true" : "false")
+              << " hle_return_latency="
+              << (diagnostic.hle_irq_return_latency_pending ? "true" : "false")
+              << " hle_post_return_armed="
+              << (diagnostic.hle_irq_post_return_latency_armed ? "true" : "false")
+              << " hle_post_return_dispatch="
+              << (diagnostic.hle_irq_post_return_dispatch_pending ? "true" : "false")
+              << " hle_chained_dispatch="
+              << (diagnostic.hle_irq_chained_post_return_dispatch_pending ? "true" : "false")
+              << " hle_chained_data_dispatch="
+              << (diagnostic.hle_irq_chained_post_return_data_dispatch_pending ? "true"
+                                                                               : "false")
+              << " hle_chained_spaced_data_dispatch="
+              << (diagnostic.hle_irq_chained_post_return_spaced_data_dispatch_pending
+                      ? "true"
+                      : "false")
+              << " hle_long_chained_return="
+              << (diagnostic.hle_irq_long_timer_chained_return_pending ? "true" : "false")
+              << " hle_slow_timer0_return="
+              << (diagnostic.hle_irq_slow_timer0_return_pending ? "true" : "false")
+              << " hle_chain="
+              << (diagnostic.hle_irq_post_return_chain_active ? "true" : "false")
+              << " hle_chain_spaced_count="
+              << static_cast<unsigned>(
+                     diagnostic.hle_irq_chained_spaced_data_service_count)
+              << " auto_irq_line="
+              << (diagnostic.auto_irq_line_high ? "true" : "false")
+              << " auto_irq_latency="
+              << static_cast<unsigned>(diagnostic.auto_irq_latency_cycles)
+              << " ime=0x" << std::hex << diagnostic.ime
+              << " ie=0x" << diagnostic.interrupt_enable
+              << " if=0x" << diagnostic.interrupt_flags
+              << " tm0_ctrl=0x" << diagnostic.timer_controls.at(0)
+              << std::dec
+              << "/phase=" << diagnostic.timer_enable_phases.at(0)
+              << "/next=" << diagnostic.timer_next_ticks.at(0)
+              << " pre_ppu_line=" << diagnostic.pre_ppu_line
+              << " pre_ppu_line_cycle=" << diagnostic.pre_ppu_line_cycle
+              << " pre_dispstat=0x" << std::hex << diagnostic.pre_dispstat
+              << " pre_timer0=0x" << diagnostic.pre_timer0
+              << " pre_if=0x" << diagnostic.pre_interrupt_flags
+              << std::dec
+              << " sample_ppu_line=" << diagnostic.sample_ppu_line
+              << " sample_ppu_line_cycle=" << diagnostic.sample_ppu_line_cycle
+              << " sample_dispstat=0x" << std::hex << diagnostic.sample_dispstat
+              << " sample_timer0=0x" << diagnostic.sample_timer0
+              << std::dec
+              << " ppu_line=" << diagnostic.ppu_line
+              << " ppu_line_cycle=" << diagnostic.ppu_line_cycle
+              << " sp=0x" << std::hex << diagnostic.sp
+              << " r0=0x" << diagnostic.low_registers.at(0)
+              << " r1=0x" << diagnostic.low_registers.at(1)
+              << " r2=0x" << diagnostic.low_registers.at(2)
+              << " r3=0x" << diagnostic.low_registers.at(3)
+              << " r4=0x" << diagnostic.low_registers.at(4)
+              << " r5=0x" << diagnostic.low_registers.at(5)
+              << " r6=0x" << diagnostic.low_registers.at(6)
+              << " r7=0x" << diagnostic.low_registers.at(7)
+              << " dispstat=0x" << diagnostic.dispstat
+              << " timer0=0x" << diagnostic.timer0
+              << " data_addr=0x" << diagnostic.data_address
+              << std::dec << " data_width=" << static_cast<unsigned>(diagnostic.data_width)
+              << " data_load=" << (diagnostic.data_load ? "true" : "false")
+              << " data_pre_cycles=" << diagnostic.data_pre_cycles
+              << " data_timer_io_gap=" << diagnostic.data_timer_io_gap_cycles;
+    if (diagnostic.sample_data_word.has_value()) {
+      std::cout << " sample_data_word=0x" << std::hex
+                << diagnostic.sample_data_word.value();
+    } else {
+      std::cout << " sample_data_word=null";
+    }
+    if (diagnostic.data_word.has_value()) {
+      std::cout << " data_word=0x" << std::hex << diagnostic.data_word.value();
+    } else {
+      std::cout << " data_word=null";
+    }
+    std::cout << " dma3_src=0x" << std::hex << diagnostic.dma3_source
+              << " dma3_dst=0x" << diagnostic.dma3_destination
+              << " dma3_count=0x" << diagnostic.dma3_count
+              << " dma3_ctrl=0x" << diagnostic.dma3_control
+              << std::dec << " dma3_active_count=" << diagnostic.dma3_active_count;
+    if (diagnostic.dma3_source_word.has_value()) {
+      std::cout << " dma3_src_word=0x" << std::hex
+                << diagnostic.dma3_source_word.value();
+    } else {
+      std::cout << " dma3_src_word=null";
+    }
+    if (diagnostic.dma3_destination_word.has_value()) {
+      std::cout << " dma3_dst_word=0x" << std::hex
+                << diagnostic.dma3_destination_word.value();
+    } else {
+      std::cout << " dma3_dst_word=null";
+    }
+    if (diagnostic.open_bus.has_value()) {
+      std::cout << " open_bus=0x" << std::hex << diagnostic.open_bus.value();
+    } else {
+      std::cout << " open_bus=null";
+    }
+    if (diagnostic.pipeline_halfword.has_value()) {
+      std::cout << " pipeline_halfword=0x" << std::hex
+                << diagnostic.pipeline_halfword.value();
+    } else {
+      std::cout << " pipeline_halfword=null";
+    }
+    std::cout << std::dec << '\n';
+  }
+  std::cout << "suite_diagnostics_end\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -661,9 +1149,10 @@ int main(int argc, char** argv) {
     RunnerStop runner_stop;
     std::deque<RunnerLastStep> recent_steps;
     std::vector<RunnerWatchChange> watch_changes;
+    std::vector<RunnerDiagnostic> diagnostics;
     const gba::core::CoreSchedulerRunResult result =
         run_with_last_step(session, max_steps, last_step, input_events, until_output,
-                           runner_stop, recent_steps, watch_changes,
+                           runner_stop, recent_steps, watch_changes, diagnostics,
                            recent_trace_limit);
 
     std::cout << "suite_runner: requested_steps=" << result.requested_steps << '\n';
@@ -721,6 +1210,7 @@ int main(int argc, char** argv) {
     }
     print_recent_trace(recent_steps);
     print_watch_changes(watch_changes);
+    print_diagnostics(diagnostics);
     std::cout << "suite_runner: active_magic=0x" << std::hex
               << read_i32_or(session.memory(), 0x030000ACU, -1) << std::dec << '\n';
     std::cout << "suite_runner: active_suite_id="

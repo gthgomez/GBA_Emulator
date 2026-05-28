@@ -920,6 +920,26 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
   return rotate_right(open_bus.value(), static_cast<std::uint8_t>((address & 0x3U) * 8U));
 }
 
+[[nodiscard]] std::optional<std::uint32_t> read32_or_thumb_block_open_bus(
+    const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
+  const std::optional<std::uint32_t> value = memory.read32(address);
+  if (value.has_value()) {
+    return value;
+  }
+  const std::optional<std::uint32_t> latched_bus = memory.open_bus_latch();
+  if (latched_bus.has_value()) {
+    return rotate_right(latched_bus.value(), static_cast<std::uint8_t>((address & 0x3U) * 8U));
+  }
+  const std::optional<std::uint16_t> prefetched_halfword = memory.read16(pc + 4U);
+  if (!prefetched_halfword.has_value()) {
+    return std::nullopt;
+  }
+  const std::uint32_t open_bus =
+      static_cast<std::uint32_t>(prefetched_halfword.value()) |
+      (static_cast<std::uint32_t>(prefetched_halfword.value()) << 16U);
+  return rotate_right(open_bus, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+}
+
 [[nodiscard]] std::optional<ArmElapsedCycleEstimate> estimate_arm_elapsed_cycles_with_timing(
     std::uint32_t instruction, std::uint32_t data_address,
     const MemoryAccessTiming& timing, bool waitcnt_aware,
@@ -2925,7 +2945,8 @@ ExecuteStatus Arm7tdmi::execute_thumb_block_transfer(
       if (!register_list_contains(decoded.register_list, index)) {
         continue;
       }
-      const std::optional<std::uint32_t> value = memory.read32(address);
+      const std::optional<std::uint32_t> value =
+          read32_or_thumb_block_open_bus(memory, address, registers_.at(kPc));
       if (!value.has_value()) {
         return ExecuteStatus::unsupported;
       }

@@ -197,6 +197,7 @@ void DmaController::reset() {
     channel.current_count = 0;
     channel.data_latch = 0;
   }
+  immediate_pending_ = false;
 }
 
 void DmaController::write_source(std::size_t channel, std::uint32_t value) {
@@ -214,6 +215,8 @@ void DmaController::write_word_count(std::size_t channel, std::uint16_t value) {
 void DmaController::write_control(std::size_t channel, std::uint16_t value) {
   Channel& state = checked_channel(channel);
   const bool was_enabled = (state.control & kEnableFlag) != 0;
+  const bool was_immediate =
+      was_enabled && start_timing(channel) == DmaStartTiming::immediate;
   state.control = static_cast<std::uint16_t>(value & kControlMask);
   const bool is_enabled = (state.control & kEnableFlag) != 0;
   if (!was_enabled && is_enabled) {
@@ -223,6 +226,13 @@ void DmaController::write_control(std::size_t channel, std::uint16_t value) {
   }
   if (!is_enabled) {
     state.current_count = 0;
+  }
+  const bool is_immediate =
+      is_enabled && start_timing(channel) == DmaStartTiming::immediate;
+  if (is_immediate) {
+    immediate_pending_ = true;
+  } else if (was_immediate) {
+    refresh_immediate_pending();
   }
 }
 
@@ -260,6 +270,10 @@ bool DmaController::transfer_32bit(std::size_t channel) const {
 
 bool DmaController::irq_on_completion(std::size_t channel) const {
   return (checked_channel(channel).control & kIrqFlag) != 0;
+}
+
+bool DmaController::immediate_pending() const {
+  return immediate_pending_;
 }
 
 DmaAddressControl DmaController::destination_control(std::size_t channel) const {
@@ -304,16 +318,27 @@ DmaRunResult DmaController::run_trigger(DmaTrigger trigger, MemoryBus& memory,
     result.unsupported_request = true;
     return result;
   }
+  bool immediate_still_pending = false;
   for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
     if (!enabled(channel) || start_timing(channel) != timing) {
       continue;
     }
     if (!execute_channel(channel, memory, interrupts, waitcnt, result.units_transferred,
-                         result.bus_cycles)) {
+                         result.bus_cycles, trigger != DmaTrigger::immediate)) {
       result.unsupported_request = true;
+      if (trigger == DmaTrigger::immediate) {
+        immediate_pending_ = true;
+      }
       return result;
     }
     ++result.channels_executed;
+    if (trigger == DmaTrigger::immediate && enabled(channel) &&
+        start_timing(channel) == DmaStartTiming::immediate) {
+      immediate_still_pending = true;
+    }
+  }
+  if (trigger == DmaTrigger::immediate) {
+    immediate_pending_ = immediate_still_pending;
   }
   return result;
 }
@@ -358,6 +383,16 @@ const DmaController::Channel& DmaController::checked_channel(std::size_t channel
   return channels_.at(channel);
 }
 
+void DmaController::refresh_immediate_pending() {
+  immediate_pending_ = false;
+  for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
+    if (enabled(channel) && start_timing(channel) == DmaStartTiming::immediate) {
+      immediate_pending_ = true;
+      return;
+    }
+  }
+}
+
 std::uint32_t DmaController::normalized_word_count(std::size_t channel) const {
   const Channel& state = checked_channel(channel);
   const std::uint32_t mask = channel == 3 ? 0xFFFFU : 0x3FFFU;
@@ -381,7 +416,8 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
                                     InterruptController& interrupts,
                                     const WaitStateControl* waitcnt,
                                     std::uint32_t& units_transferred,
-                                    std::uint32_t& bus_cycles) {
+                                    std::uint32_t& bus_cycles,
+                                    bool drive_open_bus) {
   if (source_control(channel) == DmaAddressControl::increment_reload) {
     return false;
   }
@@ -415,6 +451,9 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
           dma_source_uses_latch(aligned_source) ? std::nullopt : memory.read32(aligned_source);
       const std::uint32_t value = read_value.value_or(state.data_latch);
       state.data_latch = value;
+      if (drive_open_bus) {
+        memory.drive_open_bus(value);
+      }
       [[maybe_unused]] const bool written = memory.write32(aligned_destination, value);
     } else {
       const std::optional<std::uint16_t> read_value =
@@ -423,6 +462,9 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
           static_cast<std::uint16_t>(state.data_latch & 0xFFFFU));
       if (read_value.has_value()) {
         state.data_latch = duplicate_halfword(value);
+      }
+      if (drive_open_bus) {
+        memory.drive_open_bus(duplicate_halfword(value));
       }
       [[maybe_unused]] const bool written = memory.write16(aligned_destination, value);
     }

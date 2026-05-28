@@ -64,6 +64,7 @@ class DmaController {
   [[nodiscard]] bool repeat(std::size_t channel) const;
   [[nodiscard]] bool transfer_32bit(std::size_t channel) const;
   [[nodiscard]] bool irq_on_completion(std::size_t channel) const;
+  [[nodiscard]] bool immediate_pending() const;
   [[nodiscard]] DmaAddressControl destination_control(std::size_t channel) const;
   [[nodiscard]] DmaAddressControl source_control(std::size_t channel) const;
   [[nodiscard]] DmaStartTiming start_timing(std::size_t channel) const;
@@ -93,9 +94,11 @@ class DmaController {
   };
 
   std::array<Channel, kChannelCount> channels_;
+  bool immediate_pending_;
 
   [[nodiscard]] Channel& checked_channel(std::size_t channel);
   [[nodiscard]] const Channel& checked_channel(std::size_t channel) const;
+  void refresh_immediate_pending();
   [[nodiscard]] std::uint32_t normalized_word_count(std::size_t channel) const;
   [[nodiscard]] static std::uint32_t effective_source_address(std::size_t channel,
                                                               std::uint32_t address);
@@ -105,7 +108,8 @@ class DmaController {
                                      InterruptController& interrupts,
                                      const WaitStateControl* waitcnt,
                                      std::uint32_t& units_transferred,
-                                     std::uint32_t& bus_cycles);
+                                     std::uint32_t& bus_cycles,
+                                     bool drive_open_bus);
   [[nodiscard]] bool execute_sound_fifo_channel(std::size_t channel,
                                                 DirectSoundChannel fifo,
                                                 MemoryBus& memory, Apu& apu,

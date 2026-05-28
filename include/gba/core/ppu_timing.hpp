@@ -27,6 +27,7 @@ class PpuTiming {
   static constexpr std::uint16_t kVblankLines = 68;
   static constexpr std::uint16_t kTotalLines = kVisibleLines + kVblankLines;
   static constexpr std::uint16_t kVisibleCycles = 960;
+  static constexpr std::uint16_t kHblankFlagCycles = 1006;
   static constexpr std::uint16_t kHblankCycles = 272;
   static constexpr std::uint16_t kCyclesPerLine = kVisibleCycles + kHblankCycles;
   static constexpr std::uint32_t kCyclesPerFrame =

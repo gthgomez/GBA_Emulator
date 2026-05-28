@@ -30,6 +30,8 @@ int main() {
   static_assert(PpuTiming::kVisibleLines == 160, "GBA visible lines are fixed");
   static_assert(PpuTiming::kTotalLines == 228, "GBA total lines are fixed");
   static_assert(PpuTiming::kVisibleCycles == 960, "GBA visible scanline cycles are fixed");
+  static_assert(PpuTiming::kHblankFlagCycles == 1006,
+                "DISPSTAT HBlank flag is low for 1006 cycles per scanline");
   static_assert(PpuTiming::kHblankCycles == 272, "GBA HBlank cycles are fixed");
   static_assert(PpuTiming::kCyclesPerLine == 1232, "GBA scanline cycles are fixed");
   static_assert(PpuTiming::kCyclesPerFrame == 280896, "GBA frame cycles are fixed");
@@ -63,12 +65,15 @@ int main() {
 
   ppu.write_dispstat(0x0010);
   ppu.tick(1, interrupts);
-  expect(ppu.hblank(), "PPU enters HBlank at cycle 960");
+  expect(!ppu.hblank(), "DISPSTAT HBlank flag is not yet set at cycle 960");
   expect(ppu.phase() == PpuPhase::hblank, "PPU phase reports HBlank");
   expect(interrupts.requested(InterruptSource::hblank), "visible HBlank requests IRQ");
   interrupts.write_interrupt_flags(irq_bit(InterruptSource::hblank));
 
-  ppu.tick(PpuTiming::kHblankCycles, interrupts);
+  ppu.tick(PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles, interrupts);
+  expect(ppu.hblank(), "DISPSTAT HBlank flag sets after the event delay");
+
+  ppu.tick(PpuTiming::kCyclesPerLine - PpuTiming::kHblankFlagCycles, interrupts);
   expect(ppu.vcount() == 1, "PPU advances to line 1 after full scanline");
   expect(ppu.line_cycle() == 0, "PPU starts next line at cycle 0");
   expect(!ppu.hblank(), "PPU clears HBlank on next line");
@@ -94,13 +99,18 @@ int main() {
   interrupts.reset();
 
   ppu.tick(PpuTiming::kVisibleCycles, interrupts);
-  expect(ppu.hblank(), "PPU still exposes HBlank timing during VBlank lines");
-  expect(!interrupts.requested(InterruptSource::hblank),
-         "PPU skeleton does not request HBlank IRQ during VBlank");
+  expect(!ppu.hblank(), "DISPSTAT HBlank flag remains delayed during VBlank lines");
+  expect(interrupts.requested(InterruptSource::hblank),
+         "HBlank IRQ is requested during VBlank scanlines");
+  interrupts.write_interrupt_flags(irq_bit(InterruptSource::hblank));
+
+  ppu.tick(PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles, interrupts);
+  expect(ppu.hblank(), "DISPSTAT HBlank flag sets during VBlank scanlines");
 
   ppu.tick(static_cast<std::uint32_t>(PpuTiming::kCyclesPerLine) *
                    (PpuTiming::kTotalLines - PpuTiming::kVisibleLines - 2) +
-               PpuTiming::kHblankCycles,
+               (PpuTiming::kHblankCycles -
+                (PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles)),
            interrupts);
   expect(ppu.vcount() == PpuTiming::kTotalLines - 1,
          "PPU reaches final hidden line 227");
