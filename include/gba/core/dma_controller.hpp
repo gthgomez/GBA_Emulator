@@ -105,7 +105,8 @@ class DmaController {
                                      InterruptController& interrupts,
                                      const WaitStateControl* waitcnt,
                                      std::uint32_t& units_transferred,
-                                     std::uint32_t& bus_cycles);
+                                     std::uint32_t& bus_cycles,
+                                     bool drive_open_bus);
   [[nodiscard]] bool execute_sound_fifo_channel(std::size_t channel,
                                                 DirectSoundChannel fifo,
                                                 MemoryBus& memory, Apu& apu,

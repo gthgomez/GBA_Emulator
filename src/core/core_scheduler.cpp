@@ -27,6 +27,7 @@ constexpr std::uint32_t kMaxBiosWaitCycles = 280896U * 2U;
 constexpr std::uint32_t kBiosWaitBatchCycles = 1U;
 constexpr std::uint32_t kTimerIoBase = 0x04000100U;
 constexpr std::uint32_t kTimerIoEnd = 0x04000110U;
+constexpr std::uint32_t kDispstatIo = 0x04000004U;
 constexpr std::uint32_t kInterruptFlagIo = 0x04000202U;
 constexpr std::uint8_t kAutoIrqLatencyCycles = 5;
 constexpr std::uint8_t kAutoIrqSlowTimerLatencyCycles = 3;
@@ -46,8 +47,16 @@ constexpr std::uint32_t kBiosHleSlowTimer0ActiveReturnExtraCycles = 1;
 constexpr std::uint32_t kBiosHleIrqReentryDispatchCycles = 29;
 constexpr std::uint32_t kBiosHleIrqReturnCycles = 3;
 constexpr std::uint32_t kBiosHleIntrWaitReturnCycles = 57;
+constexpr std::uint32_t kBiosHleVBlankIntrWaitReturnCycles = 515;
+constexpr std::uint32_t kBiosHleHblankHaltReturnCycles = 83;
 constexpr std::uint32_t kTimerIoDataPhaseCycles = 1;
 constexpr std::uint32_t kTimerIoLoadDataPhaseCycles = 3;
+constexpr std::uint32_t kDispstatIoLoadDataPhaseCycles = 2;
+constexpr std::uint32_t kDispstatIoLoadCompletionCycles = 3;
+constexpr std::uint32_t kDispstatHblankTransitionStallCycles = 1;
+constexpr std::uint32_t kDispstatLineRolloverStallCycles = 3;
+constexpr std::uint32_t kDispstatLateHblankSetStallCycles = 3;
+constexpr std::uint32_t kDispstatHblankClearTimerSampleCycle = 14;
 constexpr std::uint32_t kInterruptFlagStoreDataPhaseCycles = 2;
 constexpr std::uint32_t kSpacedTimerIoDispatchGapCycles = 16;
 constexpr std::uint32_t kLooseTimerIoIrqDispatchGapCycles = 12;
@@ -380,6 +389,9 @@ struct DataAccessTimingProbe {
 [[nodiscard]] std::uint32_t io_store_pre_access_cycles(
     const DataAccessTimingProbe& data_access) {
   if (data_access.load) {
+    if (access_covers_address(data_access.address, data_access.width, kDispstatIo)) {
+      return kDispstatIoLoadDataPhaseCycles;
+    }
     return timer_io_address(data_access.address) &&
                    data_access.width == AccessWidth::word
                ? kTimerIoLoadDataPhaseCycles
@@ -393,6 +405,132 @@ struct DataAccessTimingProbe {
     return kInterruptFlagStoreDataPhaseCycles;
   }
   return 0;
+}
+
+[[nodiscard]] bool late_hblank_timer_load_samples_on_data_phase(
+    const std::optional<DataAccessTimingProbe>& data_access,
+    const PpuTiming& ppu, const InterruptController& interrupts) {
+  if (!data_access.has_value() || !data_access->load ||
+      data_access->width != AccessWidth::halfword ||
+      !timer_io_address(data_access->address) || interrupts.master_enabled() ||
+      !interrupts.enabled(InterruptSource::hblank)) {
+    return false;
+  }
+
+  const std::uint32_t start = ppu.line_cycle();
+  const std::uint32_t sample_cycle = start + kTimerIoLoadDataPhaseCycles;
+  return ppu.vblank() || ppu.hblank() ||
+         (start < PpuTiming::kHblankFlagCycles &&
+          sample_cycle >= PpuTiming::kHblankFlagCycles);
+}
+
+[[nodiscard]] std::optional<std::uint32_t>
+dispstat_hblank_clear_timer_load_pre_access_cycles(
+    const std::optional<DataAccessTimingProbe>& data_access,
+    const PpuTiming& ppu, const InterruptController& interrupts) {
+  if (!data_access.has_value() || !data_access->load ||
+      data_access->width != AccessWidth::halfword ||
+      !timer_io_address(data_access->address) || interrupts.master_enabled() ||
+      !interrupts.enabled(InterruptSource::hblank) ||
+      !interrupts.requested(InterruptSource::hblank) || !ppu.vblank() ||
+      ppu.hblank()) {
+    return std::nullopt;
+  }
+
+  const std::uint32_t start = ppu.line_cycle();
+  if (start >= kDispstatHblankClearTimerSampleCycle) {
+    return std::nullopt;
+  }
+  return kDispstatHblankClearTimerSampleCycle - start;
+}
+
+[[nodiscard]] bool long_hblank_poll_timer_load_samples_before_completion(
+    const std::optional<DataAccessTimingProbe>& data_access,
+    const PpuTiming& ppu, const InterruptController& interrupts,
+    std::uint32_t timer_io_gap_cycles) {
+  if (!data_access.has_value() || !data_access->load ||
+      data_access->width != AccessWidth::halfword ||
+      !timer_io_address(data_access->address) || interrupts.master_enabled() ||
+      !interrupts.enabled(InterruptSource::hblank) || !ppu.hblank()) {
+    return false;
+  }
+
+  constexpr std::uint32_t kLongHblankPollingGapCycles =
+      PpuTiming::kHblankFlagCycles - kDispstatIoLoadCompletionCycles -
+      kDispstatHblankTransitionStallCycles - kTimerIoDataPhaseCycles;
+  return timer_io_gap_cycles >= kLongHblankPollingGapCycles;
+}
+
+[[nodiscard]] std::uint32_t adjust_dispstat_hblank_set_pre_access_cycles(
+    const std::optional<DataAccessTimingProbe>& data_access,
+    const PpuTiming& ppu, std::uint32_t pre_access_cycles) {
+  if (!data_access.has_value() || !data_access->load ||
+      !access_covers_address(data_access->address, data_access->width, kDispstatIo) ||
+      pre_access_cycles == 0) {
+    return pre_access_cycles;
+  }
+
+  const std::uint32_t start = ppu.line_cycle();
+  const std::uint32_t data_sample = start + pre_access_cycles;
+  const std::uint32_t load_completion =
+      start + kDispstatIoLoadCompletionCycles;
+  if (start < PpuTiming::kHblankFlagCycles &&
+      data_sample == PpuTiming::kHblankFlagCycles) {
+    return 0;
+  }
+  const bool completes_on_hblank_flag =
+      data_sample < PpuTiming::kHblankFlagCycles &&
+      load_completion >= PpuTiming::kHblankFlagCycles;
+  return completes_on_hblank_flag ? kDispstatIoLoadCompletionCycles
+                                  : pre_access_cycles;
+}
+
+[[nodiscard]] std::uint32_t dispstat_status_transition_stall_cycles(
+    const std::optional<DataAccessTimingProbe>& data_access,
+    const PpuTiming& ppu, const InterruptController& interrupts,
+    std::uint32_t pre_access_cycles) {
+  if (!data_access.has_value() || !data_access->load ||
+      !access_covers_address(data_access->address, data_access->width, kDispstatIo) ||
+      pre_access_cycles == 0) {
+    return 0;
+  }
+
+  const std::uint32_t start = ppu.line_cycle();
+  const std::uint32_t end = start + pre_access_cycles;
+  const bool masked_pending_hblank =
+      !interrupts.master_enabled() && interrupts.enabled(InterruptSource::hblank) &&
+      interrupts.requested(InterruptSource::hblank);
+  if (masked_pending_hblank &&
+      start > PpuTiming::kHblankFlagCycles + kDispstatIoLoadCompletionCycles +
+                  kDispstatHblankTransitionStallCycles &&
+      start <= PpuTiming::kHblankFlagCycles + kDispstatIoLoadCompletionCycles +
+                   kDispstatLateHblankSetStallCycles &&
+      ppu.hblank()) {
+    return kDispstatLateHblankSetStallCycles;
+  }
+  const bool crosses_raw_hblank =
+      start <= PpuTiming::kVisibleCycles && end >= PpuTiming::kVisibleCycles;
+  const bool crosses_dispstat_hblank =
+      start < PpuTiming::kHblankFlagCycles && end >= PpuTiming::kHblankFlagCycles;
+  const bool crosses_line_rollover = end >= PpuTiming::kCyclesPerLine;
+  if (crosses_line_rollover) {
+    return kDispstatLineRolloverStallCycles;
+  }
+  if (crosses_dispstat_hblank) {
+    return kDispstatHblankTransitionStallCycles;
+  }
+  return crosses_raw_hblank ? 1U : 0U;
+}
+
+[[nodiscard]] bool crosses_ppu_status_transition(std::uint32_t start,
+                                                  std::uint32_t cycles) {
+  if (cycles == 0) {
+    return false;
+  }
+  const std::uint32_t end = start + cycles;
+  return (start < PpuTiming::kVisibleCycles && end >= PpuTiming::kVisibleCycles) ||
+         (start < PpuTiming::kHblankFlagCycles && end >= PpuTiming::kHblankFlagCycles) ||
+         end >= PpuTiming::kCyclesPerLine;
 }
 
 [[nodiscard]] std::uint32_t adjust_slow_timer_load_pre_access_cycles(
@@ -666,8 +804,29 @@ struct DataAccessTimingProbe {
   return std::nullopt;
 }
 
+[[nodiscard]] bool thumb_data_timing_probe_candidate(std::uint16_t instruction) {
+  switch ((instruction >> 12U) & 0xFU) {
+    case 0x4:
+      return ((instruction >> 11U) & 0x1FU) == 0x9U;
+    case 0x5:
+    case 0x6:
+    case 0x7:
+    case 0x8:
+    case 0x9:
+      return true;
+    case 0xC:
+      return static_cast<std::uint8_t>(instruction & 0xFFU) != 0;
+    default:
+      return false;
+  }
+}
+
 [[nodiscard]] std::optional<DataAccessTimingProbe> first_thumb_data_access_for_timing(
     const Arm7tdmi& cpu, std::uint16_t instruction) {
+  if (!thumb_data_timing_probe_candidate(instruction)) {
+    return std::nullopt;
+  }
+
   if (Arm7tdmi::can_decode_thumb_block_transfer(instruction)) {
     const DecodedThumbBlockTransferInstruction decoded =
         Arm7tdmi::decode_thumb_block_transfer(instruction);
@@ -1466,9 +1625,29 @@ CoreSchedulerStepResult CoreScheduler::step_arm(
       timer_io_access && timer_io_gap_cycles >= kSpacedTimerIoDispatchGapCycles;
   const bool return_latency_pending_before_pre_access =
       hle_irq_return_latency_pending_;
-  std::uint32_t pre_access_cycles =
-      data_access.has_value() ? io_store_pre_access_cycles(data_access.value())
-                              : 0;
+  std::uint32_t pre_access_cycles = 0;
+  std::uint32_t dispstat_transition_stall_cycles = 0;
+  if (data_access.has_value()) {
+    pre_access_cycles = io_store_pre_access_cycles(data_access.value());
+    if (late_hblank_timer_load_samples_on_data_phase(data_access, ppu_,
+                                                     interrupts_)) {
+      pre_access_cycles = kTimerIoLoadDataPhaseCycles;
+    }
+    if (const std::optional<std::uint32_t> clear_timer_cycles =
+            dispstat_hblank_clear_timer_load_pre_access_cycles(data_access, ppu_,
+                                                               interrupts_)) {
+      pre_access_cycles = clear_timer_cycles.value();
+    }
+    if (long_hblank_poll_timer_load_samples_before_completion(
+            data_access, ppu_, interrupts_, timer_io_gap_cycles)) {
+      pre_access_cycles = kDispstatIoLoadDataPhaseCycles;
+    }
+    pre_access_cycles = adjust_dispstat_hblank_set_pre_access_cycles(
+        data_access, ppu_, pre_access_cycles);
+    dispstat_transition_stall_cycles =
+        dispstat_status_transition_stall_cycles(data_access, ppu_, interrupts_,
+                                               pre_access_cycles);
+  }
   pre_access_cycles = adjust_slow_timer_load_pre_access_cycles(
       pre_access_cycles, data_access, timer_io_access, spaced_timer_io_access,
       timer_io_gap_cycles, return_latency_pending_before_pre_access,
@@ -1533,12 +1712,17 @@ CoreSchedulerStepResult CoreScheduler::step_arm(
   }
   const std::optional<ArmStepResult> hle_step =
       execute_hle_arm_swi(instruction, pre_step_pc);
-  const ArmStepResult cpu_step =
+  ArmStepResult cpu_step =
       hle_step.has_value()
           ? hle_step.value()
           : (waitcnt_ != nullptr ? cpu_.step_arm(instruction, memory_, *waitcnt_,
                                                  elapsed_override)
                                  : cpu_.step_arm(instruction, memory_));
+  if (cpu_step.status == ExecuteStatus::executed &&
+      dispstat_transition_stall_cycles != 0) {
+    cpu_step.elapsed_cycles += dispstat_transition_stall_cycles;
+    cpu_step.total_elapsed_cycles += dispstat_transition_stall_cycles;
+  }
   DmaRunResult dma_result{0, 0, false, 0};
   bool irq_serviced = false;
 
@@ -1610,6 +1794,9 @@ CoreSchedulerStepResult CoreScheduler::step_arm(
   if (timer_io_access) {
     timer_io_access_gap_cycles_ = 0;
   }
+  if (data_access.has_value() && devices.triggered_dma.channels_executed == 0) {
+    memory_.clear_open_bus_latch();
+  }
   return {cpu_step, devices, dma_result, irq_serviced, scheduler_cycles_,
           data_access_trace};
 }
@@ -1628,9 +1815,29 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
       timer_io_access && timer_io_gap_cycles >= kSpacedTimerIoDispatchGapCycles;
   const bool return_latency_pending_before_pre_access =
       hle_irq_return_latency_pending_;
-  std::uint32_t pre_access_cycles =
-      data_access.has_value() ? io_store_pre_access_cycles(data_access.value())
-                              : 0;
+  std::uint32_t pre_access_cycles = 0;
+  std::uint32_t dispstat_transition_stall_cycles = 0;
+  if (data_access.has_value()) {
+    pre_access_cycles = io_store_pre_access_cycles(data_access.value());
+    if (late_hblank_timer_load_samples_on_data_phase(data_access, ppu_,
+                                                     interrupts_)) {
+      pre_access_cycles = kTimerIoLoadDataPhaseCycles;
+    }
+    if (const std::optional<std::uint32_t> clear_timer_cycles =
+            dispstat_hblank_clear_timer_load_pre_access_cycles(data_access, ppu_,
+                                                               interrupts_)) {
+      pre_access_cycles = clear_timer_cycles.value();
+    }
+    if (long_hblank_poll_timer_load_samples_before_completion(
+            data_access, ppu_, interrupts_, timer_io_gap_cycles)) {
+      pre_access_cycles = kDispstatIoLoadDataPhaseCycles;
+    }
+    pre_access_cycles = adjust_dispstat_hblank_set_pre_access_cycles(
+        data_access, ppu_, pre_access_cycles);
+    dispstat_transition_stall_cycles =
+        dispstat_status_transition_stall_cycles(data_access, ppu_, interrupts_,
+                                               pre_access_cycles);
+  }
   pre_access_cycles = adjust_slow_timer_load_pre_access_cycles(
       pre_access_cycles, data_access, timer_io_access, spaced_timer_io_access,
       timer_io_gap_cycles, return_latency_pending_before_pre_access,
@@ -1680,13 +1887,18 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
   }
   const std::optional<ArmStepResult> hle_step =
       execute_hle_thumb_swi(instruction, pre_step_pc);
-  const ArmStepResult cpu_step =
+  ArmStepResult cpu_step =
       hle_step.has_value()
           ? hle_step.value()
           : (waitcnt_ != nullptr ? cpu_.step_thumb(instruction, memory_, *waitcnt_,
                                                    prefetch_internal_load_overlap,
                                                    elapsed_override)
                                  : cpu_.step_thumb(instruction, memory_));
+  if (cpu_step.status == ExecuteStatus::executed &&
+      dispstat_transition_stall_cycles != 0) {
+    cpu_step.elapsed_cycles += dispstat_transition_stall_cycles;
+    cpu_step.total_elapsed_cycles += dispstat_transition_stall_cycles;
+  }
   DmaRunResult dma_result{0, 0, false, 0};
   bool irq_serviced = false;
 
@@ -1749,6 +1961,9 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
 
   if (timer_io_access) {
     timer_io_access_gap_cycles_ = 0;
+  }
+  if (data_access.has_value() && devices.triggered_dma.channels_executed == 0) {
+    memory_.clear_open_bus_latch();
   }
   return {cpu_step, devices, dma_result, irq_serviced, scheduler_cycles_,
           data_access_trace};
@@ -2138,10 +2353,21 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
   }
 
   switch (call.service) {
-    case 0x02:
-      return wait_for_interrupt_mask(interrupts_.interrupt_enable(), false)
-                 ? executed(1)
-                 : unsupported();
+    case 0x02: {
+      const bool entered_before_hblank_event =
+          ppu_.line_cycle() < PpuTiming::kVisibleCycles;
+      if (!wait_for_interrupt_mask(interrupts_.interrupt_enable(), false)) {
+        return unsupported();
+      }
+      const std::uint16_t hblank_irq =
+          static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(InterruptSource::hblank));
+      if ((interrupts_.pending_mask() & hblank_irq) == 0) {
+        return executed(1);
+      }
+      return executed(entered_before_hblank_event && kBiosHleHblankHaltReturnCycles > 0
+                          ? kBiosHleHblankHaltReturnCycles - 1U
+                          : kBiosHleHblankHaltReturnCycles);
+    }
     case 0x04: {
       const bool discard = cpu_.register_value(0) != 0;
       const std::uint16_t mask = static_cast<std::uint16_t>(cpu_.register_value(1));
@@ -2151,7 +2377,7 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
     }
     case 0x05:
       return wait_for_interrupt_mask(0x0001U, true)
-                 ? executed(kBiosHleIntrWaitReturnCycles)
+                 ? executed(kBiosHleVBlankIntrWaitReturnCycles)
                  : unsupported();
     case 0x06:
     case 0x07: {
@@ -2437,27 +2663,61 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
   bool prefetch_enabled = false;
   bool prefetch_hit = false;
   bool boundary_forced_nonsequential = false;
-  const std::uint32_t fetch_cycles = apply_fetch_timing(
-      fetch_address, 2, fetch_timing_applied, fetch_sequential, prefetch_enabled,
-      prefetch_hit, boundary_forced_nonsequential);
-  bool prefetch_internal_load_overlap =
-      should_overlap_thumb_internal_data_load(fetch_address, waitcnt_, cpu_,
-                                              instruction.value(), fetch_cycles);
-  if (prefetch_internal_load_overlap && !prefetch_enabled &&
-      waitcnt_ != nullptr && waitcnt_->prefetch_enabled()) {
-    const MemoryAccessTiming timing =
-        MemoryBus::timing(fetch_address, AccessWidth::halfword, *waitcnt_);
-    if (timing.sequential <= 1) {
-      prefetch_internal_load_overlap = false;
+  const bool has_waitcnt = waitcnt_ != nullptr;
+  std::uint32_t fetch_cycles = 0;
+  bool prefetch_internal_load_overlap = false;
+  if (has_waitcnt) {
+    fetch_cycles = apply_fetch_timing(
+        fetch_address, 2, fetch_timing_applied, fetch_sequential, prefetch_enabled,
+        prefetch_hit, boundary_forced_nonsequential);
+    prefetch_internal_load_overlap =
+        should_overlap_thumb_internal_data_load(fetch_address, waitcnt_, cpu_,
+                                                instruction.value(), fetch_cycles);
+    if (prefetch_internal_load_overlap && !prefetch_enabled &&
+        waitcnt_->prefetch_enabled()) {
+      const MemoryAccessTiming timing =
+          MemoryBus::timing(fetch_address, AccessWidth::halfword, *waitcnt_);
+      if (timing.sequential <= 1) {
+        prefetch_internal_load_overlap = false;
+      }
     }
   }
   const bool suppress_current_prefetch_execute_bubble =
       suppress_next_thumb_prefetch_execute_bubble_;
   suppress_next_thumb_prefetch_execute_bubble_ = false;
   const bool previous_thumb_internal_load = previous_thumb_internal_load_;
-  const std::optional<ArmElapsedCycleEstimate> elapsed_override =
-      thumb_rom_multiply_elapsed_override(cpu_, instruction.value(), fetch_address,
-                                          waitcnt_);
+  std::optional<ArmElapsedCycleEstimate> elapsed_override =
+      has_waitcnt ? thumb_rom_multiply_elapsed_override(cpu_, instruction.value(),
+                                                       fetch_address, waitcnt_)
+                  : std::nullopt;
+  if (!elapsed_override.has_value() && has_waitcnt &&
+      ppu_.line_cycle() >= PpuTiming::kVisibleCycles &&
+      interrupts_.requested(InterruptSource::hblank) &&
+      Arm7tdmi::can_decode_thumb_memory_transfer(instruction.value())) {
+    const DecodedThumbMemoryTransferInstruction decoded =
+        Arm7tdmi::decode_thumb_memory_transfer(instruction.value());
+    if (!decoded.load) {
+      const std::uint32_t base =
+          decoded.rb == Arm7tdmi::kPc
+              ? (cpu_.register_value(Arm7tdmi::kPc) + 4U) & ~0x3U
+              : cpu_.register_value(decoded.rb);
+      const std::uint32_t offset =
+          decoded.offset_is_register ? cpu_.register_value(decoded.offset) : decoded.offset;
+      const Region fetch_region = MemoryBus::describe(fetch_address).region;
+      const Region data_region = MemoryBus::describe(base + offset).region;
+      if ((fetch_region == Region::iwram || fetch_region == Region::ewram) &&
+          (data_region == Region::iwram || data_region == Region::ewram)) {
+        const MemoryAccessTiming timing =
+            MemoryBus::timing(base + offset,
+                              thumb_probe_access_width(decoded.kind), *waitcnt_);
+        const std::uint32_t cycles =
+            static_cast<std::uint32_t>(timing.sequential) * 2U;
+        if (cycles > 0) {
+          elapsed_override = ArmElapsedCycleEstimate{cycles - 1U, false, true};
+        }
+      }
+    }
+  }
   CoreSchedulerStepResult step =
       step_thumb(instruction.value(), prefetch_internal_load_overlap,
                  elapsed_override);
@@ -2479,15 +2739,55 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
             ? thumb_branch_exchange_refill_cycles(
                   fetch_address, branch_target, waitcnt_)
             : thumb_branch_refill_cycles(branch_target, waitcnt_);
+    const Region branch_fetch_region = MemoryBus::describe(fetch_address).region;
+    const bool internal_code_branch =
+        branch_fetch_region == Region::iwram || branch_fetch_region == Region::ewram;
+    const bool hblank_status_sensitive =
+        ppu_.hblank_irq_enabled() || interrupts_.enabled(InterruptSource::hblank) ||
+        interrupts_.requested(InterruptSource::hblank);
+    const bool conditional_branch =
+        (instruction.value() & 0xF000U) == 0xD000U &&
+        (instruction.value() & 0x0F00U) != 0x0F00U;
+    const bool hblank_sensitive_conditional_branch =
+        hblank_status_sensitive && conditional_branch;
+    const std::uint32_t pre_refill_line_cycle = ppu_.line_cycle();
+    const bool branch_execute_crossed_line_rollover =
+        internal_code_branch &&
+        hblank_status_sensitive &&
+        !conditional_branch &&
+        step.cpu_step.elapsed_cycles > 0 &&
+        step.cpu_step.elapsed_cycles <= PpuTiming::kCyclesPerLine &&
+        pre_refill_line_cycle < step.cpu_step.elapsed_cycles;
     seed_prefetch_after_branch_exchange =
         branch_exchange &&
         branch_exchange_seeds_fast_prefetch(fetch_address, branch_target,
                                             waitcnt_);
     const CoreDeviceTickResult refill_devices = advance_devices(refill_cycles);
     charge_pipeline_refill(step, refill_devices, refill_cycles);
+    const bool refill_crosses_status_transition =
+        !hblank_sensitive_conditional_branch &&
+        crosses_ppu_status_transition(pre_refill_line_cycle, refill_cycles);
+    if (internal_code_branch && hblank_status_sensitive &&
+        (!conditional_branch || hblank_sensitive_conditional_branch) &&
+        refill_crosses_status_transition) {
+      const CoreDeviceTickResult transition_stall = advance_devices(1);
+      merge_device_ticks(step.devices, transition_stall);
+      ++step.cpu_step.elapsed_cycles;
+      ++step.cpu_step.total_elapsed_cycles;
+      step.scheduler_cycles = scheduler_cycles_;
+    }
+    if (branch_execute_crossed_line_rollover) {
+      constexpr std::uint32_t kInternalThumbBranchRolloverStallCycles = 2;
+      const CoreDeviceTickResult rollover_stall =
+          advance_devices(kInternalThumbBranchRolloverStallCycles);
+      merge_device_ticks(step.devices, rollover_stall);
+      step.cpu_step.elapsed_cycles += kInternalThumbBranchRolloverStallCycles;
+      step.cpu_step.total_elapsed_cycles += kInternalThumbBranchRolloverStallCycles;
+      step.scheduler_cycles = scheduler_cycles_;
+    }
   }
   if (previous_thumb_internal_load && should_advance_pc && prefetch_hit &&
-      fetch_cycles == 0 && waitcnt_ != nullptr && waitcnt_->prefetch_enabled() &&
+      fetch_cycles == 0 && has_waitcnt && waitcnt_->prefetch_enabled() &&
       step.data_access.has_value() && step.data_access->load &&
       step.data_access->width_bytes == 4 &&
       MemoryBus::describe(step.data_access->address).region ==
@@ -2526,7 +2826,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
     cpu_.set_register(Arm7tdmi::kPc, fetch_address + 2U);
     std::uint32_t extra_refill_cycles = 0;
     if (prefetch_internal_load_overlap && !prefetch_enabled &&
-        waitcnt_ != nullptr && waitcnt_->prefetch_enabled() &&
+        has_waitcnt && waitcnt_->prefetch_enabled() &&
         step.data_access.has_value() && step.data_access->load) {
       const Region data_region =
           MemoryBus::describe(step.data_access->address).region;
@@ -2534,8 +2834,8 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
         extra_refill_cycles = 1;
       }
     }
-    if (prefetch_enabled && waitcnt_ != nullptr &&
-        waitcnt_->prefetch_enabled() && step.data_access.has_value()) {
+    if (prefetch_enabled && has_waitcnt && waitcnt_->prefetch_enabled() &&
+        step.data_access.has_value()) {
       const MemoryAccessTiming timing =
           MemoryBus::timing(fetch_address, AccessWidth::halfword, *waitcnt_);
       const Region data_region =

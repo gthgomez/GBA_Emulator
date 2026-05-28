@@ -1113,6 +1113,33 @@ int main() {
   expect(thumb_cpu.register_value(2) == 0x01020304, "Thumb LDMIA loads first register");
   expect(thumb_cpu.register_value(3) == 0x05060708, "Thumb LDMIA loads second register");
   expect(thumb_cpu.register_value(0) == 0x030000AC, "Thumb LDMIA writes back base");
+  expect(thumb_memory.load_game_pak_rom(rom_with_word(4, 0x428A428AU)),
+         "Thumb LDMIA open-bus test ROM with pipeline word");
+  Arm7tdmi thumb_open_bus_cpu;
+  expect(thumb_open_bus_cpu.set_cpsr(0x20U | static_cast<std::uint32_t>(CpuMode::system)),
+         "Thumb LDMIA open-bus fixture enters Thumb state");
+  thumb_open_bus_cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  thumb_open_bus_cpu.set_register(3, 0x10000000);
+  expect(thumb_open_bus_cpu.execute_thumb(thumb_block_transfer(true, 3, 0x04),
+                                          thumb_memory) == ExecuteStatus::executed,
+         "Thumb LDMIA unmapped read uses pipeline open bus");
+  expect(thumb_open_bus_cpu.register_value(2) == 0x428A428A,
+         "Thumb LDMIA loads instruction-stream open bus");
+  expect(thumb_open_bus_cpu.register_value(3) == 0x10000004,
+         "Thumb LDMIA unmapped read writes back base");
+  thumb_memory.drive_open_bus(0xDEAD0000);
+  Arm7tdmi thumb_latched_bus_cpu;
+  expect(thumb_latched_bus_cpu.set_cpsr(0x20U | static_cast<std::uint32_t>(CpuMode::system)),
+         "Thumb LDMIA latched-bus fixture enters Thumb state");
+  thumb_latched_bus_cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  thumb_latched_bus_cpu.set_register(3, 0x10000000);
+  expect(thumb_latched_bus_cpu.execute_thumb(thumb_block_transfer(true, 3, 0x04),
+                                             thumb_memory) == ExecuteStatus::executed,
+         "Thumb LDMIA unmapped read uses latched data bus");
+  expect(thumb_latched_bus_cpu.register_value(2) == 0xDEAD0000,
+         "Thumb LDMIA loads DMA-driven open bus when present");
+  expect(thumb_latched_bus_cpu.register_value(3) == 0x10000004,
+         "Thumb LDMIA latched-bus read writes back base");
   thumb_cpu.set_register(13, 0x03000100);
   thumb_cpu.set_register(0, 0xAAAA0000);
   thumb_cpu.set_register(1, 0xBBBB1111);

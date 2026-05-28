@@ -259,6 +259,9 @@ int main() {
       dma.run_trigger(gba::core::DmaTrigger::hblank, memory, interrupts);
   expect(hblank_result.channels_executed == 1, "HBlank DMA runs on HBlank trigger");
   expect_read16(memory, 0x03000034, 0x7777, "HBlank DMA copied delayed value");
+  expect(memory.open_bus_latch().has_value() &&
+             memory.open_bus_latch().value() == 0x77777777,
+         "triggered HBlank DMA drives the shared open-bus latch");
   dma.write_control(2, 0);
 
   expect(memory.write16(0x02000040, 0x5555), "seed DMA3 repeat source 0");

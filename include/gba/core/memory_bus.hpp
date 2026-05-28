@@ -172,6 +172,9 @@ class MemoryBus {
   [[nodiscard]] std::optional<std::uint8_t> read8(std::uint32_t address) const;
   [[nodiscard]] std::optional<std::uint16_t> read16(std::uint32_t address) const;
   [[nodiscard]] std::optional<std::uint32_t> read32(std::uint32_t address) const;
+  void drive_open_bus(std::uint32_t value);
+  void clear_open_bus_latch();
+  [[nodiscard]] std::optional<std::uint32_t> open_bus_latch() const;
   void set_io_callbacks(MemoryBusIoCallbacks callbacks);
   void clear_io_callbacks();
   [[nodiscard]] bool load_game_pak_rom(const std::vector<std::uint8_t>& data);
@@ -219,6 +222,8 @@ class MemoryBus {
   FlashCommandState flash_command_state_;
   bool flash_id_mode_;
   std::uint8_t flash_bank_;
+  std::uint32_t open_bus_latch_;
+  bool open_bus_latch_valid_;
   MemoryBusIoCallbacks io_callbacks_;
 
   [[nodiscard]] static std::size_t save_size_for_type(GamePakSaveType type);

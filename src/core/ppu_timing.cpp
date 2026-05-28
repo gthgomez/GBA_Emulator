@@ -172,7 +172,7 @@ bool PpuTiming::vblank() const {
 }
 
 bool PpuTiming::hblank() const {
-  return line_cycle_ >= kVisibleCycles;
+  return line_cycle_ >= kHblankFlagCycles;
 }
 
 bool PpuTiming::vcount_match() const {
@@ -195,7 +195,7 @@ PpuPhase PpuTiming::phase() const {
   if (vblank()) {
     return PpuPhase::vblank;
   }
-  if (hblank()) {
+  if (line_cycle_ >= kVisibleCycles) {
     return PpuPhase::hblank;
   }
   return PpuPhase::visible;
@@ -216,7 +216,7 @@ void PpuTiming::enter_hblank(InterruptController& interrupts, PpuTickEvents& eve
   if (line_ < kVisibleLines) {
     ++events.hblank_entries;
   }
-  if (line_ < kVisibleLines && hblank_irq_enabled()) {
+  if (hblank_irq_enabled()) {
     interrupts.request(InterruptSource::hblank);
   }
 }
