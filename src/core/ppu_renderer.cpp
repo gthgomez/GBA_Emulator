@@ -17,16 +17,35 @@ constexpr std::uint16_t kMode5Height = 128;
 constexpr std::uint16_t kBrightnessEffectMask = 0x00C0;
 constexpr std::uint16_t kBrightnessIncrease = 0x0040;
 constexpr std::uint16_t kBrightnessDecrease = 0x0080;
+constexpr std::uint16_t kColorMask = 0x7FFF;
+
+[[nodiscard]] constexpr std::uint16_t normalize_color(std::uint16_t color) {
+  return static_cast<std::uint16_t>(color & kColorMask);
+}
+
+[[nodiscard]] constexpr std::int16_t sprite_screen_width(
+    const SpriteAttributes& sprite) {
+  return static_cast<std::int16_t>(
+      sprite.affine && sprite.double_size ? sprite.width * 2U : sprite.width);
+}
+
+[[nodiscard]] constexpr std::int16_t sprite_screen_height(
+    const SpriteAttributes& sprite) {
+  return static_cast<std::int16_t>(
+      sprite.affine && sprite.double_size ? sprite.height * 2U : sprite.height);
+}
 
 [[nodiscard]] bool line_intersects_sprite(const SpriteAttributes& sprite,
                                           std::uint16_t scanline) {
   const std::int16_t line = static_cast<std::int16_t>(scanline);
-  return line >= sprite.y && line < static_cast<std::int16_t>(sprite.y + sprite.height);
+  return line >= sprite.y &&
+         line < static_cast<std::int16_t>(sprite.y + sprite_screen_height(sprite));
 }
 
 [[nodiscard]] bool x_intersects_sprite(const SpriteAttributes& sprite, std::uint16_t x) {
   return static_cast<std::int16_t>(x) >= sprite.x &&
-         static_cast<std::int16_t>(x) < static_cast<std::int16_t>(sprite.x + sprite.width);
+         static_cast<std::int16_t>(x) <
+             static_cast<std::int16_t>(sprite.x + sprite_screen_width(sprite));
 }
 
 [[nodiscard]] bool bg_enabled(std::uint16_t dispcnt, std::uint8_t bg_index) {
@@ -72,6 +91,7 @@ constexpr std::uint16_t kBrightnessDecrease = 0x0080;
                                              const PpuRenderControl& control,
                                              bool& blended) {
   blended = false;
+  color = normalize_color(color);
   const std::uint16_t effect =
       static_cast<std::uint16_t>(control.bldcnt & kBrightnessEffectMask);
   if (effect != kBrightnessIncrease && effect != kBrightnessDecrease) {
@@ -235,7 +255,8 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     if (blended) {
       ++blend_pixels;
     }
-    framebuffer_.at(static_cast<std::uint32_t>(scanline) * kScreenWidth + x) = color;
+    framebuffer_.at(static_cast<std::uint32_t>(scanline) * kScreenWidth + x) =
+        normalize_color(color);
   }
 
   return {scanline, bg_pixels, obj_pixels, supported_mode, false, bitmap_pixels,

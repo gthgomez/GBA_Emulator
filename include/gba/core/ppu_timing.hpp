@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gba/core/interrupt_controller.hpp"
+#include "gba/core/ppu_renderer.hpp"
 
 #include <array>
 #include <cstdint>
@@ -40,6 +41,7 @@ class PpuTiming {
   [[nodiscard]] std::optional<std::uint16_t> read_lcd_control(
       std::uint32_t address) const;
   [[nodiscard]] bool write_lcd_control(std::uint32_t address, std::uint16_t value);
+  [[nodiscard]] PpuRenderControl render_control() const;
   PpuTickEvents tick(std::uint32_t cycles, InterruptController& interrupts);
 
   [[nodiscard]] std::uint16_t dispstat() const;

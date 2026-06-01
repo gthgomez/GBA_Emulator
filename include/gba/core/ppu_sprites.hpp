@@ -26,7 +26,9 @@ struct SpriteAttributes {
   std::uint8_t priority;
   std::uint8_t palette_bank;
   SpriteColorMode color_mode;
+  std::uint8_t affine_matrix_index;
   bool affine;
+  bool double_size;
   bool disabled;
   bool hflip;
   bool vflip;

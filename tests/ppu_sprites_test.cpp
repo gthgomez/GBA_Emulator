@@ -61,6 +61,8 @@ int main() {
   expect(obj0->priority == 1, "OBJ0 priority decodes");
   expect(obj0->palette_bank == 4, "OBJ0 palette bank decodes");
   expect(obj0->color_mode == SpriteColorMode::bpp4, "OBJ0 defaults to 4bpp");
+  expect(obj0->affine_matrix_index == 0, "OBJ0 affine matrix index defaults to zero");
+  expect(!obj0->double_size, "OBJ0 is not double-size");
   expect(!obj0->disabled, "OBJ0 is enabled");
 
   expect(write_obj_vram_byte(memory, 0x06010000 + 5U * 32U, 0x09),
@@ -116,6 +118,28 @@ int main() {
   expect(obj3->disabled, "OBJ3 disabled bit decodes for non-affine object");
   expect(!PpuSpriteFetcher::fetch_sprite_pixel(memory, obj3.value(), 0, 0).has_value(),
          "disabled OBJ does not fetch pixels");
+
+  expect(memory.write16(0x07000000, static_cast<std::uint16_t>(0x0100U)),
+         "seed affine OBJ0 attr0");
+  expect(memory.write16(0x07000002, static_cast<std::uint16_t>(0U << 9)),
+         "seed affine OBJ0 attr1");
+  expect(memory.write16(0x07000004, static_cast<std::uint16_t>(60U | (3U << 12))),
+         "seed affine OBJ0 attr2");
+  expect(memory.write16(0x07000006, 0x0100), "seed affine PA");
+  expect(memory.write16(0x0700000E, 0), "seed affine PB");
+  expect(memory.write16(0x07000016, 0), "seed affine PC");
+  expect(memory.write16(0x0700001E, 0x0100), "seed affine PD");
+  const std::optional<gba::core::SpriteAttributes> affine_obj =
+      PpuSpriteFetcher::read_sprite(memory, 0);
+  expect(affine_obj.has_value(), "affine OBJ decodes");
+  expect(affine_obj->affine, "affine OBJ flag decodes");
+  expect(!affine_obj->disabled, "affine OBJ ignores non-affine disable bit");
+  expect(write_obj_vram_byte(memory, 0x06010000 + 60U * 32U, 0x07),
+         "seed affine OBJ pixel");
+  expect(memory.write16(0x05000200 + 3U * 32U + 7U * 2U, 0x4210),
+         "seed affine OBJ palette color");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, affine_obj.value(), 0, 0), 7,
+               0x4210, "identity affine OBJ samples texture pixel");
 
   expect(memory.write16(0x07000020, static_cast<std::uint16_t>(70U | (1U << 14))),
          "seed wide OBJ4 attr0");

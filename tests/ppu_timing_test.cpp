@@ -48,6 +48,40 @@ int main() {
   expect(ppu.vcount_match(), "PPU reset matches default VCount setting");
   expect(ppu.dispstat() == 0x0004, "DISPSTAT reset exposes only VCount match flag");
 
+  expect(ppu.write_lcd_control(0x04000000, 0x1003),
+         "PPU accepts DISPCNT writes for render control");
+  expect(ppu.write_lcd_control(0x04000008, 0x1C02),
+         "PPU accepts BG0 control writes for render control");
+  expect(ppu.write_lcd_control(0x04000010, 7),
+         "PPU accepts BG0 horizontal scroll writes for render control");
+  expect(ppu.write_lcd_control(0x04000012, 9),
+         "PPU accepts BG0 vertical scroll writes for render control");
+  expect(ppu.write_lcd_control(0x04000040, 0x7010),
+         "PPU accepts WIN0H writes for render control");
+  expect(ppu.write_lcd_control(0x04000044, 0x5020),
+         "PPU accepts WIN0V writes for render control");
+  expect(ppu.write_lcd_control(0x04000048, 0x1234),
+         "PPU accepts WININ writes for render control");
+  expect(ppu.write_lcd_control(0x04000050, 0x00BF),
+         "PPU accepts BLDCNT writes for render control");
+  expect(ppu.write_lcd_control(0x04000052, 0x1008),
+         "PPU accepts BLDALPHA writes for render control");
+  expect(ppu.write_lcd_control(0x04000054, 0x000F),
+         "PPU accepts BLDY writes for render control");
+  const gba::core::PpuRenderControl render_control = ppu.render_control();
+  expect(render_control.dispcnt == 0x1003, "render control exposes DISPCNT");
+  expect(render_control.bg_control[0] == 0x1C02,
+         "render control exposes BG0 control");
+  expect(render_control.bg_scroll_x[0] == 7, "render control exposes BG0 X scroll");
+  expect(render_control.bg_scroll_y[0] == 9, "render control exposes BG0 Y scroll");
+  expect(render_control.win0h == 0x7010, "render control exposes WIN0H");
+  expect(render_control.win0v == 0x5020, "render control exposes WIN0V");
+  expect(render_control.winin == 0x1234, "render control exposes WININ");
+  expect(render_control.bldcnt == 0x00BF, "render control exposes BLDCNT");
+  expect(render_control.bldalpha == 0x1008, "render control exposes BLDALPHA");
+  expect(render_control.bldy == 0x000F, "render control exposes BLDY");
+  ppu.reset();
+
   ppu.write_dispstat(0xFFFF);
   expect(ppu.vblank_irq_enabled(), "DISPSTAT enables VBlank IRQ bit");
   expect(ppu.hblank_irq_enabled(), "DISPSTAT enables HBlank IRQ bit");

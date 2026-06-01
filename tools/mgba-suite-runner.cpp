@@ -2,6 +2,8 @@
 #include "gba/core/bios.hpp"
 #include "gba/core/core_session.hpp"
 #include "gba/core/memory_bus.hpp"
+#include "gba/core/ppu_renderer.hpp"
+#include "gba/core/state_hash.hpp"
 
 #include <algorithm>
 #include <array>
@@ -174,6 +176,35 @@ struct RunnerWatchChange {
   std::int32_t active_subtest = -1;
 };
 
+struct VideoFrameEvidence {
+  std::uint64_t frame_hash = 0;
+  std::uint16_t rendered_scanlines = 0;
+  std::uint16_t supported_scanlines = 0;
+  std::uint16_t forced_blank_scanlines = 0;
+  std::uint16_t unsupported_scanlines = 0;
+  std::uint32_t bg_pixels = 0;
+  std::uint32_t obj_pixels = 0;
+  std::uint32_t bitmap_pixels = 0;
+  std::uint32_t window_masked_pixels = 0;
+  std::uint32_t blend_pixels = 0;
+  std::uint16_t dispcnt = 0;
+  std::uint16_t vcount = 0;
+  std::uint32_t frame_cycle = 0;
+  bool oam0_masked = false;
+};
+
+struct VideoProbeTarget {
+  std::uint16_t expected_mode = 0;
+  std::uint32_t min_attempted_steps = 0;
+  bool require_bitmap_pixels = false;
+  bool require_bg_pixels = false;
+  bool require_obj_pixels = false;
+  bool require_bg0_enable = false;
+  bool require_window_enable = false;
+  bool require_bg2_enable = true;
+  bool require_obj_enable = false;
+};
+
 struct RunnerDiagnostic {
   std::uint32_t index = 0;
   std::string kind;
@@ -244,6 +275,166 @@ struct RunnerDiagnostic {
   std::optional<std::uint32_t> open_bus = std::nullopt;
   std::optional<std::uint16_t> pipeline_halfword = std::nullopt;
 };
+
+std::uint64_t hash_framebuffer(const gba::core::PpuRenderer::Framebuffer& framebuffer) {
+  gba::core::StateHasher hasher;
+  hasher.add_u32(gba::core::PpuRenderer::kScreenWidth);
+  hasher.add_u32(gba::core::PpuRenderer::kScreenHeight);
+  for (const std::uint16_t pixel : framebuffer) {
+    hasher.add_u16(pixel);
+  }
+  return hasher.value();
+}
+
+VideoFrameEvidence render_video_frame_evidence(gba::core::CoreSession& session,
+                                               bool mask_oam0) {
+  constexpr std::uint32_t kOam0Attr0Address = 0x07000000U;
+  constexpr std::uint16_t kRegularObjDisable = 0x0200U;
+
+  gba::core::PpuRenderer renderer;
+  const gba::core::PpuRenderControl control = session.ppu().render_control();
+  VideoFrameEvidence evidence{};
+  evidence.dispcnt = control.dispcnt;
+  evidence.vcount = session.ppu().vcount();
+  evidence.frame_cycle = session.ppu().frame_cycle();
+  evidence.oam0_masked = mask_oam0;
+
+  const gba::core::MemoryBus* render_memory = &session.memory();
+  gba::core::MemoryBus masked_memory;
+  if (mask_oam0) {
+    masked_memory = session.memory();
+    const std::optional<std::uint16_t> attr0 =
+        masked_memory.read16(kOam0Attr0Address);
+    if (attr0.has_value()) {
+      const bool masked = masked_memory.write16(
+          kOam0Attr0Address,
+          static_cast<std::uint16_t>(attr0.value() | kRegularObjDisable));
+      (void)masked;
+    }
+    render_memory = &masked_memory;
+  }
+
+  for (std::uint16_t y = 0; y < gba::core::PpuRenderer::kScreenHeight; ++y) {
+    const gba::core::PpuRenderStats stats =
+        renderer.render_scanline(*render_memory, control, y);
+    ++evidence.rendered_scanlines;
+    if (stats.supported_mode) {
+      ++evidence.supported_scanlines;
+    } else {
+      ++evidence.unsupported_scanlines;
+    }
+    if (stats.forced_blank) {
+      ++evidence.forced_blank_scanlines;
+    }
+    evidence.bg_pixels += stats.bg_pixels;
+    evidence.obj_pixels += stats.obj_pixels;
+    evidence.bitmap_pixels += stats.bitmap_pixels;
+    evidence.window_masked_pixels += stats.window_masked_pixels;
+    evidence.blend_pixels += stats.blend_pixels;
+  }
+
+  evidence.frame_hash = hash_framebuffer(renderer.framebuffer());
+  return evidence;
+}
+
+std::optional<VideoProbeTarget> video_probe_target(std::string_view until_output) {
+  if (until_output == "VIDEO:MODE3_BITMAP") {
+    return VideoProbeTarget{3, 0, true, false, false, false, false, true, false};
+  }
+  if (until_output == "VIDEO:MODE4_BITMAP") {
+    return VideoProbeTarget{4, 0, true, false, false, false, false, true, false};
+  }
+  if (until_output == "VIDEO:BASIC_MODE3_EXPECTED" ||
+      until_output == "VIDEO:BASIC_MODE4_EXPECTED") {
+    return VideoProbeTarget{0, 0, false, true, false, false, false, true, false};
+  }
+  if (until_output == "VIDEO:DEGENERATE_OBJ_ACTUAL") {
+    return VideoProbeTarget{0, 0, false, false, true, false, false, false, true};
+  }
+  if (until_output == "VIDEO:DEGENERATE_OBJ_EXPECTED") {
+    return VideoProbeTarget{0, 0, false, true, false, false, false, true, false};
+  }
+  if (until_output == "VIDEO:LAYER_TOGGLE_ACTUAL" ||
+      until_output == "VIDEO:LAYER_TOGGLE_EXPECTED") {
+    return VideoProbeTarget{0, 6800000, false, true, false, true, false, false, false};
+  }
+  if (until_output == "VIDEO:LAYER_TOGGLE_2_ACTUAL" ||
+      until_output == "VIDEO:LAYER_TOGGLE_2_EXPECTED") {
+    return VideoProbeTarget{0, 7100000, false, true, false, true, false, false, false};
+  }
+  if (until_output == "VIDEO:OAM_UPDATE_DELAY_ACTUAL" ||
+      until_output == "VIDEO:OAM_UPDATE_DELAY_EXPECTED") {
+    return VideoProbeTarget{0, 7450000, false, true, false, true, false, false, false};
+  }
+  if (until_output == "VIDEO:WINDOW_OFFSCREEN_RESET_ACTUAL" ||
+      until_output == "VIDEO:WINDOW_OFFSCREEN_RESET_EXPECTED") {
+    return VideoProbeTarget{0, 7800000, false, true, false, true, true, false, false};
+  }
+  return std::nullopt;
+}
+
+struct VideoScanlineEvidence {
+  bool active = false;
+  bool complete = false;
+  std::uint64_t frame_hash = 0;
+  std::uint16_t captured_scanlines = 0;
+  std::uint16_t supported_scanlines = 0;
+  std::uint16_t forced_blank_scanlines = 0;
+  std::uint16_t unsupported_scanlines = 0;
+  std::uint32_t bg_pixels = 0;
+  std::uint32_t obj_pixels = 0;
+  std::uint32_t bitmap_pixels = 0;
+  std::uint32_t window_masked_pixels = 0;
+  std::uint32_t blend_pixels = 0;
+  std::int16_t first_captured_scanline = -1;
+  std::int16_t last_captured_scanline = -1;
+};
+
+bool video_probe_reached(gba::core::CoreSession& session,
+                         const VideoProbeTarget& target,
+                         std::uint32_t attempted_steps) {
+  const gba::core::PpuRenderControl control = session.ppu().render_control();
+  constexpr std::uint16_t kModeMask = 0x0007;
+  constexpr std::uint16_t kForcedBlank = 0x0080;
+  constexpr std::uint16_t kBg0Enable = 0x0100;
+  constexpr std::uint16_t kBg2Enable = 0x0400;
+  constexpr std::uint16_t kObjEnable = 0x1000;
+  constexpr std::uint16_t kWindowEnable = 0x6000;
+  if (attempted_steps < target.min_attempted_steps) {
+    return false;
+  }
+  if ((control.dispcnt & kModeMask) != target.expected_mode ||
+      (control.dispcnt & kForcedBlank) != 0) {
+    return false;
+  }
+  if (target.require_bg0_enable && (control.dispcnt & kBg0Enable) == 0) {
+    return false;
+  }
+  if (target.require_window_enable && (control.dispcnt & kWindowEnable) == 0) {
+    return false;
+  }
+  if (target.require_bg2_enable && (control.dispcnt & kBg2Enable) == 0) {
+    return false;
+  }
+  if (target.require_obj_enable && (control.dispcnt & kObjEnable) == 0) {
+    return false;
+  }
+
+  const VideoFrameEvidence evidence = render_video_frame_evidence(session, false);
+  if (evidence.supported_scanlines != gba::core::PpuRenderer::kScreenHeight) {
+    return false;
+  }
+  if (target.require_bitmap_pixels && evidence.bitmap_pixels == 0) {
+    return false;
+  }
+  if (target.require_bg_pixels && evidence.bg_pixels == 0) {
+    return false;
+  }
+  if (target.require_obj_pixels && evidence.obj_pixels == 0) {
+    return false;
+  }
+  return true;
+}
 
 struct InputEvent {
   std::uint32_t step = 0;
@@ -355,6 +546,93 @@ std::int32_t read_u8_or(const gba::core::MemoryBus& memory, std::uint32_t addres
   }
   return value.value();
 }
+
+class VideoScanlineCapture {
+ public:
+  void observe(gba::core::CoreSession& session, bool enabled) {
+    const std::uint16_t vcount = session.ppu().vcount();
+
+    if (!enabled) {
+      active_ = false;
+      has_last_vcount_ = false;
+      reset_frame();
+      complete_evidence_ = {};
+      has_complete_evidence_ = false;
+      return;
+    }
+    if (!active_) {
+      active_ = true;
+      reset_frame();
+    }
+    if (has_last_vcount_ && vcount < last_vcount_) {
+      reset_frame();
+    }
+    has_last_vcount_ = true;
+    last_vcount_ = vcount;
+
+    if (vcount >= gba::core::PpuRenderer::kScreenHeight ||
+        captured_.at(vcount)) {
+      return;
+    }
+
+    const gba::core::PpuRenderStats stats = renderer_.render_scanline(
+        session.memory(), session.ppu().render_control(), vcount);
+    captured_.at(vcount) = true;
+    evidence_.active = true;
+    ++evidence_.captured_scanlines;
+    evidence_.complete =
+        evidence_.captured_scanlines == gba::core::PpuRenderer::kScreenHeight;
+    if (stats.supported_mode) {
+      ++evidence_.supported_scanlines;
+    } else {
+      ++evidence_.unsupported_scanlines;
+    }
+    if (stats.forced_blank) {
+      ++evidence_.forced_blank_scanlines;
+    }
+    evidence_.bg_pixels += stats.bg_pixels;
+    evidence_.obj_pixels += stats.obj_pixels;
+    evidence_.bitmap_pixels += stats.bitmap_pixels;
+    evidence_.window_masked_pixels += stats.window_masked_pixels;
+    evidence_.blend_pixels += stats.blend_pixels;
+    if (evidence_.first_captured_scanline < 0) {
+      evidence_.first_captured_scanline = static_cast<std::int16_t>(vcount);
+    }
+    evidence_.last_captured_scanline = static_cast<std::int16_t>(vcount);
+    if (evidence_.complete) {
+      complete_evidence_ = evidence_;
+      complete_evidence_.frame_hash = hash_framebuffer(renderer_.framebuffer());
+      has_complete_evidence_ = true;
+    }
+  }
+
+  [[nodiscard]] VideoScanlineEvidence evidence() const {
+    if (has_complete_evidence_) {
+      return complete_evidence_;
+    }
+    VideoScanlineEvidence result = evidence_;
+    if (result.captured_scanlines != 0) {
+      result.frame_hash = hash_framebuffer(renderer_.framebuffer());
+    }
+    return result;
+  }
+
+ private:
+  void reset_frame() {
+    renderer_.clear();
+    captured_.fill(false);
+    evidence_ = {};
+  }
+
+  gba::core::PpuRenderer renderer_;
+  std::array<bool, gba::core::PpuRenderer::kScreenHeight> captured_{};
+  VideoScanlineEvidence evidence_{};
+  VideoScanlineEvidence complete_evidence_{};
+  bool active_ = false;
+  bool has_last_vcount_ = false;
+  bool has_complete_evidence_ = false;
+  std::uint16_t last_vcount_ = 0;
+};
 
 std::optional<std::uint32_t> diagnostic_word(const gba::core::MemoryBus& memory,
                                              std::uint32_t address) {
@@ -565,6 +843,7 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
                                                      std::deque<RunnerLastStep>& recent_steps,
                                                      std::vector<RunnerWatchChange>& watch_changes,
                                                      std::vector<RunnerDiagnostic>& diagnostics,
+                                                     VideoScanlineCapture& video_scanlines,
                                                      std::size_t recent_step_limit) {
   gba::core::CoreSchedulerRunResult result{
       max_steps,
@@ -587,6 +866,8 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
   constexpr std::uint32_t kUntilOutputGraceSteps = 4096;
   bool until_output_seen = false;
   std::uint32_t until_output_grace_remaining = 0;
+  const std::optional<VideoProbeTarget> video_probe =
+      video_probe_target(until_output);
   for (std::uint32_t index = 0; index < max_steps; ++index) {
     while (next_event < events.size() && events.at(next_event).step == index) {
       [[maybe_unused]] const bool input_applied =
@@ -745,6 +1026,7 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
     if (recent_step_limit != 0 && recent_steps.size() > recent_step_limit) {
       recent_steps.pop_front();
     }
+    video_scanlines.observe(session, video_probe.has_value());
 
     if (step.fetch_failed) {
       ++result.fetch_failures;
@@ -764,6 +1046,13 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
       ++result.unsupported_steps;
       result.stop_reason = gba::core::CoreRunStopReason::unsupported_instruction;
       runner_stop.reason = "unsupported_instruction";
+      break;
+    }
+
+    if (video_probe.has_value() &&
+        video_probe_reached(session, video_probe.value(), result.attempted_steps)) {
+      runner_stop.reason = "video_probe";
+      runner_stop.until_output_matched = true;
       break;
     }
 
@@ -1150,10 +1439,11 @@ int main(int argc, char** argv) {
     std::deque<RunnerLastStep> recent_steps;
     std::vector<RunnerWatchChange> watch_changes;
     std::vector<RunnerDiagnostic> diagnostics;
+    VideoScanlineCapture video_scanlines;
     const gba::core::CoreSchedulerRunResult result =
         run_with_last_step(session, max_steps, last_step, input_events, until_output,
                            runner_stop, recent_steps, watch_changes, diagnostics,
-                           recent_trace_limit);
+                           video_scanlines, recent_trace_limit);
 
     std::cout << "suite_runner: requested_steps=" << result.requested_steps << '\n';
     std::cout << "suite_runner: attempted_steps=" << result.attempted_steps << '\n';
@@ -1171,6 +1461,63 @@ int main(int argc, char** argv) {
               << '\n';
     std::cout << "suite_runner: scheduler_cycles=" << result.scheduler_cycles << '\n';
     std::cout << "suite_runner: state_hash=" << session.state_hash() << '\n';
+    const bool mask_oam0_for_video_evidence =
+        until_output == "VIDEO:DEGENERATE_OBJ_ACTUAL";
+    const VideoFrameEvidence video_frame =
+        render_video_frame_evidence(session, mask_oam0_for_video_evidence);
+    const VideoScanlineEvidence video_scanline = video_scanlines.evidence();
+    std::cout << "suite_runner: video_frame_hash=" << video_frame.frame_hash << '\n';
+    std::cout << "suite_runner: video_rendered_scanlines="
+              << video_frame.rendered_scanlines << '\n';
+    std::cout << "suite_runner: video_supported_scanlines="
+              << video_frame.supported_scanlines << '\n';
+    std::cout << "suite_runner: video_forced_blank_scanlines="
+              << video_frame.forced_blank_scanlines << '\n';
+    std::cout << "suite_runner: video_unsupported_scanlines="
+              << video_frame.unsupported_scanlines << '\n';
+    std::cout << "suite_runner: video_bg_pixels=" << video_frame.bg_pixels << '\n';
+    std::cout << "suite_runner: video_obj_pixels=" << video_frame.obj_pixels << '\n';
+    std::cout << "suite_runner: video_bitmap_pixels=" << video_frame.bitmap_pixels
+              << '\n';
+    std::cout << "suite_runner: video_window_masked_pixels="
+              << video_frame.window_masked_pixels << '\n';
+    std::cout << "suite_runner: video_blend_pixels=" << video_frame.blend_pixels
+              << '\n';
+    std::cout << "suite_runner: video_dispcnt=0x" << std::hex << video_frame.dispcnt
+              << std::dec << '\n';
+    std::cout << "suite_runner: video_vcount=" << video_frame.vcount << '\n';
+    std::cout << "suite_runner: video_frame_cycle=" << video_frame.frame_cycle
+              << '\n';
+    std::cout << "suite_runner: video_oam0_masked="
+              << (video_frame.oam0_masked ? "true" : "false") << '\n';
+    std::cout << "suite_runner: video_scanline_capture_active="
+              << (video_scanline.active ? "true" : "false") << '\n';
+    std::cout << "suite_runner: video_scanline_capture_complete="
+              << (video_scanline.complete ? "true" : "false") << '\n';
+    std::cout << "suite_runner: video_scanline_frame_hash="
+              << video_scanline.frame_hash << '\n';
+    std::cout << "suite_runner: video_scanline_captured_scanlines="
+              << video_scanline.captured_scanlines << '\n';
+    std::cout << "suite_runner: video_scanline_supported_scanlines="
+              << video_scanline.supported_scanlines << '\n';
+    std::cout << "suite_runner: video_scanline_forced_blank_scanlines="
+              << video_scanline.forced_blank_scanlines << '\n';
+    std::cout << "suite_runner: video_scanline_unsupported_scanlines="
+              << video_scanline.unsupported_scanlines << '\n';
+    std::cout << "suite_runner: video_scanline_bg_pixels="
+              << video_scanline.bg_pixels << '\n';
+    std::cout << "suite_runner: video_scanline_obj_pixels="
+              << video_scanline.obj_pixels << '\n';
+    std::cout << "suite_runner: video_scanline_bitmap_pixels="
+              << video_scanline.bitmap_pixels << '\n';
+    std::cout << "suite_runner: video_scanline_window_masked_pixels="
+              << video_scanline.window_masked_pixels << '\n';
+    std::cout << "suite_runner: video_scanline_blend_pixels="
+              << video_scanline.blend_pixels << '\n';
+    std::cout << "suite_runner: video_scanline_first_captured="
+              << video_scanline.first_captured_scanline << '\n';
+    std::cout << "suite_runner: video_scanline_last_captured="
+              << video_scanline.last_captured_scanline << '\n';
     std::cout << "suite_runner: last_index=" << last_step.index << '\n';
     std::cout << "suite_runner: last_set="
               << (last_step.instruction_set == gba::core::CoreInstructionSet::arm ? "arm"
@@ -1230,6 +1577,52 @@ int main(int argc, char** argv) {
               << ",\"final_pc\":\"0x" << std::hex << result.final_pc << std::dec
               << "\",\"state_hash\":\"" << session.state_hash() << "\",\"debug_bytes\":"
               << debug.size() << ",\"sram_text_bytes\":" << save_text.size()
+              << ",\"video_frame_hash\":\"" << video_frame.frame_hash
+              << "\",\"video_rendered_scanlines\":"
+              << video_frame.rendered_scanlines
+              << ",\"video_supported_scanlines\":"
+              << video_frame.supported_scanlines
+              << ",\"video_forced_blank_scanlines\":"
+              << video_frame.forced_blank_scanlines
+              << ",\"video_unsupported_scanlines\":"
+              << video_frame.unsupported_scanlines << ",\"video_bg_pixels\":"
+              << video_frame.bg_pixels << ",\"video_obj_pixels\":"
+              << video_frame.obj_pixels << ",\"video_bitmap_pixels\":"
+              << video_frame.bitmap_pixels << ",\"video_window_masked_pixels\":"
+              << video_frame.window_masked_pixels << ",\"video_blend_pixels\":"
+              << video_frame.blend_pixels << ",\"video_dispcnt\":\"0x" << std::hex
+              << video_frame.dispcnt << std::dec << "\",\"video_vcount\":"
+              << video_frame.vcount << ",\"video_frame_cycle\":"
+              << video_frame.frame_cycle << ",\"video_oam0_masked\":"
+              << (video_frame.oam0_masked ? "true" : "false")
+              << ",\"video_scanline_capture_active\":"
+              << (video_scanline.active ? "true" : "false")
+              << ",\"video_scanline_capture_complete\":"
+              << (video_scanline.complete ? "true" : "false")
+              << ",\"video_scanline_frame_hash\":\""
+              << video_scanline.frame_hash
+              << "\",\"video_scanline_captured_scanlines\":"
+              << video_scanline.captured_scanlines
+              << ",\"video_scanline_supported_scanlines\":"
+              << video_scanline.supported_scanlines
+              << ",\"video_scanline_forced_blank_scanlines\":"
+              << video_scanline.forced_blank_scanlines
+              << ",\"video_scanline_unsupported_scanlines\":"
+              << video_scanline.unsupported_scanlines
+              << ",\"video_scanline_bg_pixels\":"
+              << video_scanline.bg_pixels
+              << ",\"video_scanline_obj_pixels\":"
+              << video_scanline.obj_pixels
+              << ",\"video_scanline_bitmap_pixels\":"
+              << video_scanline.bitmap_pixels
+              << ",\"video_scanline_window_masked_pixels\":"
+              << video_scanline.window_masked_pixels
+              << ",\"video_scanline_blend_pixels\":"
+              << video_scanline.blend_pixels
+              << ",\"video_scanline_first_captured\":"
+              << video_scanline.first_captured_scanline
+              << ",\"video_scanline_last_captured\":"
+              << video_scanline.last_captured_scanline
               << ",\"active_suite_id\":"
               << read_u8_or(session.memory(), 0x030000B3U, -1)
               << ",\"active_test_id\":"

@@ -409,6 +409,71 @@ int main() {
   expect(cpuset_bios_hle->memory().read32(0x02000000).value_or(0xFFFFFFFFU) == 0,
          "SWI-HLE CpuSet protected BIOS source copies zero");
 
+  auto lz77_literal_hle = std::make_unique<CoreSession>();
+  lz77_literal_hle->bios().set_mode(BiosExecutionMode::hle);
+  std::vector<std::uint8_t> lz77_literal_rom(256);
+  lz77_literal_rom.at(0) = 0x12;
+  lz77_literal_rom.at(1) = 0xDF;
+  lz77_literal_rom.at(0x40) = 0x10;
+  lz77_literal_rom.at(0x41) = 0x05;
+  lz77_literal_rom.at(0x42) = 0x00;
+  lz77_literal_rom.at(0x43) = 0x00;
+  lz77_literal_rom.at(0x44) = 0x00;
+  lz77_literal_rom.at(0x45) = 0x11;
+  lz77_literal_rom.at(0x46) = 0x22;
+  lz77_literal_rom.at(0x47) = 0x33;
+  lz77_literal_rom.at(0x48) = 0x44;
+  lz77_literal_rom.at(0x49) = 0x55;
+  expect(lz77_literal_hle->memory().load_game_pak_rom(lz77_literal_rom),
+         "LZ77UnCompVram literal ROM loads");
+  expect(lz77_literal_hle->cpu().set_cpsr(0x00000030),
+         "LZ77UnCompVram literal fixture enters Thumb user mode");
+  lz77_literal_hle->cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+  lz77_literal_hle->cpu().set_register(0, 0x08000040U);
+  lz77_literal_hle->cpu().set_register(1, 0x06000000U);
+  const gba::core::CoreSchedulerFetchStepResult lz77_literal_step =
+      lz77_literal_hle->step();
+  expect(lz77_literal_step.step->cpu_step.status == ExecuteStatus::executed,
+         "SWI-HLE LZ77UnCompVram handles literal stream");
+  expect(lz77_literal_hle->memory().read16(0x06000000).value_or(0) == 0x2211,
+         "SWI-HLE LZ77UnCompVram writes first VRAM halfword");
+  expect(lz77_literal_hle->memory().read16(0x06000002).value_or(0) == 0x4433,
+         "SWI-HLE LZ77UnCompVram writes second VRAM halfword");
+  expect(lz77_literal_hle->memory().read16(0x06000004).value_or(0xFFFFU) == 0x0055,
+         "SWI-HLE LZ77UnCompVram pads odd final byte as halfword");
+  expect(lz77_literal_hle->cpu().register_value(Arm7tdmi::kPc) == kProgramBase + 2,
+         "SWI-HLE LZ77UnCompVram advances past Thumb SWI");
+
+  auto lz77_backref_hle = std::make_unique<CoreSession>();
+  lz77_backref_hle->bios().set_mode(BiosExecutionMode::hle);
+  std::vector<std::uint8_t> lz77_backref_rom(256);
+  lz77_backref_rom.at(0) = 0x12;
+  lz77_backref_rom.at(1) = 0xDF;
+  lz77_backref_rom.at(0x40) = 0x10;
+  lz77_backref_rom.at(0x41) = 0x06;
+  lz77_backref_rom.at(0x42) = 0x00;
+  lz77_backref_rom.at(0x43) = 0x00;
+  lz77_backref_rom.at(0x44) = 0x20;
+  lz77_backref_rom.at(0x45) = 0xAA;
+  lz77_backref_rom.at(0x46) = 0xBB;
+  lz77_backref_rom.at(0x47) = 0x10;
+  lz77_backref_rom.at(0x48) = 0x01;
+  expect(lz77_backref_hle->memory().load_game_pak_rom(lz77_backref_rom),
+         "LZ77UnCompVram back-reference ROM loads");
+  expect(lz77_backref_hle->cpu().set_cpsr(0x00000030),
+         "LZ77UnCompVram back-reference fixture enters Thumb user mode");
+  lz77_backref_hle->cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+  lz77_backref_hle->cpu().set_register(0, 0x08000040U);
+  lz77_backref_hle->cpu().set_register(1, 0x06000020U);
+  const gba::core::CoreSchedulerFetchStepResult lz77_backref_step =
+      lz77_backref_hle->step();
+  expect(lz77_backref_step.step->cpu_step.status == ExecuteStatus::executed,
+         "SWI-HLE LZ77UnCompVram handles back-reference stream");
+  expect(lz77_backref_hle->memory().read32(0x06000020).value_or(0) == 0xBBAABBAA,
+         "SWI-HLE LZ77UnCompVram expands repeated VRAM bytes");
+  expect(lz77_backref_hle->memory().read16(0x06000024).value_or(0) == 0xBBAA,
+         "SWI-HLE LZ77UnCompVram completes back-reference expansion");
+
   std::cout << "core_session_test: PASS\n";
   return 0;
 }
