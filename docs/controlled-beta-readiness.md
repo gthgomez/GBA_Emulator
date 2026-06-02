@@ -1,7 +1,7 @@
 # Controlled Beta Readiness
 
-Status: Phase 72 bounded local beta gate
-Date: 2026-05-07
+Status: Phase 72 bounded local beta gate (device soak still blocked)
+Date: 2026-06-01
 
 The project is not ready for external beta yet. This document defines the controlled
 beta gate, records the current evidence, and makes remaining blockers explicit.
@@ -19,7 +19,7 @@ beta gate, records the current evidence, and makes remaining blockers explicit.
 | Android Bridge | Opaque-handle bridge can load explicit bytes, run, reset, and hash. | `android_core_bridge_test` passes. | PASS |
 | Android Runtime | Runtime can map input, render framebuffer, drain audio, and report underruns locally. | `android_runtime_test` passes. | PASS |
 | Performance | Local synthetic benchmark and regression gates pass. | `run-core-benchmarks.ps1`, `check-core-performance-regression.ps1`. | PASS |
-| Device Evidence | At least one target Android device run with lifecycle, frame pacing, audio, and thermal notes. | No device/app shell exists yet. | BLOCKED |
+| Device Evidence | At least one target Android device run with lifecycle, frame pacing, audio, and thermal notes. | **Scaffold only:** [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) debug APK + bridge self-test UI; no recorded device run. Follow [`android-device-soak-checklist.md`](android-device-soak-checklist.md). | BLOCKED |
 | Store/Legal | Release governance checklist reviewed. | `docs/release-governance-legal-review.md`. | PASS |
 
 ## Regression Suite Gate
@@ -28,7 +28,7 @@ Before any beta candidate, run:
 
 ```powershell
 .\tools\run-core-tests.ps1
-.\tools\run-core-benchmarks.ps1
+.\tools\run-credibility-matrix.ps1 -FailOnRegression
 .\tools\check-core-performance-regression.ps1
 .\tools\check-release-readiness.ps1
 ```
@@ -66,12 +66,26 @@ Broken beta build:
 - Do not ask users for copyrighted ROMs, BIOS files, screenshots, or save files unless a
   legal/private support process exists.
 
+## Device Evidence Scaffold
+
+Before flipping the Device Evidence row to PASS:
+
+1. Build and install per [`android-device-soak-checklist.md`](android-device-soak-checklist.md).
+2. Record model, ABI, timestamp, and self-test `PASS` artifact (no ROMs in git).
+3. Reference the dated artifact in the Device Evidence row above.
+
+Integration map: [`android-integration-plan.md`](android-integration-plan.md). Issue rollup:
+[`open-issues-status.md`](open-issues-status.md).
+
 ## Known Issues
 
-- No Android app shell, Gradle, CMake, JNI headers, SAF import, OpenGL ES, Oboe, lifecycle
-  instrumentation, or real device test harness exists.
+- Android dev shell exists at `Project_Android/GbaEmulatorAndroid` (Gradle, CMake, JNI bridge
+  self-test only). No SAF import, OpenGL ES, Oboe, lifecycle instrumentation, or **recorded**
+  device soak evidence yet.
+- Public mGBA suite regression baseline is green on workstation (`tools/mgba-suite-green-baseline.json`);
+  seven video **oracle** aliases are green; the upstream interactive `video` suite is not.
 - No BIOS image is bundled or executed; BIOS/HLE behavior is intentionally bounded.
-- No commercial ROM compatibility claim exists.
+- No commercial ROM or retail-game compatibility claim exists.
 - PPU/APU/DMA/save-state behavior remains seed-level and not hardware-complete.
 - Save-state codec serializes a public restorable subset, not every modeled internal
   device register.

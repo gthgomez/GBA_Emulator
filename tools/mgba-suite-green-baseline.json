@@ -1,9 +1,11 @@
 {
   "schema_version": 1,
   "scope": "mGBA public suite regression baseline",
-  "date": "2026-05-08",
+  "date": "2026-06-01",
   "green_suites": [
     "memory",
+    "loadstore",
+    "io-read",
     "bios-math",
     "dma",
     "shifter",
@@ -11,12 +13,21 @@
     "multiply-long",
     "timer-irq",
     "timers",
-    "timing"
+    "timing",
+    "ldmia",
+    "stmia",
+    "sio-read",
+    "sio-timing",
+    "misc-edge"
   ],
   "include_performance": true,
   "notes": [
     "Only targets with verified green evidence belong in green_suites.",
     "run-credibility-matrix.ps1 -FailOnRegression fails when one of these targets is missing or no longer GREEN.",
-    "Known red targets such as IO/SIO, misc-edge, and video remain visible without blocking this regression gate."
+    "io-read, sio-read, sio-timing, and misc-edge verified 2026-05-29 (END pass=total, zero failures, zero unsupported/fetch) in build/test-results/mgba-suite-*-20260529-*-25592.json.",
+    "loadstore, ldmia, and stmia verified 2026-06-01 as embedded_alias rows in build/test-results/credibility-matrix-20260601-183322-48488.json (loadstore 1552/1552; ldmia 160/160; stmia 60/60).",
+    "sio-timing reports 4/4 with four SKIPPED no-peer multiplayer cases; misc-edge 12/12.",
+    "Upstream video suite and video_oracle_alias matrix rows stay outside this baseline; interactive video does not emit END pass totals.",
+    "A video-only -Suites list with -FailOnRegression yields false REGRESSION RED: baseline targets are MISSING from the matrix even when video oracle rows are GREEN."
   ]
 }

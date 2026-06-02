@@ -276,6 +276,10 @@ Expected outcome:
   green suites remain green, even if known-red suites are included in the matrix.
 - `run-credibility-matrix.ps1 -FailOnRed` remains the stricter gate for an explicitly
   requested all-green target list.
+- Default matrix `-Suites` and `tools/mgba-suite-green-baseline.json` list upstream suites
+  plus embedded aliases (`loadstore`, `ldmia`, `stmia`). Video oracle aliases are run
+  separately; a video-only matrix with `-FailOnRegression` reports false `REGRESSION`
+  because baseline targets are missing from that run, not because video evidence regressed.
 
 ## Recommended Immediate Work
 

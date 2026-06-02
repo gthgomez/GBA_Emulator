@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <vector>
 
 namespace gba::core {
 
@@ -2555,6 +2556,9 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
                  ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), true),
                             HleSwiProfileKind::cpu_set)
                  : unsupported();
+    case 0x12:
+      return hle_lz77_uncomp_vram() ? executed(3, HleSwiProfileKind::cpu_set)
+                                    : unsupported();
     default:
       return unsupported();
   }
@@ -3206,6 +3210,75 @@ CoreSchedulerRunResult CoreScheduler::run_from_pc(std::uint32_t max_steps) {
   result.final_pc = cpu_.register_value(Arm7tdmi::kPc);
   result.scheduler_cycles = scheduler_cycles_;
   return result;
+}
+
+bool CoreScheduler::hle_lz77_uncomp_vram() {
+  std::uint32_t source = cpu_.register_value(0);
+  const std::uint32_t dest = cpu_.register_value(1);
+
+  const std::optional<std::uint8_t> header_type = memory_.read8(source++);
+  const std::optional<std::uint8_t> size0 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size1 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size2 = memory_.read8(source++);
+  if (!header_type.has_value() || !size0.has_value() || !size1.has_value() ||
+      !size2.has_value() || header_type.value() != 0x10U) {
+    return false;
+  }
+
+  const std::uint32_t decompressed_size =
+      static_cast<std::uint32_t>(size0.value()) |
+      (static_cast<std::uint32_t>(size1.value()) << 8U) |
+      (static_cast<std::uint32_t>(size2.value()) << 16U);
+  std::vector<std::uint8_t> output;
+  output.reserve(decompressed_size);
+
+  while (output.size() < decompressed_size) {
+    const std::optional<std::uint8_t> flags = memory_.read8(source++);
+    if (!flags.has_value()) {
+      return false;
+    }
+    for (std::uint8_t bit = 0; bit < 8U && output.size() < decompressed_size; ++bit) {
+      const bool compressed = (flags.value() & (0x80U >> bit)) != 0;
+      if (!compressed) {
+        const std::optional<std::uint8_t> literal = memory_.read8(source++);
+        if (!literal.has_value()) {
+          return false;
+        }
+        output.push_back(literal.value());
+        continue;
+      }
+
+      const std::optional<std::uint8_t> token_hi = memory_.read8(source++);
+      const std::optional<std::uint8_t> token_lo = memory_.read8(source++);
+      if (!token_hi.has_value() || !token_lo.has_value()) {
+        return false;
+      }
+      const std::uint32_t length = static_cast<std::uint32_t>(token_hi.value() >> 4U) + 3U;
+      const std::uint32_t displacement =
+          (((static_cast<std::uint32_t>(token_hi.value()) & 0x0FU) << 8U) |
+           static_cast<std::uint32_t>(token_lo.value())) +
+          1U;
+      if (displacement > output.size()) {
+        return false;
+      }
+      for (std::uint32_t index = 0;
+           index < length && output.size() < decompressed_size; ++index) {
+        output.push_back(output.at(output.size() - displacement));
+      }
+    }
+  }
+
+  for (std::size_t offset = 0; offset < output.size(); offset += 2U) {
+    const std::uint16_t low = output.at(offset);
+    const std::uint16_t high =
+        (offset + 1U < output.size()) ? static_cast<std::uint16_t>(output.at(offset + 1U))
+                                      : 0U;
+    if (!memory_.write16(dest + static_cast<std::uint32_t>(offset),
+                         static_cast<std::uint16_t>(low | (high << 8U)))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace gba::core

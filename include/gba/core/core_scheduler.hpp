@@ -215,6 +215,7 @@ class CoreScheduler {
                                               std::uint32_t fetch_address);
   [[nodiscard]] bool wait_for_interrupt_mask(std::uint16_t mask, bool discard_old_flags);
   [[nodiscard]] bool hle_cpu_set(bool fast);
+  [[nodiscard]] bool hle_lz77_uncomp_vram();
 };
 
 }  // namespace gba::core

@@ -117,6 +117,27 @@ bool PpuTiming::write_lcd_control(std::uint32_t address, std::uint16_t value) {
   return true;
 }
 
+PpuRenderControl PpuTiming::render_control() const {
+  PpuRenderControl control{};
+  control.dispcnt = lcd_control_.at(lcd_control_index(0x04000000U));
+  for (std::size_t index = 0; index < control.bg_control.size(); ++index) {
+    const std::uint32_t bg_base = 0x04000008U + static_cast<std::uint32_t>(index * 2U);
+    const std::uint32_t scroll_base =
+        0x04000010U + static_cast<std::uint32_t>(index * 4U);
+    control.bg_control.at(index) = lcd_control_.at(lcd_control_index(bg_base));
+    control.bg_scroll_x.at(index) = lcd_control_.at(lcd_control_index(scroll_base));
+    control.bg_scroll_y.at(index) =
+        lcd_control_.at(lcd_control_index(scroll_base + 2U));
+  }
+  control.win0h = lcd_control_.at(lcd_control_index(0x04000040U));
+  control.win0v = lcd_control_.at(lcd_control_index(0x04000044U));
+  control.winin = lcd_control_.at(lcd_control_index(0x04000048U));
+  control.bldcnt = lcd_control_.at(lcd_control_index(0x04000050U));
+  control.bldalpha = lcd_control_.at(lcd_control_index(0x04000052U));
+  control.bldy = lcd_control_.at(lcd_control_index(0x04000054U));
+  return control;
+}
+
 PpuTickEvents PpuTiming::tick(std::uint32_t cycles, InterruptController& interrupts) {
   PpuTickEvents events{};
   while (cycles > 0) {

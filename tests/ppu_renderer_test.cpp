@@ -44,6 +44,7 @@ int main() {
   constexpr std::uint16_t kBgGreen = 0x03E0;
   constexpr std::uint16_t kBgBlue = 0x001F;
   constexpr std::uint16_t kObjRed = 0x7C00;
+  constexpr std::uint16_t kHighBit = 0x8000;
 
   MemoryBus memory;
   PpuRenderer renderer;
@@ -60,11 +61,18 @@ int main() {
   expect(backdrop_stats.obj_pixels == 0, "disabled OBJ renders no OBJ pixels");
   expect(renderer.pixel(0, 0) == kBackdrop, "disabled layers render backdrop");
 
+  expect(memory.write16(0x05000000, 0x9111), "seed high-bit backdrop color");
+  [[maybe_unused]] const gba::core::PpuRenderStats masked_backdrop_stats =
+      renderer.render_scanline(memory, control(0, 8U << 8), 0);
+  expect(renderer.pixel(0, 0) == kBackdrop, "renderer masks backdrop color bit 15");
+  expect(memory.write16(0x05000000, kBackdrop), "restore backdrop color");
+
   expect(memory.write16(0x06004000, static_cast<std::uint16_t>(1U | (2U << 12))),
          "seed renderer BG map entry");
   expect(write_vram_byte(memory, 0x06000020, 0x05), "seed renderer BG tile pixel");
-  expect(memory.write16(0x05000000 + 2U * 32U + 5U * 2U, kBgGreen),
-         "seed renderer BG palette");
+  expect(memory.write16(0x05000000 + 2U * 32U + 5U * 2U,
+                        static_cast<std::uint16_t>(kHighBit | kBgGreen)),
+         "seed renderer high-bit BG palette");
   const gba::core::PpuRenderStats bg_stats =
       renderer.render_scanline(memory, control(kBg0Enable, static_cast<std::uint16_t>(8U << 8)),
                                0);
@@ -77,7 +85,9 @@ int main() {
   expect(memory.write16(0x07000004, 10), "seed renderer OBJ attr2");
   expect(write_vram_byte(memory, 0x06010000 + 10U * 32U, 0x09),
          "seed renderer OBJ tile pixel");
-  expect(memory.write16(0x05000200 + 9U * 2U, kObjRed), "seed renderer OBJ palette");
+  expect(memory.write16(0x05000200 + 9U * 2U,
+                        static_cast<std::uint16_t>(kHighBit | kObjRed)),
+         "seed renderer high-bit OBJ palette");
   const gba::core::PpuRenderStats obj_stats = renderer.render_scanline(
       memory, control(static_cast<std::uint16_t>(kBg0Enable | kObjEnable),
                       static_cast<std::uint16_t>(1U | (8U << 8))),
@@ -86,6 +96,35 @@ int main() {
   expect(obj_stats.obj_pixels == 1, "renderer counts one opaque OBJ pixel");
   expect(renderer.pixel(0, 0) == kObjRed, "higher-priority OBJ overlays BG");
 
+  expect(memory.write16(0x07000000, 0x0100), "seed affine renderer OBJ attr0");
+  expect(memory.write16(0x07000002, 0), "seed affine renderer OBJ attr1");
+  expect(memory.write16(0x07000004, 10), "seed affine renderer OBJ attr2");
+  expect(memory.write16(0x07000006, 0x0100), "seed affine renderer PA");
+  expect(memory.write16(0x0700000E, 0), "seed affine renderer PB");
+  expect(memory.write16(0x07000016, 0), "seed affine renderer PC");
+  expect(memory.write16(0x0700001E, 0x0100), "seed affine renderer PD");
+  const gba::core::PpuRenderStats affine_obj_stats = renderer.render_scanline(
+      memory, control(static_cast<std::uint16_t>(kBg0Enable | kObjEnable),
+                      static_cast<std::uint16_t>(1U | (8U << 8))),
+      0);
+  expect(affine_obj_stats.obj_pixels == 1, "renderer counts one affine OBJ pixel");
+  expect(renderer.pixel(0, 0) == kObjRed, "affine OBJ overlays BG");
+
+  expect(memory.write16(0x07000000, 0x0300),
+         "seed double-size affine renderer OBJ attr0");
+  expect(write_vram_byte(memory, 0x06010000 + 10U * 32U + 4U * 4U + 2U, 0x09),
+         "seed double-size affine OBJ expanded-area texture pixel");
+  const gba::core::PpuRenderStats double_size_affine_obj_stats =
+      renderer.render_scanline(
+          memory, control(static_cast<std::uint16_t>(kBg0Enable | kObjEnable),
+                          static_cast<std::uint16_t>(1U | (8U << 8))),
+          8);
+  expect(double_size_affine_obj_stats.obj_pixels == 1,
+         "renderer counts one double-size affine OBJ expanded-area pixel");
+  expect(renderer.pixel(8, 8) == kObjRed,
+         "double-size affine OBJ renders beyond nominal sprite bounds");
+
+  expect(memory.write16(0x07000000, 0), "restore regular renderer OBJ attr0");
   expect(memory.write16(0x07000004, static_cast<std::uint16_t>(10U | (1U << 10))),
          "seed lower-priority OBJ attr2");
   [[maybe_unused]] const gba::core::PpuRenderStats hidden_obj_stats =
@@ -118,26 +157,29 @@ int main() {
   expect(window_stats.window_masked_pixels > 0, "WIN0 masks pixels outside window");
   expect(renderer.pixel(0, 0) == kBackdrop, "window-masked BG leaves backdrop");
 
-  expect(memory.write16(0x06000000, 0x1234), "seed mode 3 bitmap pixel");
+  expect(memory.write16(0x06000000, 0xFFFF), "seed mode 3 high-bit bitmap pixel");
   const gba::core::PpuRenderStats mode3_stats =
       renderer.render_scanline(memory, control(3, 0), 0);
   expect(mode3_stats.supported_mode, "mode 3 is supported");
   expect(mode3_stats.bitmap_pixels == PpuRenderer::kScreenWidth,
          "mode 3 renders one bitmap scanline");
-  expect(renderer.pixel(0, 0) == 0x1234, "mode 3 reads 16-bit framebuffer pixels");
+  expect(renderer.pixel(0, 0) == 0x7FFF, "mode 3 masks framebuffer color bit 15");
 
   expect(write_vram_byte(memory, 0x06000000, 7), "seed mode 4 bitmap pixel index");
-  expect(memory.write16(0x05000000 + 7U * 2U, 0x2345), "seed mode 4 palette color");
+  expect(memory.write16(0x05000000 + 7U * 2U, 0xA345),
+         "seed mode 4 high-bit palette color");
   const gba::core::PpuRenderStats mode4_stats =
       renderer.render_scanline(memory, control(4, 0), 0);
   expect(mode4_stats.bitmap_pixels >= 1, "mode 4 renders indexed bitmap pixels");
-  expect(renderer.pixel(0, 0) == 0x2345, "mode 4 reads palette-indexed framebuffer pixels");
+  expect(renderer.pixel(0, 0) == 0x2345,
+         "mode 4 masks palette-indexed framebuffer color bit 15");
 
-  expect(memory.write16(0x06000000 + 159U * 2U, 0x3456), "seed mode 5 edge pixel");
+  expect(memory.write16(0x06000000 + 159U * 2U, 0xB456),
+         "seed mode 5 high-bit edge pixel");
   const gba::core::PpuRenderStats mode5_stats =
       renderer.render_scanline(memory, control(5, 0), 0);
   expect(mode5_stats.supported_mode, "mode 5 is supported");
-  expect(renderer.pixel(159, 0) == 0x3456, "mode 5 reads 160-wide bitmap pixels");
+  expect(renderer.pixel(159, 0) == 0x3456, "mode 5 masks 160-wide bitmap color bit 15");
   expect(renderer.pixel(160, 0) == kBackdrop, "mode 5 outside bitmap uses backdrop");
 
   const gba::core::PpuRenderStats forced_blank =

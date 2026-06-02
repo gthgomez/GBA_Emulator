@@ -3,8 +3,10 @@ param(
   [uint32]$TraceSteps = 0,
   [uint32]$TraceWindow = 32,
   [string]$InputScript = "",
-  [ValidateSet("menu", "memory", "io-read", "timing", "timers", "timer-irq", "shifter", "carry", "multiply-long", "bios-math", "dma", "sio-read", "sio-timing", "misc-edge", "video", "all")]
+  [ValidateSet("menu", "memory", "loadstore", "io-read", "timing", "ldmia", "stmia", "timers", "timer-irq", "shifter", "carry", "multiply-long", "bios-math", "dma", "sio-read", "sio-timing", "misc-edge", "video", "all")]
   [string]$Suite = "menu",
+  [ValidateSet("basic-mode-3-actual", "basic-mode-3-expected", "basic-mode-4-actual", "basic-mode-4-expected", "degenerate-obj-actual", "degenerate-obj-expected", "layer-toggle-actual", "layer-toggle-expected", "layer-toggle-2-actual", "layer-toggle-2-expected", "oam-update-delay-actual", "oam-update-delay-expected", "window-offscreen-reset-actual", "window-offscreen-reset-expected")]
+  [string]$VideoProbe = "basic-mode-3-actual",
   [string]$UntilOutput = "",
   [switch]$TraceFirstFailure,
   [switch]$FailOnRed,
@@ -17,7 +19,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 $buildDir = Join-Path $repoRoot "build"
 $resultsDir = Join-Path $buildDir "test-results"
-$runnerPath = Join-Path $buildDir "mgba-suite-runner.exe"
+$runnerPath = Join-Path $buildDir "mgba-suite-runner-$PID.exe"
 $suitePath = Join-Path $buildDir "test-suite-build\mgba-suite\suite.gba"
 $latestJsonPath = Join-Path $resultsDir "mgba-suite-latest.json"
 $docPath = Join-Path $repoRoot "docs\mgba-suite-test-results.md"
@@ -56,8 +58,11 @@ $allSuiteOrder = @(
 $suiteDefaultMaxSteps = @{
   "menu" = 1000000
   "memory" = 8000000
+  "loadstore" = 8000000
   "io-read" = 8000000
   "timing" = 20000000
+  "ldmia" = 20000000
+  "stmia" = 20000000
   "timers" = 20000000
   "timer-irq" = 8000000
   "shifter" = 8000000
@@ -71,6 +76,182 @@ $suiteDefaultMaxSteps = @{
   "video" = 20000000
   "all" = 20000000
 }
+$suiteEvidenceTargets = @{
+  "loadstore" = [ordered]@{
+    upstream_suite = "memory"
+    kind = "embedded_alias"
+    scope = "Broad load/store behavior embedded in the upstream mGBA memory suite."
+    note = "loadstore is a harness evidence alias, not a standalone upstream mGBA suite."
+  }
+  "ldmia" = [ordered]@{
+    upstream_suite = "timing"
+    kind = "embedded_alias"
+    scope = "LDMIA timing evidence embedded in the upstream mGBA timing suite."
+    note = "ldmia is a harness evidence alias, not a standalone upstream mGBA suite."
+  }
+  "stmia" = [ordered]@{
+    upstream_suite = "timing"
+    kind = "embedded_alias"
+    scope = "STMIA timing evidence embedded in the upstream mGBA timing suite."
+    note = "stmia is a harness evidence alias, not a standalone upstream mGBA suite."
+  }
+}
+
+function Resolve-VideoProbeDefinition {
+  param([string]$Probe)
+
+  switch ($Probe) {
+    "basic-mode-3-actual" {
+      return [ordered]@{
+        test_name = "Basic Mode 3"
+        view = "actual"
+        video_index = 0
+        until_output = "VIDEO:MODE3_BITMAP"
+        expected_mode = 3
+      }
+    }
+    "basic-mode-3-expected" {
+      return [ordered]@{
+        test_name = "Basic Mode 3"
+        view = "expected"
+        video_index = 0
+        until_output = "VIDEO:BASIC_MODE3_EXPECTED"
+        expected_mode = 0
+      }
+    }
+    "basic-mode-4-actual" {
+      return [ordered]@{
+        test_name = "Basic Mode 4"
+        view = "actual"
+        video_index = 1
+        until_output = "VIDEO:MODE4_BITMAP"
+        expected_mode = 4
+      }
+    }
+    "basic-mode-4-expected" {
+      return [ordered]@{
+        test_name = "Basic Mode 4"
+        view = "expected"
+        video_index = 1
+        until_output = "VIDEO:BASIC_MODE4_EXPECTED"
+        expected_mode = 0
+      }
+    }
+    "degenerate-obj-actual" {
+      return [ordered]@{
+        test_name = "Degenerate OBJ transforms"
+        view = "actual"
+        video_index = 2
+        until_output = "VIDEO:DEGENERATE_OBJ_ACTUAL"
+        expected_mode = 0
+      }
+    }
+    "degenerate-obj-expected" {
+      return [ordered]@{
+        test_name = "Degenerate OBJ transforms"
+        view = "expected"
+        video_index = 2
+        until_output = "VIDEO:DEGENERATE_OBJ_EXPECTED"
+        expected_mode = 0
+      }
+    }
+    "layer-toggle-actual" {
+      return [ordered]@{
+        test_name = "Layer toggle"
+        view = "actual"
+        video_index = 3
+        until_output = "VIDEO:LAYER_TOGGLE_ACTUAL"
+        expected_mode = 0
+      }
+    }
+    "layer-toggle-expected" {
+      return [ordered]@{
+        test_name = "Layer toggle"
+        view = "expected"
+        video_index = 3
+        until_output = "VIDEO:LAYER_TOGGLE_EXPECTED"
+        expected_mode = 0
+      }
+    }
+    "layer-toggle-2-actual" {
+      return [ordered]@{
+        test_name = "Layer toggle 2"
+        view = "actual"
+        video_index = 4
+        until_output = "VIDEO:LAYER_TOGGLE_2_ACTUAL"
+        expected_mode = 0
+      }
+    }
+    "layer-toggle-2-expected" {
+      return [ordered]@{
+        test_name = "Layer toggle 2"
+        view = "expected"
+        video_index = 4
+        until_output = "VIDEO:LAYER_TOGGLE_2_EXPECTED"
+        expected_mode = 0
+      }
+    }
+    "oam-update-delay-actual" {
+      return [ordered]@{
+        test_name = "OAM Update Delay"
+        view = "actual"
+        video_index = 5
+        until_output = "VIDEO:OAM_UPDATE_DELAY_ACTUAL"
+        expected_mode = 0
+      }
+    }
+    "oam-update-delay-expected" {
+      return [ordered]@{
+        test_name = "OAM Update Delay"
+        view = "expected"
+        video_index = 5
+        until_output = "VIDEO:OAM_UPDATE_DELAY_EXPECTED"
+        expected_mode = 0
+      }
+    }
+    "window-offscreen-reset-actual" {
+      return [ordered]@{
+        test_name = "Window offscreen reset"
+        view = "actual"
+        video_index = 6
+        until_output = "VIDEO:WINDOW_OFFSCREEN_RESET_ACTUAL"
+        expected_mode = 0
+      }
+    }
+    "window-offscreen-reset-expected" {
+      return [ordered]@{
+        test_name = "Window offscreen reset"
+        view = "expected"
+        video_index = 6
+        until_output = "VIDEO:WINDOW_OFFSCREEN_RESET_EXPECTED"
+        expected_mode = 0
+      }
+    }
+  }
+
+  throw "Unknown video probe: $Probe"
+}
+
+function Resolve-SuiteEvidenceTarget {
+  param([string]$SuiteName)
+
+  if ($suiteEvidenceTargets.ContainsKey($SuiteName)) {
+    return $suiteEvidenceTargets[$SuiteName]
+  }
+  return [ordered]@{
+    upstream_suite = $SuiteName
+    kind = if ($SuiteName -eq "all") { "aggregate" } else { "upstream_suite" }
+    scope = if ($SuiteName -eq "all") {
+      "Aggregate runner over upstream mGBA suite entries."
+    } else {
+      "Direct upstream mGBA suite entry."
+    }
+    note = "Requested target maps directly to the upstream mGBA suite entry."
+  }
+}
+
+$evidenceTarget = Resolve-SuiteEvidenceTarget -SuiteName $Suite
+$videoProbeDefinition = if ($Suite -eq "video") { Resolve-VideoProbeDefinition -Probe $VideoProbe } else { $null }
 
 if ($MaxSteps -eq 0) {
   $MaxSteps = [uint32]$suiteDefaultMaxSteps[$Suite]
@@ -100,6 +281,10 @@ function ConvertTo-SuiteGreenStatus {
   param([object]$SuiteResult)
 
   if ($null -eq $SuiteResult -or $null -eq $SuiteResult.parsed -or $null -eq $SuiteResult.runner) {
+    return "RED"
+  }
+  if ($null -ne $SuiteResult.runner.runner_exit_code -and
+      [int]$SuiteResult.runner.runner_exit_code -ne 0) {
     return "RED"
   }
   if (-not [bool]$SuiteResult.parsed.ended) {
@@ -141,8 +326,9 @@ function ConvertTo-CategorySummaryText {
 if ($Suite -eq "all") {
   $suiteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $suitePath).Hash
   $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-  $jsonPath = Join-Path $resultsDir "mgba-suite-all-$timestamp.json"
-  $markdownPath = Join-Path $resultsDir "mgba-suite-all-$timestamp.md"
+  $artifactStem = "mgba-suite-all-$timestamp-$PID"
+  $jsonPath = Join-Path $resultsDir "$artifactStem.json"
+  $markdownPath = Join-Path $resultsDir "$artifactStem.md"
   $latestMarkdownPath = Join-Path $resultsDir "mgba-suite-all-latest.md"
   $childUntilOutput = if ([string]::IsNullOrWhiteSpace($UntilOutput)) { "END:" } else { $UntilOutput }
 
@@ -170,6 +356,10 @@ if ($Suite -eq "all") {
     }
     $rows.Add([ordered]@{
       target = $suiteName
+      evidence_target = $suiteName
+      upstream_suite = $suiteName
+      evidence_kind = "upstream_suite"
+      evidence_scope = "Direct upstream mGBA suite entry."
       status = $status
       parsed_suite = if ($parsed) { $parsed.suite } else { $null }
       pass = if ($parsed) { $parsed.pass } else { $null }
@@ -286,6 +476,9 @@ g++ -std=c++17 -Wall -Wextra -Werror `
   (Join-Path $repoRoot "src\core\io_registers.cpp") `
   (Join-Path $repoRoot "src\core\keypad.cpp") `
   (Join-Path $repoRoot "src\core\memory_bus.cpp") `
+  (Join-Path $repoRoot "src\core\ppu_background.cpp") `
+  (Join-Path $repoRoot "src\core\ppu_renderer.cpp") `
+  (Join-Path $repoRoot "src\core\ppu_sprites.cpp") `
   (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
   (Join-Path $repoRoot "src\core\timers.cpp") `
   (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
@@ -294,12 +487,16 @@ g++ -std=c++17 -Wall -Wextra -Werror `
 
 $suiteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $suitePath).Hash
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$resultPath = Join-Path $resultsDir "mgba-suite-$timestamp.txt"
-$jsonPath = Join-Path $resultsDir "mgba-suite-$timestamp.json"
+$artifactSuiteName = $Suite -replace '[^A-Za-z0-9_.-]', '-'
+$artifactStem = "mgba-suite-$artifactSuiteName-$timestamp-$PID"
+$resultPath = Join-Path $resultsDir "$artifactStem.txt"
+$jsonPath = Join-Path $resultsDir "$artifactStem.json"
 
 $targetSuite = $Suite
 if ($Suite -eq "all") {
   $targetSuite = "memory"
+} else {
+  $targetSuite = $evidenceTarget.upstream_suite
 }
 
 function New-SuiteInputScript {
@@ -322,28 +519,75 @@ function New-SuiteInputScript {
   return ($events -join ',')
 }
 
+function New-VideoProbeInputScript {
+  param([object]$ProbeDefinition)
+
+  $events = New-Object System.Collections.Generic.List[string]
+  foreach ($event in ((New-SuiteInputScript -SuiteIndex ([int]$suiteMenuIndices["video"])) -split ",")) {
+    if (-not [string]::IsNullOrWhiteSpace($event)) {
+      $events.Add($event)
+    }
+  }
+  $events.Add("5510000:release")
+  $step = 5850000
+  for ($i = 0; $i -lt [int]$ProbeDefinition.video_index; ++$i) {
+    $events.Add("$($step):DOWN")
+    $events.Add("$($step + 80000):release")
+    $step += 350000
+  }
+  $selectStep = if ([int]$ProbeDefinition.video_index -eq 0) { 6200000 } else { $step }
+  $events.Add("$($selectStep):A")
+  $events.Add("$($selectStep + 80000):release")
+  if ($ProbeDefinition.view -eq "expected") {
+    $toggleStep = $selectStep + 550000
+    $events.Add("$($toggleStep):RIGHT")
+    $events.Add("$($toggleStep + 80000):release")
+  }
+  return ($events -join ',')
+}
+
 if ($suiteMenuIndices.Contains($targetSuite) -and [string]::IsNullOrWhiteSpace($InputScript)) {
-  $InputScript = New-SuiteInputScript -SuiteIndex ([int]$suiteMenuIndices[$targetSuite])
+  $InputScript = if ($Suite -eq "video") {
+    New-VideoProbeInputScript -ProbeDefinition $videoProbeDefinition
+  } else {
+    New-SuiteInputScript -SuiteIndex ([int]$suiteMenuIndices[$targetSuite])
+  }
 }
 if ($suiteMenuIndices.Contains($targetSuite) -and [string]::IsNullOrWhiteSpace($UntilOutput)) {
-  $UntilOutput = "END:"
+  $UntilOutput = if ($Suite -eq "video") { $videoProbeDefinition.until_output } else { "END:" }
 }
 
 $header = @(
   "suite_test: timestamp=$timestamp",
   "suite_test: suite=$Suite",
+  "suite_test: evidence_target=$Suite",
+  "suite_test: upstream_suite=$targetSuite",
+  "suite_test: evidence_kind=$($evidenceTarget.kind)",
+  "suite_test: evidence_scope=$($evidenceTarget.scope)",
+  "suite_test: evidence_note=$($evidenceTarget.note)",
   "suite_test: target_suite=$targetSuite",
   "suite_test: max_steps=$MaxSteps",
   "suite_test: trace_steps=$TraceSteps",
   "suite_test: trace_window=$TraceWindow",
   "suite_test: trace_first_failure=$TraceFirstFailure",
   "suite_test: input_script=$InputScript",
+  "suite_test: video_probe=$VideoProbe",
   "suite_test: until_output=$UntilOutput",
   "suite_test: suite_sha256=$suiteHash"
 )
 
 $header | Tee-Object -FilePath $resultPath
-& $runnerPath $suitePath $MaxSteps $TraceSteps $InputScript $UntilOutput $TraceWindow | Tee-Object -FilePath $resultPath -Append
+
+$runnerExitCode = 0
+$previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+try {
+  $PSNativeCommandUseErrorActionPreference = $false
+  & $runnerPath $suitePath $MaxSteps $TraceSteps $InputScript $UntilOutput $TraceWindow 2>&1 |
+    Tee-Object -FilePath $resultPath -Append
+  $runnerExitCode = $LASTEXITCODE
+} finally {
+  $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
+}
 
 $lines = Get-Content -LiteralPath $resultPath
 
@@ -394,6 +638,116 @@ function Convert-ToNullableInt {
     return [Convert]::ToInt64($Value.Substring(2), 16)
   }
   return [int64]$Value
+}
+
+function New-VideoProbeMetricSnapshot {
+  param(
+    [string[]]$Lines,
+    [string]$Probe,
+    [object]$ProbeDefinition,
+    [int]$RunnerExitCode,
+    [string]$TextResultPath
+  )
+
+  $probeStopReason = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "runner_stop_reason"
+  $probeUnsupportedSteps = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "unsupported_steps")
+  $probeFetchFailures = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "fetch_failures")
+  $probeUntilMatched = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "until_output_matched"
+  $probeFrameHash = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_frame_hash"
+  $probeActiveSuiteId = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "active_suite_id")
+  $probeReached = $RunnerExitCode -eq 0 -and
+      $probeStopReason -eq "video_probe" -and
+      $probeUntilMatched -eq "true" -and
+      ($null -eq $probeUnsupportedSteps -or $probeUnsupportedSteps -eq 0) -and
+      ($null -eq $probeFetchFailures -or $probeFetchFailures -eq 0)
+
+  return [ordered]@{
+    probe = $Probe
+    test_name = $ProbeDefinition.test_name
+    view = $ProbeDefinition.view
+    video_index = [int]$ProbeDefinition.video_index
+    expected_mode = [int]$ProbeDefinition.expected_mode
+    until_output = $ProbeDefinition.until_output
+    status = if ($probeReached) { "probe_reached" } elseif ($RunnerExitCode -ne 0) { "runner_failed" } else { "probe_not_reached" }
+    runner_exit_code = $RunnerExitCode
+    runner_stop_reason = $probeStopReason
+    until_output_matched = $probeUntilMatched
+    active_suite_id = $probeActiveSuiteId
+    active_test_id = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "active_test_id")
+    active_subtest_id = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "active_subtest_id")
+    unsupported_steps = $probeUnsupportedSteps
+    fetch_failures = $probeFetchFailures
+    frame_hash = $probeFrameHash
+    rendered_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_rendered_scanlines")
+    supported_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_supported_scanlines")
+    forced_blank_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_forced_blank_scanlines")
+    unsupported_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_unsupported_scanlines")
+    bg_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_bg_pixels")
+    obj_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_obj_pixels")
+    bitmap_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_bitmap_pixels")
+    window_masked_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_window_masked_pixels")
+    blend_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_blend_pixels")
+    dispcnt = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_dispcnt"
+    vcount = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_vcount")
+    frame_cycle = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_frame_cycle")
+    oam0_masked = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_oam0_masked"
+    scanline_capture_active = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_capture_active"
+    scanline_capture_complete = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_capture_complete"
+    scanline_frame_hash = Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_frame_hash"
+    scanline_captured_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_captured_scanlines")
+    scanline_supported_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_supported_scanlines")
+    scanline_forced_blank_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_forced_blank_scanlines")
+    scanline_unsupported_scanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_unsupported_scanlines")
+    scanline_bg_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_bg_pixels")
+    scanline_obj_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_obj_pixels")
+    scanline_bitmap_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_bitmap_pixels")
+    scanline_window_masked_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_window_masked_pixels")
+    scanline_blend_pixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_blend_pixels")
+    scanline_first_captured = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_first_captured")
+    scanline_last_captured = Convert-ToNullableInt (Get-SuiteMetric -Lines $Lines -Prefix "suite_runner" -Name "video_scanline_last_captured")
+    text_result_path = $TextResultPath
+  }
+}
+
+function Compare-VideoHash {
+  param(
+    [string]$Actual,
+    [string]$Expected
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Actual) -or
+      [string]::IsNullOrWhiteSpace($Expected) -or
+      $Actual -eq "0" -or $Expected -eq "0") {
+    return "unavailable"
+  }
+  if ($Actual -eq $Expected) {
+    return "match"
+  }
+  return "mismatch"
+}
+
+function Invoke-VideoProbeCapture {
+  param(
+    [string]$Probe,
+    [string]$TextResultPath
+  )
+
+  $probeDefinition = Resolve-VideoProbeDefinition -Probe $Probe
+  $probeInputScript = New-VideoProbeInputScript -ProbeDefinition $probeDefinition
+  $probeUntilOutput = $probeDefinition.until_output
+  $probeExitCode = 0
+  $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+  try {
+    $PSNativeCommandUseErrorActionPreference = $false
+    & $runnerPath $suitePath $MaxSteps 0 $probeInputScript $probeUntilOutput $TraceWindow 2>&1 |
+      Tee-Object -FilePath $TextResultPath |
+      Out-Null
+    $probeExitCode = $LASTEXITCODE
+  } finally {
+    $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
+  }
+  $probeLines = Get-Content -LiteralPath $TextResultPath
+  return New-VideoProbeMetricSnapshot -Lines $probeLines -Probe $Probe -ProbeDefinition $probeDefinition -RunnerExitCode $probeExitCode -TextResultPath $TextResultPath
 }
 
 function Get-MemorySuiteTestName {
@@ -742,6 +1096,109 @@ function Get-SuiteFailureCategories {
   return @($categories.Values)
 }
 
+function Test-TimingEvidenceMatch {
+  param(
+    [string]$Target,
+    [string]$TestName
+  )
+
+  if ([string]::IsNullOrWhiteSpace($TestName)) {
+    return $false
+  }
+
+  switch ($Target) {
+    "loadstore" {
+      return $TestName -match "^(ldr|str|nop / ldr|nop / str)" -and
+          $TestName -notmatch "^(ldmia|stmia)"
+    }
+    "ldmia" {
+      return $TestName -match "^ldmia\b"
+    }
+    "stmia" {
+      return $TestName -match "^stmia\b"
+    }
+    default {
+      return $false
+    }
+  }
+}
+
+function Get-FocusedTimingEvidence {
+  param(
+    [string]$Text,
+    [string]$Target,
+    [bool]$UpstreamEnded
+  )
+
+  $currentTest = $null
+  $passCount = 0
+  $failureList = New-Object System.Collections.Generic.List[object]
+  $tests = New-Object System.Collections.Generic.List[string]
+
+  foreach ($line in ($Text -split "`r?`n")) {
+    if ($line -match "^Timing test:\s*(.+)$") {
+      $currentTest = $Matches[1].Trim()
+      if ((Test-TimingEvidenceMatch -Target $Target -TestName $currentTest) -and
+          $tests -notcontains $currentTest) {
+        $tests.Add($currentTest)
+      }
+      continue
+    }
+
+    if (-not (Test-TimingEvidenceMatch -Target $Target -TestName $currentTest)) {
+      continue
+    }
+
+    if ($line -match "^PASS:") {
+      ++$passCount
+      continue
+    }
+
+    if ($line -match "^FAIL:\s*(.+)$") {
+      $failureList.Add([ordered]@{
+        test = $currentTest
+        message = $Matches[1].Trim()
+      })
+    }
+  }
+
+  $failureArray = @($failureList.ToArray())
+  $total = $passCount + $failureArray.Count
+  $firstFailure = if ($failureArray.Count -gt 0) {
+    "FAIL: $($failureArray[0].message)"
+  } elseif ($total -eq 0) {
+    "No focused $Target timing evidence was found in upstream timing output"
+  } else {
+    $null
+  }
+
+  $categoryName = "timing_$Target"
+  $categories = @()
+  if ($failureArray.Count -gt 0) {
+    $categories = @([ordered]@{
+      name = $categoryName
+      count = $failureArray.Count
+      first_failure = $failureArray[0].message
+      tests = @($failureArray | ForEach-Object { $_.test } | Select-Object -Unique)
+      examples = @($failureArray | Select-Object -First 5 | ForEach-Object { $_.message })
+    })
+  }
+
+  return [ordered]@{
+    suite = "Timing tests / $Target evidence"
+    began = $total -gt 0
+    ended = $UpstreamEnded -and $total -gt 0
+    pass = if ($total -gt 0) { $passCount } else { $null }
+    total = if ($total -gt 0) { $total } else { $null }
+    first_failure = $firstFailure
+    failure_count = $failureArray.Count
+    failures = @($failureArray | Select-Object -First 25)
+    failure_categories = $categories
+    focused_test_count = $tests.Count
+    focused_tests = @($tests.ToArray())
+  }
+}
+
 $debugText = Get-OutputBlock -Lines $lines -Begin "suite_output_begin" -End "suite_output_end"
 $sramText = Get-OutputBlock -Lines $lines -Begin "suite_sram_text_begin" -End "suite_sram_text_end"
 $watchText = Get-OutputBlock -Lines $lines -Begin "suite_watch_changes_begin" -End "suite_watch_changes_end"
@@ -775,6 +1232,38 @@ $activeTestId = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "su
 $activeSubtestId = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "active_subtest_id")
 $stopReason = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "stop_reason"
 $runnerStopReason = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "runner_stop_reason"
+$unsupportedSteps = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "unsupported_steps")
+$fetchFailures = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "fetch_failures")
+$videoFrameHash = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_frame_hash"
+$videoRenderedScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_rendered_scanlines")
+$videoSupportedScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_supported_scanlines")
+$videoForcedBlankScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_forced_blank_scanlines")
+$videoUnsupportedScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_unsupported_scanlines")
+$videoBgPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_bg_pixels")
+$videoObjPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_obj_pixels")
+$videoBitmapPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_bitmap_pixels")
+$videoWindowMaskedPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_window_masked_pixels")
+$videoBlendPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_blend_pixels")
+$videoDispcnt = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_dispcnt"
+$videoVcount = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_vcount")
+$videoFrameCycle = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_frame_cycle")
+$videoScanlineCaptureActive = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_capture_active"
+$videoScanlineCaptureComplete = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_capture_complete"
+$videoScanlineFrameHash = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_frame_hash"
+$videoScanlineCapturedScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_captured_scanlines")
+$videoScanlineSupportedScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_supported_scanlines")
+$videoScanlineForcedBlankScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_forced_blank_scanlines")
+$videoScanlineUnsupportedScanlines = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_unsupported_scanlines")
+$videoScanlineBgPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_bg_pixels")
+$videoScanlineObjPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_obj_pixels")
+$videoScanlineBitmapPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_bitmap_pixels")
+$videoScanlineWindowMaskedPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_window_masked_pixels")
+$videoScanlineBlendPixels = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_blend_pixels")
+$videoScanlineFirstCaptured = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_first_captured")
+$videoScanlineLastCaptured = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "video_scanline_last_captured")
+$videoProbeCase = if ($Suite -eq "video" -and $videoProbeDefinition) { $videoProbeDefinition.test_name } else { $null }
+$videoProbeView = if ($Suite -eq "video" -and $videoProbeDefinition) { $videoProbeDefinition.view } else { $null }
+$videoProbeExpectedMode = if ($Suite -eq "video" -and $videoProbeDefinition) { [int]$videoProbeDefinition.expected_mode } else { $null }
 $activeTestName = if ($begunSuite -eq "Memory tests") {
   Get-MemorySuiteTestName -Index $activeTestId
 } else {
@@ -783,12 +1272,387 @@ $activeTestName = if ($begunSuite -eq "Memory tests") {
 $activeSubtestName = if ($begunSuite -eq "Memory tests") { Get-MemorySuiteSubtestName -Index $activeSubtestId } else { $null }
 $failures = @(Get-SuiteFailures -Text $combinedText)
 $failureCategories = @(Get-SuiteFailureCategories -Text $combinedText -SuiteName $begunSuite)
+$parsedSuite = if ($begunSuite) { $begunSuite } else { $targetSuite }
+$parsedBegan = [bool]$begunSuite
+$parsedEnded = $ended
+$parsedPass = $pass
+$parsedTotal = $total
+$parsedFirstFailure = $firstFailure
+$parsedFailureCount = @($failures).Count
+$parsedFailures = @($failures | Select-Object -First 25)
+$parsedFailureCategories = $failureCategories
+$focusedTimingEvidence = $null
+$basicMode3Oracle = $null
+$basicMode4Oracle = $null
+$degenerateObjOracle = $null
+$layerToggleOracle = $null
+$layerToggle2Oracle = $null
+$oamUpdateDelayOracle = $null
+$windowOffscreenResetOracle = $null
+
+if ($evidenceTarget.kind -eq "embedded_alias" -and $targetSuite -eq "timing") {
+  $focusedTimingEvidence = Get-FocusedTimingEvidence -Text $combinedText -Target $Suite -UpstreamEnded $ended
+  $parsedSuite = $focusedTimingEvidence.suite
+  $parsedBegan = [bool]$focusedTimingEvidence.began
+  $parsedEnded = [bool]$focusedTimingEvidence.ended
+  $parsedPass = $focusedTimingEvidence.pass
+  $parsedTotal = $focusedTimingEvidence.total
+  $parsedFirstFailure = $focusedTimingEvidence.first_failure
+  $parsedFailureCount = [int]$focusedTimingEvidence.failure_count
+  $parsedFailures = @($focusedTimingEvidence.failures)
+  $parsedFailureCategories = @($focusedTimingEvidence.failure_categories)
+}
+
+if ($Suite -eq "video" -and
+    ($VideoProbe -eq "basic-mode-3-actual" -or $VideoProbe -eq "basic-mode-3-expected")) {
+  $actualProbeName = "basic-mode-3-actual"
+  $expectedProbeName = "basic-mode-3-expected"
+  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+  $basicMode3Oracle = [ordered]@{
+    name = "Basic Mode 3 actual/expected video oracle"
+    primary_probe = $VideoProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream Basic Mode 3 actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  if ($hashComparison -ne "match") {
+    $parsedFirstFailure = "Basic Mode 3 video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash); frame_hash_comparison=$hashComparison"
+    if (@($parsedFailureCategories).Count -eq 0) {
+      $parsedFailureCategories = @([ordered]@{
+        name = "video_basic_mode_3_oracle"
+        count = 1
+        first_failure = $parsedFirstFailure
+        tests = @("Basic Mode 3 actual", "Basic Mode 3 expected")
+        examples = @($parsedFirstFailure)
+      })
+    }
+  }
+}
+
+if ($Suite -eq "video" -and
+    ($VideoProbe -eq "basic-mode-4-actual" -or $VideoProbe -eq "basic-mode-4-expected")) {
+  $actualProbeName = "basic-mode-4-actual"
+  $expectedProbeName = "basic-mode-4-expected"
+  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+  $basicMode4Oracle = [ordered]@{
+    name = "Basic Mode 4 actual/expected video oracle"
+    primary_probe = $VideoProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream Basic Mode 4 actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  if ($hashComparison -ne "match") {
+    $parsedFirstFailure = "Basic Mode 4 video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash); frame_hash_comparison=$hashComparison"
+    if (@($parsedFailureCategories).Count -eq 0) {
+      $parsedFailureCategories = @([ordered]@{
+        name = "video_basic_mode_4_oracle"
+        count = 1
+        first_failure = $parsedFirstFailure
+        tests = @("Basic Mode 4 actual", "Basic Mode 4 expected")
+        examples = @($parsedFirstFailure)
+      })
+    }
+  }
+}
+
+if ($Suite -eq "video" -and
+    ($VideoProbe -eq "degenerate-obj-actual" -or $VideoProbe -eq "degenerate-obj-expected")) {
+  $actualProbeName = "degenerate-obj-actual"
+  $expectedProbeName = "degenerate-obj-expected"
+  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+  $degenerateObjOracle = [ordered]@{
+    name = "Degenerate OBJ transforms actual/expected video oracle"
+    primary_probe = $VideoProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream Degenerate OBJ transforms actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  if ($hashComparison -ne "match") {
+    $parsedFirstFailure = "Degenerate OBJ transforms video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) obj_pixels=$($actualSnapshot.obj_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+    if (@($parsedFailureCategories).Count -eq 0) {
+      $parsedFailureCategories = @([ordered]@{
+        name = "video_degenerate_obj_oracle"
+        count = 1
+        first_failure = $parsedFirstFailure
+        tests = @("Degenerate OBJ transforms actual", "Degenerate OBJ transforms expected")
+        examples = @($parsedFirstFailure)
+      })
+    }
+  }
+}
+
+if ($Suite -eq "video" -and
+    ($VideoProbe -eq "layer-toggle-actual" -or $VideoProbe -eq "layer-toggle-expected")) {
+  $actualProbeName = "layer-toggle-actual"
+  $expectedProbeName = "layer-toggle-expected"
+  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+  $layerToggleOracle = [ordered]@{
+    name = "Layer toggle actual/expected video oracle"
+    primary_probe = $VideoProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream Layer toggle actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  if ($hashComparison -ne "match") {
+    $parsedFirstFailure = "Layer toggle video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+    if (@($parsedFailureCategories).Count -eq 0) {
+      $parsedFailureCategories = @([ordered]@{
+        name = "video_layer_toggle_oracle"
+        count = 1
+        first_failure = $parsedFirstFailure
+        tests = @("Layer toggle actual", "Layer toggle expected")
+        examples = @($parsedFirstFailure)
+      })
+    }
+  }
+}
+
+if ($Suite -eq "video" -and
+    ($VideoProbe -eq "layer-toggle-2-actual" -or $VideoProbe -eq "layer-toggle-2-expected")) {
+  $actualProbeName = "layer-toggle-2-actual"
+  $expectedProbeName = "layer-toggle-2-expected"
+  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+  $layerToggle2Oracle = [ordered]@{
+    name = "Layer toggle 2 actual/expected video oracle"
+    primary_probe = $VideoProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream Layer toggle 2 actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  if ($hashComparison -ne "match") {
+    $parsedFirstFailure = "Layer toggle 2 video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+    if (@($parsedFailureCategories).Count -eq 0) {
+      $parsedFailureCategories = @([ordered]@{
+        name = "video_layer_toggle_2_oracle"
+        count = 1
+        first_failure = $parsedFirstFailure
+        tests = @("Layer toggle 2 actual", "Layer toggle 2 expected")
+        examples = @($parsedFirstFailure)
+      })
+    }
+  }
+}
+
+if ($Suite -eq "video" -and
+    ($VideoProbe -eq "oam-update-delay-actual" -or $VideoProbe -eq "oam-update-delay-expected")) {
+  $actualProbeName = "oam-update-delay-actual"
+  $expectedProbeName = "oam-update-delay-expected"
+  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+  $oamUpdateDelayOracle = [ordered]@{
+    name = "OAM Update Delay actual/expected video oracle"
+    primary_probe = $VideoProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream OAM Update Delay actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  if ($hashComparison -ne "match") {
+    $parsedFirstFailure = "OAM Update Delay video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+    if (@($parsedFailureCategories).Count -eq 0) {
+      $parsedFailureCategories = @([ordered]@{
+        name = "video_oam_update_delay_oracle"
+        count = 1
+        first_failure = $parsedFirstFailure
+        tests = @("OAM Update Delay actual", "OAM Update Delay expected")
+        examples = @($parsedFirstFailure)
+      })
+    }
+  }
+}
+
+if ($Suite -eq "video" -and
+    ($VideoProbe -eq "window-offscreen-reset-actual" -or $VideoProbe -eq "window-offscreen-reset-expected")) {
+  $actualProbeName = "window-offscreen-reset-actual"
+  $expectedProbeName = "window-offscreen-reset-expected"
+  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+  $windowOffscreenResetOracle = [ordered]@{
+    name = "Window offscreen reset actual/expected video oracle"
+    primary_probe = $VideoProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream Window offscreen reset actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  if ($hashComparison -ne "match") {
+    $parsedFirstFailure = "Window offscreen reset video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+    if (@($parsedFailureCategories).Count -eq 0) {
+      $parsedFailureCategories = @([ordered]@{
+        name = "video_window_offscreen_reset_oracle"
+        count = 1
+        first_failure = $parsedFirstFailure
+        tests = @("Window offscreen reset actual", "Window offscreen reset expected")
+        examples = @($parsedFirstFailure)
+      })
+    }
+  }
+}
+
+$visualInteractiveEvidence = $false
+if ($Suite -eq "video" -and
+    $activeSuiteId -eq [int64]$suiteMenuIndices["video"] -and
+    ($runnerStopReason -eq "max_steps" -or $runnerStopReason -eq "video_probe") -and
+    ($null -eq $unsupportedSteps -or $unsupportedSteps -eq 0) -and
+    ($null -eq $fetchFailures -or $fetchFailures -eq 0)) {
+  $visualInteractiveEvidence = $true
+  $parsedSuite = "Video tests"
+  $parsedBegan = $true
+  if ($null -eq $parsedFirstFailure) {
+    $frameSummary = if ([string]::IsNullOrWhiteSpace($videoFrameHash)) {
+      "no frame hash emitted"
+    } else {
+      "frame_hash=$videoFrameHash rendered_scanlines=$videoRenderedScanlines supported_scanlines=$videoSupportedScanlines"
+    }
+    $caseSummary = if ($videoProbeCase) { "$videoProbeCase $videoProbeView; " } else { "" }
+    $stopSummary = if ($runnerStopReason -eq "video_probe") {
+      "reached deterministic video probe"
+    } else {
+      "reached active video suite before max-step cap"
+    }
+    $parsedFirstFailure = "Video suite is interactive/visual upstream; $stopSummary without unsupported instructions or fetch failures; $caseSummary$frameSummary"
+  }
+  if (@($parsedFailureCategories).Count -eq 0) {
+    $parsedFailureCategories = @([ordered]@{
+      name = "video_visual_interactive"
+      count = 1
+      first_failure = $parsedFirstFailure
+      tests = @($videoProbeCase | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      examples = @($parsedFirstFailure)
+    })
+  }
+}
 
 $firstFailureTrace = $null
 if ($TraceFirstFailure -and $firstFailure -and $firstFailure -match "^FAIL:") {
-  $traceResultPath = Join-Path $resultsDir "mgba-suite-$timestamp-first-failure-trace.txt"
+  $traceResultPath = Join-Path $resultsDir "$artifactStem-first-failure-trace.txt"
   $firstFailureTraceWindow = [Math]::Max([uint32]512, $TraceWindow)
-  & $runnerPath $suitePath $MaxSteps 0 $InputScript "FAIL:" $firstFailureTraceWindow | Tee-Object -FilePath $traceResultPath | Out-Null
+  $traceRunnerExitCode = 0
+  $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+  try {
+    $PSNativeCommandUseErrorActionPreference = $false
+    & $runnerPath $suitePath $MaxSteps 0 $InputScript "FAIL:" $firstFailureTraceWindow 2>&1 |
+      Tee-Object -FilePath $traceResultPath |
+      Out-Null
+    $traceRunnerExitCode = $LASTEXITCODE
+  } finally {
+    $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
+  }
   $traceLines = Get-Content -LiteralPath $traceResultPath
   $traceDebugText = Get-OutputBlock -Lines $traceLines -Begin "suite_output_begin" -End "suite_output_end"
   $traceRecentText = Get-OutputBlock -Lines $traceLines -Begin "suite_recent_trace_begin" -End "suite_recent_trace_end"
@@ -810,28 +1674,34 @@ if ($TraceFirstFailure -and $firstFailure -and $firstFailure -match "^FAIL:") {
     executed_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "executed_steps")
     unsupported_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "unsupported_steps")
     fetch_failures = Convert-ToNullableInt (Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "fetch_failures")
+    runner_exit_code = $traceRunnerExitCode
     final_pc = Get-SuiteMetric -Lines $traceLines -Prefix "suite_runner" -Name "final_pc"
     recent_trace = @($traceRecentText -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     watch_changes = @($traceWatchText -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
   }
 }
 
-if ($null -eq $firstFailure -and $begunSuite -and -not $ended) {
+if ($null -eq $parsedFirstFailure -and $begunSuite -and -not $parsedEnded) {
   $namedFrontier = if ($activeTestName) { "$activeTestName" } else { "test_id=$activeTestId" }
   if ($activeSubtestName) {
     $namedFrontier = "$namedFrontier / $activeSubtestName"
   } else {
     $namedFrontier = "$namedFrontier / subtest_id=$activeSubtestId"
   }
-  $firstFailure = "Stopped before END in $begunSuite at $namedFrontier (stop_reason=$runnerStopReason)"
+  $parsedFirstFailure = "Stopped before END in $begunSuite at $namedFrontier (stop_reason=$runnerStopReason)"
+}
+if ($null -eq $parsedFirstFailure -and $runnerExitCode -ne 0) {
+  $parsedFirstFailure = "Native runner exited with code $runnerExitCode"
 }
 
 $result = [ordered]@{
   timestamp = $timestamp
   suite_request = $Suite
+  evidence_target = $Suite
+  upstream_suite = $targetSuite
   target_suite = $targetSuite
-  status = if ($ended) { "complete" } elseif ($begunSuite) { "started_incomplete" } else { "not_started" }
-  command = ".\tools\run-mgba-suite.ps1 -Suite $Suite -MaxSteps $MaxSteps -TraceSteps $TraceSteps -TraceWindow $TraceWindow -InputScript `"$InputScript`" -UntilOutput `"$UntilOutput`" -TraceFirstFailure:$TraceFirstFailure -FailOnRed:$FailOnRed"
+  status = if ($parsedEnded) { "complete" } elseif ($parsedBegan) { "started_incomplete" } else { "not_started" }
+  command = ".\tools\run-mgba-suite.ps1 -Suite $Suite -VideoProbe $VideoProbe -MaxSteps $MaxSteps -TraceSteps $TraceSteps -TraceWindow $TraceWindow -InputScript `"$InputScript`" -UntilOutput `"$UntilOutput`" -TraceFirstFailure:$TraceFirstFailure -FailOnRed:$FailOnRed"
   rom_path = $suitePath
   suite_sha256 = $suiteHash
   text_result_path = $resultPath
@@ -841,27 +1711,36 @@ $result = [ordered]@{
   trace_window = $TraceWindow
   trace_first_failure = [bool]$TraceFirstFailure
   input_script = $InputScript
+  video_probe = if ($Suite -eq "video") { $VideoProbe } else { $null }
   until_output = $UntilOutput
+  evidence = [ordered]@{
+    requested_target = $Suite
+    upstream_suite = $targetSuite
+    kind = $evidenceTarget.kind
+    scope = $evidenceTarget.scope
+    note = $evidenceTarget.note
+  }
   parsed = [ordered]@{
-    suite = if ($begunSuite) { $begunSuite } else { $targetSuite }
-    began = [bool]$begunSuite
-    ended = $ended
-    pass = $pass
-    total = $total
-    first_failure = $firstFailure
-    failure_count = @($failures).Count
-    failures = @($failures | Select-Object -First 25)
-    failure_categories = $failureCategories
+    suite = $parsedSuite
+    began = $parsedBegan
+    ended = $parsedEnded
+    pass = $parsedPass
+    total = $parsedTotal
+    first_failure = $parsedFirstFailure
+    failure_count = $parsedFailureCount
+    failures = $parsedFailures
+    failure_categories = $parsedFailureCategories
   }
   runner = [ordered]@{
     stop_reason = $stopReason
     runner_stop_reason = $runnerStopReason
+    runner_exit_code = $runnerExitCode
     requested_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "requested_steps")
     attempted_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "attempted_steps")
     executed_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "executed_steps")
     skipped_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "skipped_steps")
-    unsupported_steps = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "unsupported_steps")
-    fetch_failures = Convert-ToNullableInt (Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "fetch_failures")
+    unsupported_steps = $unsupportedSteps
+    fetch_failures = $fetchFailures
     final_pc = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "final_pc"
     state_hash = Get-SuiteMetric -Lines $lines -Prefix "suite_runner" -Name "state_hash"
     active_suite_id = $activeSuiteId
@@ -879,6 +1758,57 @@ $result = [ordered]@{
   diagnostics = [ordered]@{
     watch_changes = $watchChanges
     first_failure_trace = $firstFailureTrace
+    focused_timing_evidence = $focusedTimingEvidence
+    basic_mode_3_oracle = $basicMode3Oracle
+    basic_mode_4_oracle = $basicMode4Oracle
+    degenerate_obj_oracle = $degenerateObjOracle
+    layer_toggle_oracle = $layerToggleOracle
+    layer_toggle_2_oracle = $layerToggle2Oracle
+    oam_update_delay_oracle = $oamUpdateDelayOracle
+    window_offscreen_reset_oracle = $windowOffscreenResetOracle
+    visual_interactive_evidence = if ($visualInteractiveEvidence) {
+      [ordered]@{
+        reached = $true
+        active_suite_id = $activeSuiteId
+        active_suite_name = "video"
+        video_test = $videoProbeCase
+        view = $videoProbeView
+        expected_mode = $videoProbeExpectedMode
+        runner_stop_reason = $runnerStopReason
+        unsupported_steps = $unsupportedSteps
+        fetch_failures = $fetchFailures
+        frame_hash = $videoFrameHash
+        rendered_scanlines = $videoRenderedScanlines
+        supported_scanlines = $videoSupportedScanlines
+        forced_blank_scanlines = $videoForcedBlankScanlines
+        unsupported_scanlines = $videoUnsupportedScanlines
+        bg_pixels = $videoBgPixels
+        obj_pixels = $videoObjPixels
+        bitmap_pixels = $videoBitmapPixels
+        window_masked_pixels = $videoWindowMaskedPixels
+        blend_pixels = $videoBlendPixels
+        dispcnt = $videoDispcnt
+        vcount = $videoVcount
+        frame_cycle = $videoFrameCycle
+        scanline_capture_active = $videoScanlineCaptureActive
+        scanline_capture_complete = $videoScanlineCaptureComplete
+        scanline_frame_hash = $videoScanlineFrameHash
+        scanline_captured_scanlines = $videoScanlineCapturedScanlines
+        scanline_supported_scanlines = $videoScanlineSupportedScanlines
+        scanline_forced_blank_scanlines = $videoScanlineForcedBlankScanlines
+        scanline_unsupported_scanlines = $videoScanlineUnsupportedScanlines
+        scanline_bg_pixels = $videoScanlineBgPixels
+        scanline_obj_pixels = $videoScanlineObjPixels
+        scanline_bitmap_pixels = $videoScanlineBitmapPixels
+        scanline_window_masked_pixels = $videoScanlineWindowMaskedPixels
+        scanline_blend_pixels = $videoScanlineBlendPixels
+        scanline_first_captured = $videoScanlineFirstCaptured
+        scanline_last_captured = $videoScanlineLastCaptured
+        note = "Video is an upstream interactive/visual suite and does not emit END pass totals under the deterministic text harness."
+      }
+    } else {
+      $null
+    }
   }
 }
 
@@ -901,6 +1831,10 @@ if ($UpdateDocs) {
 | Field | Value |
 | --- | --- |
 | Suite request | ``$Suite`` |
+| Evidence target | ``$Suite`` |
+| Upstream suite executed | ``$targetSuite`` |
+| Evidence kind | ``$($evidenceTarget.kind)`` |
+| Evidence note | $($evidenceTarget.note) |
 | Target suite | ``$targetSuite`` |
 | Status | ``$($result.status)`` |
 | Pass/total | ``$summaryPassTotal`` |
