@@ -1,5 +1,11 @@
+# Default -Suites matches tools/mgba-suite-green-baseline.json (not video_oracle_alias rows).
+# Video-only runs with -FailOnRegression falsely report REGRESSION: baseline targets are MISSING.
 param(
-  [string[]]$Suites = @("memory", "bios-math", "dma", "timing", "timers", "timer-irq", "shifter", "carry", "multiply-long"),
+  [string[]]$Suites = @(
+    "memory", "loadstore", "io-read", "bios-math", "dma", "shifter", "carry",
+    "multiply-long", "timer-irq", "timers", "timing", "ldmia", "stmia",
+    "sio-read", "sio-timing", "misc-edge"
+  ),
   [uint32]$MaxSteps = 20000000,
   [uint32]$TraceSteps = 0,
   [int]$PerformanceRuns = 3,
@@ -709,6 +715,8 @@ Write-Output "credibility_matrix: next_red_target=$($matrix.next_red_target)"
 if ($FailOnRed -and $overallStatus -ne "GREEN") {
   throw "credibility_matrix: RED"
 }
+# Regression gate: baseline green_suites (+ core-performance) must appear GREEN in this run.
+# Omitting baseline targets (e.g. video-only -Suites) is a false REGRESSION, not emulator drift.
 if ($FailOnRegression -and $regressionStatus -ne "GREEN") {
   throw "credibility_matrix: REGRESSION"
 }

@@ -1,6 +1,22 @@
 # GBA_Emulator
 
-Portable Game Boy Advance emulator core scaffold with Android integration intentionally deferred.
+Portable Game Boy Advance emulator core (C++17) with public mGBA test-suite evidence and a
+sibling Android dev shell. Controlled external beta remains blocked without device evidence.
+
+## Current Status (Jun 2026)
+
+| Area | State | Notes |
+| --- | --- | --- |
+| Local core verifiers | PASS | `.\tools\run-core-tests.ps1` |
+| mGBA public suites (13) | GREEN | `memory`, `io-read`, `bios-math`, `dma`, `shifter`, `carry`, `multiply-long`, `timer-irq`, `timers`, `timing`, `sio-read`, `sio-timing`, `misc-edge` — regression baseline in `tools/mgba-suite-green-baseline.json` |
+| Video oracle aliases (7) | GREEN | Deterministic `video_probe` with matching actual/expected frame hashes; upstream interactive `video` suite is **not** green |
+| Credibility matrix | GREEN | `.\tools\run-credibility-matrix.ps1` (latest: `build/test-results/credibility-matrix-latest.json`) |
+| Android shell | Scaffold only | [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) — JNI bridge self-test; see `docs/android-integration-plan.md` |
+| Controlled beta | BLOCKED | No target-device soak row yet — `docs/controlled-beta-readiness.md` |
+
+**Claims policy:** Legal mGBA Game Boy Advance Test Suite ROM only (locally built). No
+commercial ROM, BIOS bundle, or retail-game compatibility claims. Open/closed issue
+tracking: `docs/open-issues-status.md`.
 
 ## Current Core Scope
 
@@ -184,17 +200,15 @@ In scope for this scaffold:
 - First arithmetic/carry data-processing verifier for `RSB`, `ADC`, `SBC`, `RSC`, and `CMN`.
 - Local-only build output under `build/`.
 
-Out of scope for this scaffold:
+Out of scope for this repository tree (core + tools):
 
-- Android app code.
-- Gradle.
-- CMake.
-- JNI.
-- ROMs.
-- BIOS images.
+- Production Android app features (SAF import, GLES upload, Oboe/AAudio, lifecycle soak).
+  A minimal dev shell lives in the sibling module [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid)
+  (Gradle/CMake/JNI bridge self-test only).
+- Checked-in ROMs or BIOS images.
 - Filesystem cartridge loading and save-file persistence.
 - Downloaders or storage scanners.
-- App-store, deployment, or public legal/compatibility claims.
+- App-store deployment or public retail-game compatibility claims.
 
 ## Roadmap
 
@@ -285,6 +299,19 @@ green public-suite target regresses:
 .\tools\run-credibility-matrix.ps1 -FailOnRegression
 ```
 
+For the full accuracy matrix (green suites, harness aliases, video oracle rows, and
+synthetic performance gate):
+
+```powershell
+.\tools\run-credibility-matrix.ps1
+```
+
+Video oracle example (does not mark the upstream `video` suite green):
+
+```powershell
+.\tools\run-mgba-suite.ps1 -Suite video -VideoProbe basic-mode-3-actual -MaxSteps 20000000 -TraceSteps 0 -UntilOutput "VIDEO:BASIC_MODE_3_ACTUAL"
+```
+
 ## Performance Notes
 
 The first performance target is correctness-shaped: implement instruction families in the
@@ -304,9 +331,10 @@ the current cycle total in this scaffold.
 
 The memory bus now normalizes implemented internal-region mirrors for EWRAM, IWRAM,
 palette RAM, VRAM, and OAM. It also exposes metadata for Game Pak ROM wait-state
-windows, SRAM/Flash save apertures, and large-ROM EEPROM candidate addresses while
-continuing to reject cartridge reads/writes until explicit ROM and save backing storage
-exist.
+windows, SRAM/Flash save apertures, and large-ROM EEPROM candidate addresses.
+Caller-provided in-memory Game Pak ROM and save backing enable read-only cartridge
+reads and bounded save aperture behavior; there is still no filesystem loader or
+persistence UX.
 
 The first memory-bus correctness hardening pass now rotates unaligned word reads from
 the aligned backing word, rejects odd halfword accesses and unaligned word writes
