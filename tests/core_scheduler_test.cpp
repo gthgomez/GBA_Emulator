@@ -305,7 +305,7 @@ int main() {
          "scheduler Thumb IRQ service enters IRQ mode");
   expect(cpu.register_value(Arm7tdmi::kPc) == 0x18,
          "scheduler Thumb IRQ service vectors PC");
-  expect(cpu.register_value(Arm7tdmi::kLinkRegister) == kGamePakProgramBase + 6U,
+  expect(cpu.register_value(Arm7tdmi::kLinkRegister) == kGamePakProgramBase + 4U,
          "scheduler Thumb IRQ service writes LR for the next Thumb instruction");
 
   cpu.reset();
@@ -2327,6 +2327,113 @@ int main() {
          "HBlank IWRAM Thumb store overlaps the internal store bus cycle");
   expect_read32(memory, kSyntheticProgramBase + 0x104U, 0x55667788U,
                 "HBlank IWRAM Thumb store writes through the timed scheduler");
+
+  cpu.reset();
+  memory.reset();
+  scheduler.reset_scheduler_cycles();
+  timers.reset();
+  ppu.reset();
+  apu.reset();
+  dma.reset();
+  interrupts.reset();
+  gba::core::BiosController vblank_bios;
+  vblank_bios.set_mode(gba::core::BiosExecutionMode::hle);
+  gba::core::CoreScheduler vblank_scheduler(cpu, memory, interrupts, timers, dma, ppu, apu,
+                                            waitcnt, vblank_bios);
+  std::vector<std::uint8_t> vblank_irq_rom(256);
+  write_rom_halfword(vblank_irq_rom, 0, 0x4700U);
+  expect(memory.load_game_pak_rom(vblank_irq_rom), "VBlankIntrWait IRQ handler ROM loads");
+  expect(memory.write32(0x03007FFCU, 0x08000001U),
+         "VBlankIntrWait user handler pointer writes");
+  interrupts.write_interrupt_enable(irq_bit(gba::core::InterruptSource::vblank));
+  interrupts.write_ime(1);
+  expect(cpu.set_cpsr(0x0000001FU | 0x20U),
+         "VBlankIntrWait seed enters Thumb system mode");
+  cpu.set_register(Arm7tdmi::kPc, kGamePakProgramBase + 0x20U);
+  ppu.tick(gba::core::PpuTiming::kCyclesPerFrame, interrupts);
+  interrupts.request(gba::core::InterruptSource::vblank);
+  expect(memory.write16(kGamePakProgramBase + 0x20U, 0xDF05U),
+         "VBlankIntrWait seeds Thumb SWI 5");
+  const gba::core::CoreSchedulerFetchStepResult vblank_wait = vblank_scheduler.step_from_pc();
+  expect(vblank_wait.step.has_value(), "VBlankIntrWait SWI 5 executes");
+  expect(vblank_wait.step->cpu_step.status == ExecuteStatus::executed,
+         "VBlankIntrWait SWI 5 reports executed");
+  expect(cpu.register_value(Arm7tdmi::kPc) == kGamePakProgramBase + 0x22U,
+         "VBlankIntrWait SWI 5 advances Thumb PC past SWI");
+  expect(vblank_scheduler.service_pending_irq(),
+         "VBlankIntrWait services pending VBlank IRQ after SWI 5");
+  expect(cpu.register_value(Arm7tdmi::kPc) == 0x18,
+         "VBlankIntrWait IRQ service vectors to BIOS IRQ address");
+  expect(vblank_scheduler.step_from_pc().step.has_value(),
+         "VBlankIntrWait dispatches to user handler");
+  expect(vblank_scheduler.step_from_pc().step.has_value(),
+         "VBlankIntrWait user handler returns to sentinel");
+  const gba::core::CoreSchedulerFetchStepResult vblank_return =
+      vblank_scheduler.step_from_pc();
+  expect(vblank_return.step.has_value(),
+         "VBlankIntrWait sentinel restores interrupted context");
+  expect(cpu.register_value(Arm7tdmi::kPc) != gba::core::BiosHleConstants::kIrqReturnSentinelPc,
+         "VBlankIntrWait sentinel does not stall PC");
+
+  cpu.reset();
+  memory.reset();
+  scheduler.reset_scheduler_cycles();
+  interrupts.reset();
+  gba::core::BiosController sentinel_bios;
+  sentinel_bios.set_mode(gba::core::BiosExecutionMode::hle);
+  gba::core::CoreScheduler sentinel_scheduler(cpu, memory, interrupts, timers, dma, ppu, apu,
+                                              waitcnt, sentinel_bios);
+  cpu.set_register(Arm7tdmi::kPc, gba::core::BiosHleConstants::kIrqReturnSentinelPc);
+  expect(cpu.set_cpsr(0x00000092U), "sentinel without LR seed enters IRQ mode");
+  const gba::core::CoreSchedulerFetchStepResult sentinel_fail =
+      sentinel_scheduler.step_from_pc();
+  expect(sentinel_fail.step.has_value(),
+         "sentinel without LR reports a scheduler step");
+  expect(sentinel_fail.step->cpu_step.status == ExecuteStatus::unsupported,
+         "sentinel without LR fails cleanly");
+  expect(cpu.register_value(Arm7tdmi::kPc) ==
+             gba::core::BiosHleConstants::kIrqReturnSentinelPc,
+         "sentinel without LR preserves PC");
+
+  cpu.reset();
+  memory.reset();
+  scheduler.reset_scheduler_cycles();
+  interrupts.reset();
+  gba::core::BiosController thumb_sentinel_bios;
+  thumb_sentinel_bios.set_mode(gba::core::BiosExecutionMode::hle);
+  gba::core::CoreScheduler thumb_sentinel_scheduler(cpu, memory, interrupts, timers, dma, ppu,
+                                                      apu, waitcnt, thumb_sentinel_bios);
+  std::vector<std::uint8_t> thumb_irq_rom(256);
+  write_rom_halfword(thumb_irq_rom, 0, 0x2701U);
+  write_rom_halfword(thumb_irq_rom, 2, 0x4770U);
+  expect(memory.load_game_pak_rom(thumb_irq_rom), "Thumb sentinel IRQ handler ROM loads");
+  expect(memory.write32(0x03007FFCU, 0x08000001U), "Thumb sentinel handler pointer writes");
+  cpu.set_register(7, 0xCAFEBABEU);
+  cpu.set_register(Arm7tdmi::kPc, kGamePakProgramBase + 0x10U);
+  interrupts.write_interrupt_enable(irq_bit(gba::core::InterruptSource::timer0));
+  interrupts.write_ime(1);
+  interrupts.request(gba::core::InterruptSource::timer0);
+  expect(thumb_sentinel_scheduler.service_pending_irq(), "Thumb sentinel seed enters IRQ");
+  expect(thumb_sentinel_scheduler.step_from_pc().step.has_value(),
+         "Thumb sentinel dispatches to user handler");
+  expect(thumb_sentinel_scheduler.step_from_pc().step.has_value(),
+         "Thumb sentinel user handler executes");
+  expect(thumb_sentinel_scheduler.step_from_pc().step.has_value(),
+         "Thumb sentinel user handler branches to sentinel");
+  expect(cpu.register_value(Arm7tdmi::kPc) ==
+             gba::core::BiosHleConstants::kIrqReturnSentinelPc,
+         "Thumb sentinel lands on IRQ return sentinel");
+  expect(cpu.set_cpsr(cpu.cpsr() | 0x20U),
+         "Thumb sentinel return fetch uses Thumb state in IRQ mode");
+  const gba::core::CoreSchedulerFetchStepResult thumb_sentinel_return =
+      thumb_sentinel_scheduler.step_from_pc();
+  expect(thumb_sentinel_return.step.has_value(),
+         "Thumb sentinel HLE return restores context");
+  expect(cpu.register_value(7) == 0xCAFEBABEU,
+         "Thumb sentinel HLE return restores saved registers");
+  expect(cpu.register_value(Arm7tdmi::kPc) !=
+             gba::core::BiosHleConstants::kIrqReturnSentinelPc,
+         "Thumb sentinel HLE return advances PC away from sentinel");
 
   std::cout << "core_scheduler_test: PASS\n";
   return 0;

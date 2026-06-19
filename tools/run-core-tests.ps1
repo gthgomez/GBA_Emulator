@@ -20,7 +20,15 @@ g++ -std=c++17 -Wall -Wextra -Werror `
 
 g++ -std=c++17 -Wall -Wextra -Werror `
   -I (Join-Path $repoRoot "include") `
+  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
+  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
   (Join-Path $repoRoot "src\core\memory_bus.cpp") `
+  (Join-Path $repoRoot "src\core\io_registers.cpp") `
+  (Join-Path $repoRoot "src\core\timers.cpp") `
+  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
+  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
+  (Join-Path $repoRoot "src\core\apu.cpp") `
+  (Join-Path $repoRoot "src\core\keypad.cpp") `
   (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
   (Join-Path $repoRoot "tests\memory_bus_test.cpp") `
   -o (Join-Path $buildDir "memory_bus_test.exe")
@@ -300,6 +308,66 @@ g++ -std=c++17 -Wall -Wextra -Werror `
 
 g++ -std=c++17 -Wall -Wextra -Werror `
   -I (Join-Path $repoRoot "include") `
+  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
+  (Join-Path $repoRoot "src\core\apu.cpp") `
+  (Join-Path $repoRoot "src\core\bios.cpp") `
+  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
+  (Join-Path $repoRoot "src\core\core_session.cpp") `
+  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
+  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
+  (Join-Path $repoRoot "src\core\io_registers.cpp") `
+  (Join-Path $repoRoot "src\core\keypad.cpp") `
+  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
+  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
+  (Join-Path $repoRoot "src\core\timers.cpp") `
+  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
+  (Join-Path $repoRoot "tests\game_boot_test.cpp") `
+  -o (Join-Path $buildDir "game_boot_test.exe")
+
+& (Join-Path $buildDir "game_boot_test.exe")
+
+g++ -std=c++17 -Wall -Wextra -Werror `
+  -I (Join-Path $repoRoot "include") `
+  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
+  (Join-Path $repoRoot "src\core\apu.cpp") `
+  (Join-Path $repoRoot "src\core\bios.cpp") `
+  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
+  (Join-Path $repoRoot "src\core\core_session.cpp") `
+  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
+  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
+  (Join-Path $repoRoot "src\core\io_registers.cpp") `
+  (Join-Path $repoRoot "src\core\keypad.cpp") `
+  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
+  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
+  (Join-Path $repoRoot "src\core\timers.cpp") `
+  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
+  (Join-Path $repoRoot "tests\hle_swi_boot_test.cpp") `
+  -o (Join-Path $buildDir "hle_swi_boot_test.exe")
+
+& (Join-Path $buildDir "hle_swi_boot_test.exe")
+
+g++ -std=c++17 -Wall -Wextra -Werror `
+  -I (Join-Path $repoRoot "include") `
+  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
+  (Join-Path $repoRoot "src\core\apu.cpp") `
+  (Join-Path $repoRoot "src\core\bios.cpp") `
+  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
+  (Join-Path $repoRoot "src\core\core_session.cpp") `
+  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
+  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
+  (Join-Path $repoRoot "src\core\io_registers.cpp") `
+  (Join-Path $repoRoot "src\core\keypad.cpp") `
+  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
+  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
+  (Join-Path $repoRoot "src\core\timers.cpp") `
+  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
+  (Join-Path $repoRoot "tests\hle_decompress_swi_test.cpp") `
+  -o (Join-Path $buildDir "hle_decompress_swi_test.exe")
+
+& (Join-Path $buildDir "hle_decompress_swi_test.exe")
+
+g++ -std=c++17 -Wall -Wextra -Werror `
+  -I (Join-Path $repoRoot "include") `
   (Join-Path $repoRoot "src\core\android_performance_gate.cpp") `
   (Join-Path $repoRoot "src\core\android_runtime.cpp") `
   (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
@@ -330,3 +398,8 @@ g++ -std=c++17 -Wall -Wextra -Werror `
   -o (Join-Path $buildDir "wait_state_control_test.exe")
 
 & (Join-Path $buildDir "wait_state_control_test.exe")
+
+$localRomVideoSmoke = Join-Path $PSScriptRoot "run-local-rom-video-smoke.ps1"
+if (Test-Path -LiteralPath $localRomVideoSmoke) {
+  & $localRomVideoSmoke
+}

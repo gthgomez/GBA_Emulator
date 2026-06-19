@@ -131,7 +131,10 @@ PpuRenderControl PpuTiming::render_control() const {
   }
   control.win0h = lcd_control_.at(lcd_control_index(0x04000040U));
   control.win0v = lcd_control_.at(lcd_control_index(0x04000044U));
+  control.win1h = lcd_control_.at(lcd_control_index(0x04000042U));
+  control.win1v = lcd_control_.at(lcd_control_index(0x04000046U));
   control.winin = lcd_control_.at(lcd_control_index(0x04000048U));
+  control.winout = lcd_control_.at(lcd_control_index(0x0400004AU));
   control.bldcnt = lcd_control_.at(lcd_control_index(0x04000050U));
   control.bldalpha = lcd_control_.at(lcd_control_index(0x04000052U));
   control.bldy = lcd_control_.at(lcd_control_index(0x04000054U));

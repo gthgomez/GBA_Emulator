@@ -18,6 +18,8 @@ void expect(bool condition, std::string_view message) {
 int main() {
   using gba::core::BiosController;
   using gba::core::BiosExecutionMode;
+  using gba::core::BiosHleConstants;
+  using gba::core::BiosIrqDispatchTiming;
   using gba::core::BiosSwiSource;
   using gba::core::BiosSwiStatus;
 
@@ -67,6 +69,36 @@ int main() {
   expect(hle_unknown.status == BiosSwiStatus::unimplemented_service,
          "HLE policy fails unknown service cleanly");
   expect(hle_unknown.call.service == 0x80, "unknown service is reported to caller");
+
+  expect(BiosHleConstants::kIrqVectorAddress == 0x00000018U,
+         "BIOS IRQ vector address matches hardware");
+  expect(BiosHleConstants::kUserIrqHandlerPointer == 0x03007FFCU,
+         "libgba IRQ handler pointer address matches IWRAM convention");
+  expect(BiosHleConstants::kIrqDispatchCycles == 21U,
+         "BIOS IRQ dispatch HLE baseline cycle budget");
+
+  BiosIrqDispatchTiming baseline_timing{};
+  expect(BiosController::irq_dispatch_cycles(baseline_timing) == 21U,
+         "baseline IRQ dispatch uses first-entry cycle budget");
+  BiosIrqDispatchTiming reentry_timing{.reentry = true};
+  expect(BiosController::irq_dispatch_cycles(reentry_timing) == 29U,
+         "IRQ reentry dispatch uses extended cycle budget");
+
+  expect(BiosController::hle_div_quotient(7, 3) == 2, "SWI Div HLE quotient");
+  expect(BiosController::hle_div_remainder(7, 3) == 1, "SWI Div HLE remainder");
+  expect(BiosController::hle_div_quotient(0xFFFFFFFF, 0) == -1,
+         "SWI Div HLE denominator-zero negative numerator saturates quotient");
+  expect(BiosController::hle_sqrt(16) == 4, "SWI Sqrt HLE returns integer root");
+
+  std::int32_t arc_scratch_r1 = 0;
+  std::int32_t arc_scratch_r3 = 0;
+  expect(BiosController::hle_arc_tan(0, &arc_scratch_r1, &arc_scratch_r3) == 0,
+         "SWI ArcTan HLE zero input returns zero");
+  expect(arc_scratch_r3 == 0xA2F9, "SWI ArcTan HLE writes BIOS polynomial factor scratch");
+
+  std::int32_t arc2_scratch_r1 = 0;
+  expect(BiosController::hle_arc_tan2(1, 1, &arc2_scratch_r1) == 0x2000,
+         "SWI ArcTan2 HLE 1,1 returns eighth-turn angle");
 
   std::cout << "bios_test: PASS\n";
   return 0;

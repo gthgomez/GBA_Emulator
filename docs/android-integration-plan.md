@@ -1,87 +1,107 @@
 # Android Integration Plan
 
-Status: Phase 73 scaffold (device soak still blocked)
-Date: 2026-06-01
+Status: Phase 73 dev shell (P0 synthetic device evidence recorded)
+Date: 2026-06-03
 
 ## What Exists Today
 
 | Layer | Location | Notes |
 | --- | --- | --- |
 | C bridge API | `include/gba/core/android_core_bridge.hpp` | Opaque handle, load ROM bytes, bounded run, state hash |
-| C++ runtime (next) | `include/gba/core/android_runtime.hpp` | Frame step, framebuffer, audio batch — not wired to JNI yet |
-| Local tests | `tests/android_core_bridge_test.cpp`, `android_runtime_test.cpp` | Pass via `tools/run-core-tests.ps1` on workstation |
-| Android app shell | `Project_Android/GbaEmulatorAndroid/` | Compose UI, CMake `libgbaemulator.so`, JNI → bridge C API |
+| C++ runtime | `include/gba/core/android_runtime.hpp` | `step_frame`, RGB565 framebuffer, `last_audio_batch()` |
+| Local tests | `tests/android_core_bridge_test.cpp`, `android_runtime_test.cpp` | Pass via `tools/run-core-tests.ps1` |
+| Android app | `Project_Android/GbaEmulatorAndroid/` | Compose, CMake `libgbaemulator.so`, package `com.gba.emulator.shell` |
 | Composite workspace | `Project_Android/settings.gradle.kts` | `includeBuild("GbaEmulatorAndroid")` |
+| P0 device artifact | `docs/evidence/2026-06-03-android-device-soak-synthetic-pass.md` | Synthetic self-test PASS + adb replay |
 
-## Minimal Scaffold (Implemented)
+Authoritative app summary: [`GbaEmulatorAndroid/PROJECT_CONTEXT.md`](../../GbaEmulatorAndroid/PROJECT_CONTEXT.md).
+
+## Module Layout (Implemented)
 
 ```
 GbaEmulatorAndroid/
   app/
-    build.gradle.kts          # minSdk 26, NDK CMake, arm64-v8a + x86_64
+    build.gradle.kts          # minSdk 26, targetSdk 36, NDK CMake, arm64-v8a + x86_64
     src/main/
       cpp/
-        CMakeLists.txt        # links GBA_Emulator core sources (bridge subset)
-        gba_jni.cpp           # JNI → gba_android_core_* 
-      java/com/example/gbaemulator/
-        GbaCoreBridge.kt      # loadLibrary + external declarations
-        BridgeSelfTest.kt     # mirrors android_core_bridge_test (synthetic ROM only)
-        MainActivity.kt       # Compose shell
+        CMakeLists.txt        # links GBA_Emulator core subset (incl. android_runtime, PPU)
+        gba_jni.cpp           # JNI → bridge + AndroidRuntime
+      java/com/gba/emulator/shell/
+        GbaCoreBridge.kt      # bridge API
+        GbaRuntimeBridge.kt   # runtime API (frame, framebuffer, stop_reason, audio counts)
+        EmulatorSession.kt    # long-lived native handle for gameplay
+        BridgeSelfTest.kt     # mirrors android_core_bridge_test
+        RuntimeSelfTest.kt    # mirrors android_runtime_test
+        RomLoader.kt          # SAF URI → ROM bytes
+        MainActivity.kt       # Home + Game routes
+        ui/
+          GbaEmulatorScreen.kt  # self-tests, Open ROM
+          GameScreen.kt           # vsync loop, framebuffer, touch overlay
+          TouchGameControls.kt
+          Rgb565Framebuffer.kt
 ```
 
-### JNI surface (bridge only)
+## JNI Surface
 
-| Kotlin (`GbaCoreBridge`) | Native | C API |
-| --- | --- | --- |
-| `nativeCreate()` | `Java_..._nativeCreate` | `gba_android_core_create` |
-| `nativeDestroy` | | `gba_android_core_destroy` |
-| `nativeReset` | | `gba_android_core_reset` |
-| `nativeLoadRom` | | `gba_android_core_load_rom` |
-| `nativeRun` → `LongArray[4]` | status, steps, pc, hash | `gba_android_core_run` |
-| `nativeStateHash` | | `gba_android_core_state_hash` |
+### Bridge (`GbaCoreBridge`)
 
-### CMake core sources
+| Kotlin | C API |
+| --- | --- |
+| `nativeCreate` / `nativeDestroy` | `gba_android_core_create` / `destroy` |
+| `nativeReset` | `gba_android_core_reset` |
+| `nativeLoadRom` | `gba_android_core_load_rom` |
+| `nativeRun` → `LongArray[4]` | `gba_android_core_run` |
+| `nativeStateHash` | `gba_android_core_state_hash` |
 
-Same translation units as `tools/run-core-tests.ps1` `android_core_bridge_test` link line (no PPU renderer yet).
+### Runtime (`GbaRuntimeBridge`)
 
-## Ordered Next Steps (First Device Run)
+| Kotlin | Notes |
+| --- | --- |
+| `nativeLoadRom` / `nativeReset` | `AndroidRuntime` |
+| `nativeStepFrame` → 7× `long` | status, steps, scanlines, audioSamples, audioUnderruns, stateHash, stopReason |
+| `nativeCopyFramebuffer` / `nativePixel` | RGB565 240×160 |
+| `nativeSetButtonMask` | Keypad bits ⊆ `0x03FF` |
 
-1. **Build:** From `GbaEmulatorAndroid/`, run `./gradlew :app:assembleDebug` (requires Android SDK + NDK 27).
+Audio samples are **counted** in JNI; there is **no** Oboe/AAudio playback yet.
+
+## Device Smoke (P0)
+
+1. **Build:** `cd GbaEmulatorAndroid && ./gradlew :app:assembleDebug`
 2. **Install:** `adb install -r app/build/outputs/apk/debug/app-debug.apk`
-3. **Smoke:** Launch app → tap **Run bridge self-test** → expect `PASS` with steps=3, pc=`0x0800000C`.
-4. **Logcat:** `adb logcat -s GbaEmulator` (add tagged logs in a follow-up if needed).
-5. **Record evidence** per `android-device-soak-checklist.md` and update `controlled-beta-readiness.md` Device Evidence row.
+3. **Self-tests:** Launch → **Run bridge self-test** + **Run runtime self-test** → both PASS
+4. **Record:** Fill model/ABI in `docs/evidence/2026-06-03-android-device-soak-synthetic-pass.md`
+5. **Gate:** Update `controlled-beta-readiness.md` Device Evidence (P0) row if re-verified
 
-## Follow-On (Not in Scaffold)
+## Follow-On (Not Done)
 
 | Priority | Work |
 | --- | --- |
-| P1 | JNI + render loop for `AndroidRuntime::step_frame`, RGB565 framebuffer upload (Canvas or GLES) |
-| P1 | Oboe or AAudio for `last_audio_batch()` |
-| P2 | SAF ROM import (`ACTION_OPEN_DOCUMENT`); never bundle ROM/BIOS |
-| P2 | Lifecycle: `onPause`/`onStop` pause emulation; leak checks |
-| P3 | `android_performance_gate` metrics on device (frame p95, underruns) |
-| P3 | Instrumented tests + thermal soak (10+ min) |
+| P1 | Cycle-bounded `AndroidRuntime::step_frame` (280,896 cycles/frame) |
+| P1 | Oboe/AAudio for `last_audio_batch()` |
+| P1 | `ProcessLifecycleOwner` / `onStop` pause; flush saves on pause (with persistence agent) |
+| P2 | Save-state + cartridge save SAF (`save_state_codec` in CMake) |
+| P2 | GLES upload path only if Compose blit fails soak p95 |
+| P3 | On-device performance gate + 10+ min thermal soak |
 
 ## Blockers / Decisions
 
 | Item | Status |
 | --- | --- |
-| Package name / Play listing | Scaffold uses `com.example.gbaemulator` — change before store |
-| GBA_Emulator in submodule vs sibling | CMake resolves `../../../../../GBA_Emulator` from `app/src/main/cpp` (sibling under `Project_Android`) |
-| LLMHostAndroid not in composite | Pattern reference only; GBA app is standalone `includeBuild` |
-| Full device soak | Requires physical device or emulator + manual checklist |
+| Package / Play listing | `com.gba.emulator.shell` — dev shell, not store-ready |
+| GBA_Emulator path | Sibling `../GBA_Emulator` from `app/src/main/cpp` |
+| Full external beta | Blocked on audio, saves on device, pacing/thermal artifacts |
+| P0 synthetic soak | PASS — see evidence file |
 
 ## Regression Before Beta Candidate
 
-Workstation gates unchanged:
+Workstation:
 
 ```powershell
 cd GBA_Emulator
 .\tools\run-core-tests.ps1
-.\tools\run-core-benchmarks.ps1
+.\tools\run-credibility-matrix.ps1 -FailOnRegression
 .\tools\check-core-performance-regression.ps1
 .\tools\check-release-readiness.ps1
 ```
 
-Plus Android: `:app:assembleDebug` and one device bridge self-test PASS.
+Android: `:app:assembleDebug` + P0 self-tests per [`android-device-soak-checklist.md`](android-device-soak-checklist.md).

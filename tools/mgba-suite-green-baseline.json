@@ -18,7 +18,8 @@
     "stmia",
     "sio-read",
     "sio-timing",
-    "misc-edge"
+    "misc-edge",
+    "video"
   ],
   "include_performance": true,
   "notes": [
@@ -28,6 +29,7 @@
     "loadstore, ldmia, and stmia verified 2026-06-01 as embedded_alias rows in build/test-results/credibility-matrix-20260601-183322-48488.json (loadstore 1552/1552; ldmia 160/160; stmia 60/60).",
     "sio-timing reports 4/4 with four SKIPPED no-peer multiplayer cases; misc-edge 12/12.",
     "Upstream video suite and video_oracle_alias matrix rows stay outside this baseline; interactive video does not emit END pass totals.",
-    "A video-only -Suites list with -FailOnRegression yields false REGRESSION RED: baseline targets are MISSING from the matrix even when video oracle rows are GREEN."
+    "A video-only -Suites list with -FailOnRegression yields false REGRESSION RED: baseline targets are MISSING from the matrix even when video oracle rows are GREEN.",
+    "video verified 2026-06-05 via run-video-suite-all.ps1 (7/7 automated oracle probes; upstream interactive suite has no END pass/total)."
   ]
 }

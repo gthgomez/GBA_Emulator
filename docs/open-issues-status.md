@@ -1,7 +1,7 @@
 # Open Issues Status
 
 Status: Jun 2026 documentation rollup  
-Date: 2026-06-01
+Date: 2026-06-03
 
 This document summarizes what is **closed** (verified with reproducible evidence) versus
 what **remains** for production and controlled beta. It does not replace per-suite logs in
@@ -23,7 +23,7 @@ what **remains** for production and controlled beta. It does not replace per-sui
 ### Workstation core gates
 
 - `tools/run-core-tests.ps1` — all local C++ verifiers pass.
-- `tools/run-core-benchmarks.ps1` and `tools/check-core-performance-regression.ps1` — synthetic performance gate passes.
+- `tools/run-core-benchmarks.ps1` and `tools/check-core-performance-regression.ps1` — synthetic performance gate passes (Jun 2026 calibrated ceilings).
 - `tools/check-release-readiness.ps1` — release governance wording gate passes.
 
 ### mGBA public suite regression baseline
@@ -67,12 +67,23 @@ green:
 | `video-oam-update-delay` | `oam-update-delay-actual` |
 | `video-window-offscreen-reset` | `window-offscreen-reset-actual` |
 
-### Android scaffold (local only)
+### Android dev shell (sibling `GbaEmulatorAndroid`)
 
 - C bridge API and workstation tests (`android_core_bridge_test`, `android_runtime_test`).
-- Sibling module [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid): Compose shell, CMake
-  `libgbaemulator.so`, JNI → bridge C API, synthetic ROM self-test button.
-- Documented in `docs/android-integration-plan.md`.
+- Compose shell, CMake `libgbaemulator.so`, package `com.gba.emulator.shell`.
+- JNI: `GbaCoreBridge` (bridge) + `GbaRuntimeBridge` (`step_frame`, RGB565 framebuffer,
+  `stop_reason`, audio batch counts).
+- UI: bridge + runtime self-tests, SAF **Open ROM** (`ACTION_OPEN_DOCUMENT`), `EmulatorSession`,
+  `GameScreen` frame loop, `TouchGameControls` overlay.
+- Map: `docs/android-integration-plan.md`, `docs/android-rom-play-roadmap.md`,
+  [`GbaEmulatorAndroid/PROJECT_CONTEXT.md`](../../GbaEmulatorAndroid/PROJECT_CONTEXT.md).
+
+### Device evidence (P0 synthetic)
+
+- Dated artifact: [`docs/evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md)
+  — bridge + runtime self-test PASS criteria and adb replay steps (no ROMs in git).
+- **Controlled external beta** remains blocked for audio output, save-state UX on device, and
+  long thermal soak until follow-up artifacts exist.
 
 ### Governance
 
@@ -85,32 +96,38 @@ green:
 
 | Blocker | Owner hint | Doc |
 | --- | --- | --- |
-| Target Android device evidence (lifecycle, pacing, audio, thermal) | Android | `controlled-beta-readiness.md` Device Evidence row |
-| Recorded soak artifact | Android | `android-device-soak-checklist.md` |
+| P0 synthetic device soak | Android | **PASS** — [`evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md) |
+| Audible Oboe/AAudio on device | Android | **TEMPLATE** — [`evidence/2026-06-05-android-device-soak-av-template.md`](evidence/2026-06-05-android-device-soak-av-template.md); hardware replay required |
+| Process lifecycle pause + save flush on stop | Android | BLOCKED — partial (Home/resume manual only) |
+| Save import/export + save-state on device | Android | BLOCKED — workstation codec only |
+| Frame-cycle pacing + 10+ min thermal soak | Android / core | BLOCKED — instruction-bounded `step_frame`; no thermal artifact |
 
-**Controlled external beta stays BLOCKED** until at least one device row is PASS with a
-dated artifact reference.
+**Controlled external beta stays BLOCKED** until audio, durable saves, and measured pacing/thermal
+artifacts exist — not merely synthetic self-test PASS.
 
 ### Accuracy / engine
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Upstream `video` suite | Not green | Interactive/visual; no reliable `END` pass/total |
+| Upstream `video` suite | **GREEN (7/7 automation)** | `run-video-suite-all.ps1` + credibility matrix `video` row; upstream interactive suite still has no END pass/total |
 | Additional video tests | Open | Beyond the seven oracle aliases |
 | CPU pipeline / Thumb coverage | Partial | See `docs/production-engine-roadmap.md` |
 | PPU/APU hardware completeness | Seed-level | Renderer/mixer seeds, not full hardware |
 | Save-state on disk / migration UX | Bounded codec only | No production persistence promise |
-| BIOS | No bundle | HLE paths bounded; no retail BIOS execution |
+| BIOS | No bundle | HLE enabled on Android/runtime `load_rom` (`configure_for_game_boot`); RegisterRamReset SWI 0x01 HLE; no retail BIOS file execution |
 
 ### Android product path
 
 | Item | Status |
 | --- | --- |
-| JNI + `AndroidRuntime` frame loop / framebuffer upload | Not wired |
-| Oboe or AAudio | Not implemented |
-| SAF ROM/save import | Not implemented |
-| GLES presentation | Not implemented |
-| Long thermal/battery soak | Not recorded |
+| JNI + `AndroidRuntime` frame loop / Compose RGB565 upload | **Implemented** (`GbaRuntimeBridge`, `GameScreen`) |
+| SAF ROM import (`OpenDocument`) | **Implemented** (`GbaEmulatorScreen`); save export/import **not** implemented |
+| Touch input overlay | **Implemented** (`TouchGameControls`) |
+| `stop_reason` / audio batch counts via JNI | **Implemented** (counts only; no speaker output) |
+| Oboe or AAudio playback | Not implemented |
+| GLES presentation | Not implemented (Compose `Image` path) |
+| Save-state + cartridge save SAF UX | Not implemented |
+| Process-wide pause / thermal soak | Not recorded |
 
 ### Explicit non-goals (until evidence exists)
 

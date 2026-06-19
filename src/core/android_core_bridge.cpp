@@ -27,7 +27,15 @@ class AndroidCoreBridge {
     if (!session_.memory().load_game_pak_rom(rom)) {
       return AndroidBridgeStatus::rom_rejected;
     }
-    session_.cpu().set_register(Arm7tdmi::kPc, 0x08000000U);
+    const std::optional<GamePakSaveType> save_type =
+        session_.memory().detect_game_pak_save_type();
+    const GamePakSaveType configured_save =
+        save_type.value_or(GamePakSaveType::none);
+    if (!session_.memory().configure_game_pak_save(configured_save)) {
+      session_.reset();
+      return AndroidBridgeStatus::rom_rejected;
+    }
+    session_.configure_for_game_boot();
     return AndroidBridgeStatus::ok;
   }
 

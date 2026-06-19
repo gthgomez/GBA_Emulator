@@ -183,6 +183,9 @@ class MemoryBus {
   [[nodiscard]] std::size_t game_pak_rom_size() const;
   [[nodiscard]] std::vector<std::uint8_t> export_game_pak_rom() const;
   [[nodiscard]] std::optional<CartridgeHeader> game_pak_header() const;
+  [[nodiscard]] static bool cartridge_complement_valid(const std::vector<std::uint8_t>& rom);
+  [[nodiscard]] bool cartridge_header_complement_valid() const;
+  [[nodiscard]] bool cartridge_header_is_valid() const;
   [[nodiscard]] std::optional<GamePakSaveType> detect_game_pak_save_type() const;
   [[nodiscard]] bool configure_game_pak_save(GamePakSaveType type);
   void clear_game_pak_save();
@@ -207,6 +210,7 @@ class MemoryBus {
   void reset();
   void soft_reset();
   void hard_reset();
+  void register_ram_reset(std::uint32_t flags);
 
  private:
   std::array<std::uint8_t, kEwramSize> ewram_;

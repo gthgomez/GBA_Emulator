@@ -38,6 +38,9 @@ class CoreSession {
 
   void reset();
 
+  // Retail/game load policy: BIOS HLE + entry at ROM base (no bundled BIOS).
+  void configure_for_game_boot();
+
   [[nodiscard]] Arm7tdmi& cpu();
   [[nodiscard]] const Arm7tdmi& cpu() const;
   [[nodiscard]] MemoryBus& memory();

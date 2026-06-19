@@ -1429,7 +1429,6 @@ bool Arm7tdmi::can_decode_block_data_transfer(std::uint32_t instruction) {
   const std::uint16_t register_list = static_cast<std::uint16_t>(instruction & 0xFFFFU);
   return block_transfer_group && !force_user_or_psr && register_list != 0 &&
          bits(instruction, 16, 0xFU) != kPc &&
-         !register_list_contains(register_list, kPc) &&
          supported_condition(bits(instruction, 28, 0xFU));
 }
 
@@ -2018,6 +2017,10 @@ ExceptionVector Arm7tdmi::exception_vector(ExceptionKind kind) {
   return {kind, 0x00000000, CpuMode::supervisor, 0, false, true, true};
 }
 
+bool Arm7tdmi::is_irq_vector_address(std::uint32_t address) {
+  return address == irq_vector_address();
+}
+
 std::optional<ArmCycleEstimate> Arm7tdmi::estimate_arm_cycles(std::uint32_t instruction) {
   if (can_decode_software_interrupt(instruction)) {
     return branch_cycle_estimate();
@@ -2079,8 +2082,26 @@ std::optional<ArmElapsedCycleEstimate> Arm7tdmi::estimate_arm_elapsed_cycles(
 std::optional<ArmElapsedCycleEstimate> Arm7tdmi::estimate_arm_elapsed_cycles(
     std::uint32_t instruction, std::uint32_t data_address,
     const WaitStateControl& waitcnt) {
-  const MemoryAccessTiming timing =
-      MemoryBus::timing(data_address, transfer_access_width(instruction), waitcnt);
+  static thread_local struct {
+    std::uint32_t address = 0xFFFFFFFFU;
+    std::uint16_t waitcnt_control = 0xFFFFU;
+    AccessWidth width = AccessWidth::word;
+    MemoryAccessTiming timing{};
+  } timing_cache;
+
+  const AccessWidth width = transfer_access_width(instruction);
+  const std::uint16_t waitcnt_control = waitcnt.read_control();
+  MemoryAccessTiming timing{};
+  if (timing_cache.address == data_address && timing_cache.waitcnt_control == waitcnt_control &&
+      timing_cache.width == width) {
+    timing = timing_cache.timing;
+  } else {
+    timing = MemoryBus::timing(data_address, width, waitcnt);
+    timing_cache.address = data_address;
+    timing_cache.waitcnt_control = waitcnt_control;
+    timing_cache.width = width;
+    timing_cache.timing = timing;
+  }
   const bool fast_rom_sequential_prefetch =
       waitcnt.rom_wait_states(CartridgeWindow::rom_wait0).sequential <= 1;
   return estimate_arm_elapsed_cycles_with_timing(
@@ -2423,12 +2444,25 @@ std::uint64_t Arm7tdmi::state_hash() const {
 }
 
 ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
+  if (bits(instruction, 28, 0xFU) == 0xFU) {
+    return ExecuteStatus::skipped_condition;
+  }
+
   if (can_decode_software_interrupt(instruction)) {
     const ArmCondition condition = static_cast<ArmCondition>(bits(instruction, 28, 0xFU));
     if (!condition_passed(condition)) {
       return ExecuteStatus::skipped_condition;
     }
     return enter_exception(ExceptionKind::software_interrupt);
+  }
+
+  const ArmCondition condition = static_cast<ArmCondition>(bits(instruction, 28, 0xFU));
+  const unsigned class_nybble = (instruction >> 24) & 0xFU;
+  if (class_nybble == 0xEU || class_nybble == 0xFU) {
+    if (!condition_passed(condition)) {
+      return ExecuteStatus::skipped_condition;
+    }
+    return ExecuteStatus::executed;
   }
 
   if (can_decode_psr_transfer(instruction)) {
@@ -2904,24 +2938,37 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
   }
 
   switch (decoded.kind) {
-    case ThumbMemoryTransferKind::word:
-      return memory.write32(MemoryBus::describe(address).region == Region::game_pak_save
-                                ? address
-                                : (address & ~0x3U),
-                            registers_.at(decoded.rd))
+    case ThumbMemoryTransferKind::word: {
+      const AddressInfo write_info = MemoryBus::describe(address);
+      const std::uint32_t write_address =
+          write_info.region == Region::game_pak_save || write_info.region == Region::io
+              ? address
+              : (address & ~0x3U);
+      return memory.write32(write_address, registers_.at(decoded.rd))
                  ? ExecuteStatus::executed
                  : ExecuteStatus::unsupported;
-    case ThumbMemoryTransferKind::byte:
-      return memory.write8(address, static_cast<std::uint8_t>(registers_.at(decoded.rd) & 0xFFU))
+    }
+    case ThumbMemoryTransferKind::byte: {
+      const AddressInfo write_info = MemoryBus::describe(address);
+      const std::uint32_t write_address =
+          write_info.region == Region::game_pak_save || write_info.region == Region::io
+              ? address
+              : address;
+      return memory.write8(write_address, static_cast<std::uint8_t>(registers_.at(decoded.rd) & 0xFFU))
                  ? ExecuteStatus::executed
                  : ExecuteStatus::unsupported;
-    case ThumbMemoryTransferKind::halfword:
-      return memory.write16(MemoryBus::describe(address).region == Region::game_pak_save
-                                ? address
-                                : (address & ~0x1U),
+    }
+    case ThumbMemoryTransferKind::halfword: {
+      const AddressInfo write_info = MemoryBus::describe(address);
+      const std::uint32_t write_address =
+          write_info.region == Region::game_pak_save || write_info.region == Region::io
+              ? address
+              : (address & ~0x1U);
+      return memory.write16(write_address,
                             static_cast<std::uint16_t>(registers_.at(decoded.rd) & 0xFFFFU))
                  ? ExecuteStatus::executed
                  : ExecuteStatus::unsupported;
+    }
     case ThumbMemoryTransferKind::signed_byte:
     case ThumbMemoryTransferKind::signed_halfword:
       return ExecuteStatus::unsupported;
@@ -3099,7 +3146,11 @@ ExecuteStatus Arm7tdmi::enter_exception(ExceptionKind kind) {
   switch_mode(vector.mode);
   if (vector.save_cpsr) {
     set_spsr_for_mode(vector.mode, saved_cpsr);
-    registers_.at(kLinkRegister) = saved_pc + vector.link_offset;
+    std::uint32_t link_offset = vector.link_offset;
+    if (kind == ExceptionKind::irq && (saved_cpsr & kThumbStateFlag) != 0U) {
+      link_offset = 2U;
+    }
+    registers_.at(kLinkRegister) = saved_pc + link_offset;
   }
 
   thumb_state_ = false;
@@ -3163,6 +3214,27 @@ ExecuteStatus Arm7tdmi::execute_thumb_data_processing(
 }
 
 ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory) {
+  if (bits(instruction, 28, 0xFU) == 0xFU) {
+    return ExecuteStatus::skipped_condition;
+  }
+
+  if (can_decode_software_interrupt(instruction)) {
+    const ArmCondition condition = static_cast<ArmCondition>(bits(instruction, 28, 0xFU));
+    if (!condition_passed(condition)) {
+      return ExecuteStatus::skipped_condition;
+    }
+    return enter_exception(ExceptionKind::software_interrupt);
+  }
+
+  const ArmCondition condition = static_cast<ArmCondition>(bits(instruction, 28, 0xFU));
+  const unsigned class_nybble = (instruction >> 24) & 0xFU;
+  if (class_nybble == 0xEU || class_nybble == 0xFU) {
+    if (!condition_passed(condition)) {
+      return ExecuteStatus::skipped_condition;
+    }
+    return ExecuteStatus::executed;
+  }
+
   if (can_decode_swap(instruction)) {
     return execute_swap(decode_swap(instruction), memory);
   }
@@ -3186,7 +3258,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
 
     if (decoded.load) {
       std::array<std::uint32_t, kRegisterCount> loaded{};
-      for (std::uint8_t index = 0; index < kPc; ++index) {
+      for (std::uint8_t index = 0; index < kRegisterCount; ++index) {
         if (!register_list_contains(decoded.register_list, index)) {
           continue;
         }
@@ -3203,8 +3275,21 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
           registers_.at(index) = loaded.at(index);
         }
       }
+      if (register_list_contains(decoded.register_list, kPc)) {
+        const std::uint32_t loaded_pc = loaded.at(kPc);
+        registers_.at(kPc) = loaded_pc & ~1U;
+        std::uint32_t next_cpsr = cpsr();
+        if ((loaded_pc & 0x1U) != 0U) {
+          next_cpsr |= 0x20U;
+        } else {
+          next_cpsr &= ~0x20U;
+        }
+        if (!set_cpsr(next_cpsr)) {
+          return ExecuteStatus::unsupported;
+        }
+      }
     } else {
-      for (std::uint8_t index = 0; index < kPc; ++index) {
+      for (std::uint8_t index = 0; index < kRegisterCount; ++index) {
         if (!register_list_contains(decoded.register_list, index)) {
           continue;
         }
@@ -3377,11 +3462,15 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
     return ExecuteStatus::executed;
   }
 
-  if (!memory.write32(MemoryBus::describe(address).region == Region::game_pak_save
-                          ? address
-                          : (address & ~0x3U),
-                      registers_.at(decoded.rd))) {
-    return ExecuteStatus::unsupported;
+  {
+    const AddressInfo write_info = MemoryBus::describe(address);
+    const std::uint32_t write_address =
+        write_info.region == Region::game_pak_save || write_info.region == Region::io
+            ? address
+            : (address & ~0x3U);
+    if (!memory.write32(write_address, registers_.at(decoded.rd))) {
+      return ExecuteStatus::unsupported;
+    }
   }
   if (needs_write_back) {
     registers_.at(decoded.rn) = write_back_address;

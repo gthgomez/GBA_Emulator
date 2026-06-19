@@ -499,6 +499,12 @@ int main() {
 
   const auto irq_vector = Arm7tdmi::exception_vector(ExceptionKind::irq);
   expect(irq_vector.vector_address == 0x00000018, "IRQ vector address is fixed");
+  expect(Arm7tdmi::irq_vector_address() == irq_vector.vector_address,
+         "IRQ vector helper matches exception metadata");
+  expect(Arm7tdmi::is_irq_vector_address(0x00000018),
+         "IRQ vector helper recognizes BIOS IRQ PC");
+  expect(!Arm7tdmi::is_irq_vector_address(0x00000008),
+         "IRQ vector helper rejects SWI vector PC");
   expect(irq_vector.mode == CpuMode::irq, "IRQ vector enters IRQ mode");
   expect(irq_vector.link_offset == 4, "IRQ vector link offset is PC plus four");
   expect(irq_vector.save_cpsr, "IRQ vector saves CPSR to SPSR");
@@ -518,14 +524,14 @@ int main() {
   expect(exception_cpu.current_mode() == CpuMode::irq, "IRQ entry switches mode");
   expect(exception_cpu.register_value(Arm7tdmi::kPc) == 0x00000018,
          "IRQ entry vectors PC");
-  expect(exception_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000104,
+  expect(exception_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000102,
          "IRQ entry writes LR");
   expect(!exception_cpu.thumb_state(), "IRQ entry clears Thumb state");
   expect(exception_cpu.irq_disabled(), "IRQ entry disables IRQ");
   expect(!exception_cpu.fiq_disabled(), "IRQ entry preserves clear FIQ mask");
   expect(exception_cpu.spsr().value() == 0xA0000030, "IRQ entry saves prior CPSR");
   exception_cpu.set_register(13, 0x03007000);
-  expect(exception_cpu.return_from_exception(4) == ExecuteStatus::executed,
+  expect(exception_cpu.return_from_exception(2) == ExecuteStatus::executed,
          "IRQ return restores CPSR and PC through modeled path");
   expect(exception_cpu.current_mode() == CpuMode::user, "IRQ return restores user mode");
   expect(exception_cpu.thumb_state(), "IRQ return restores Thumb state");
@@ -1542,12 +1548,29 @@ int main() {
 
   constexpr std::uint32_t ldmia_with_pc =
       kCondAl | kBlockDataTransfer | kUp | kLoad | rn(7) | reg_list(1U << 15U);
-  expect(!Arm7tdmi::can_decode_block_data_transfer(ldmia_with_pc),
-         "LDM with PC remains unsupported");
-  expect(cpu.execute_arm(ldmia_with_pc, memory) == ExecuteStatus::unsupported,
-         "LDM with PC execution remains unsupported");
-  expect(!Arm7tdmi::estimate_arm_elapsed_cycles(ldmia_with_pc, 0x02000120).has_value(),
-         "unsupported LDM with PC has no elapsed cycle estimate");
+  expect(Arm7tdmi::can_decode_block_data_transfer(ldmia_with_pc),
+         "LDM with PC decodes");
+  cpu.set_register(7, 0x02000130);
+  expect(memory.write32(0x02000130, 0x08000001), "prepare LDMIA PC word with Thumb bit");
+  expect(cpu.execute_arm(ldmia_with_pc, memory) == ExecuteStatus::executed,
+         "execute LDMIA with PC");
+  expect(cpu.register_value(Arm7tdmi::kPc) == 0x08000000, "LDMIA loads PC without Thumb bit");
+  expect(cpu.thumb_state(), "LDMIA PC load sets Thumb state from bit 0");
+
+  constexpr std::uint32_t stmfd_sp_with_pc =
+      kCondAl | kBlockDataTransfer | kPreIndexed | kWriteBack | rn(13) |
+      reg_list((1U << 11U) | (1U << 12U) | (1U << 13U) | (1U << 14U) | (1U << 15U));
+  expect(Arm7tdmi::can_decode_block_data_transfer(stmfd_sp_with_pc),
+         "STM with PC in register list decodes");
+  cpu.set_register(11, 0x11111111);
+  cpu.set_register(12, 0x22222222);
+  cpu.set_register(13, 0x03001000);
+  cpu.set_register(14, 0x33333333);
+  cpu.set_register(15, 0x04000008);
+  expect(cpu.execute_arm(stmfd_sp_with_pc, memory) == ExecuteStatus::executed,
+         "execute STMFD with PC in register list");
+  expect(memory.read32(0x03000FFC).value_or(0) == 0x04000008,
+         "STMFD stores pipeline PC value");
 
   constexpr std::uint32_t ldmia_writeback_base_in_list =
       kCondAl | kBlockDataTransfer | kUp | kLoad | kWriteBack | rn(7) |
@@ -2230,10 +2253,10 @@ int main() {
          "unsupported instruction has no cycle estimate");
   expect(!Arm7tdmi::estimate_arm_elapsed_cycles(ldr_r5_base_plus_4, 0x08000000).has_value(),
          "cartridge-space LDR has no elapsed cycle estimate while cartridge bus is out of scope");
-  expect(cpu.execute_arm(unsupported_branch_condition) == ExecuteStatus::unsupported,
-         "reserved branch condition is reported");
-  expect(cpu.execute_arm(unsupported_condition) == ExecuteStatus::unsupported,
-         "reserved condition is reported");
+  expect(cpu.execute_arm(unsupported_branch_condition) == ExecuteStatus::skipped_condition,
+         "reserved branch condition is skipped");
+  expect(cpu.execute_arm(unsupported_condition) == ExecuteStatus::skipped_condition,
+         "reserved condition is skipped");
 
   std::cout << "arm7tdmi_test: PASS\n";
   return 0;

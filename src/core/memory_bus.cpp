@@ -381,6 +381,16 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
     case Region::game_pak_save:
       return read_game_pak_save_byte(info.offset);
     case Region::io:
+      if (io_callbacks_.read16 != nullptr) {
+        const std::uint32_t aligned = address & ~0x1U;
+        const std::optional<std::uint16_t> half =
+            io_callbacks_.read16(io_callbacks_.context, aligned);
+        if (half.has_value()) {
+          const std::uint8_t shift = static_cast<std::uint8_t>((address & 0x1U) * 8U);
+          return static_cast<std::uint8_t>((half.value() >> shift) & 0xFFU);
+        }
+      }
+      return std::nullopt;
     case Region::unknown:
       return std::nullopt;
   }
@@ -507,6 +517,28 @@ std::optional<CartridgeHeader> MemoryBus::game_pak_header() const {
   header.complement_check = game_pak_rom_.at(kCartridgeComplementCheckOffset);
   header.fixed_value_valid = header.fixed_value == kCartridgeExpectedFixedValue;
   return header;
+}
+
+bool MemoryBus::cartridge_complement_valid(const std::vector<std::uint8_t>& rom) {
+  if (rom.size() < kMinimumCartridgeHeaderSize) {
+    return false;
+  }
+  std::uint32_t sum = 0x19U;
+  for (std::size_t offset = kCartridgeTitleOffset; offset <= kCartridgeComplementCheckOffset;
+       ++offset) {
+    sum = (sum + rom.at(offset)) & 0xFFU;
+  }
+  return sum == 0U;
+}
+
+bool MemoryBus::cartridge_header_complement_valid() const {
+  return cartridge_complement_valid(game_pak_rom_);
+}
+
+bool MemoryBus::cartridge_header_is_valid() const {
+  const std::optional<CartridgeHeader> header = game_pak_header();
+  return header.has_value() && header->fixed_value_valid &&
+         cartridge_header_complement_valid();
 }
 
 std::optional<GamePakSaveType> MemoryBus::detect_game_pak_save_type() const {
@@ -679,6 +711,15 @@ bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
   if (info.region == Region::game_pak_rom) {
     return has_game_pak_rom();
   }
+  if (info.region == Region::io && io_callbacks_.write16 != nullptr) {
+    const std::uint32_t aligned = address & ~0x1U;
+    const std::uint16_t lane =
+        (address & 0x1U) != 0 ? static_cast<std::uint16_t>(static_cast<std::uint16_t>(value) << 8U)
+                               : static_cast<std::uint16_t>(value);
+    [[maybe_unused]] const bool handled =
+        io_callbacks_.write16(io_callbacks_.context, aligned, lane);
+    return true;
+  }
 
   if (!info.writable) {
     return false;
@@ -723,18 +764,23 @@ bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
     return write_game_pak_save_byte(direct_info.offset,
                                     static_cast<std::uint8_t>(value & 0xFFU));
   }
-  if ((address % 2) != 0) {
-    return false;
-  }
   if (write_debug16(address, value)) {
     return true;
   }
 
   const AddressInfo info = describe(address);
   if (info.region == Region::io && io_callbacks_.write16 != nullptr) {
+    const std::uint32_t rotate = (address & 0x1U) * 8U;
+    const std::uint32_t aligned = address & ~0x1U;
+    const std::uint16_t rotated =
+        rotate == 0 ? value
+                    : static_cast<std::uint16_t>((value >> rotate) | (value << (16U - rotate)));
     [[maybe_unused]] const bool handled =
-        io_callbacks_.write16(io_callbacks_.context, address, value);
+        io_callbacks_.write16(io_callbacks_.context, aligned, rotated);
     return true;
+  }
+  if ((address % 2) != 0) {
+    return false;
   }
   if (info.region == Region::unknown) {
     return true;
@@ -781,18 +827,22 @@ bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
     return write_game_pak_save_byte(direct_info.offset,
                                     static_cast<std::uint8_t>(value & 0xFFU));
   }
-  if ((address % 4) != 0) {
-    return false;
-  }
   if (write_debug32(address, value)) {
     return true;
   }
 
   const AddressInfo info = describe(address);
   if (info.region == Region::io && io_callbacks_.write32 != nullptr) {
+    const std::uint32_t rotate = (address & 0x3U) * 8U;
+    const std::uint32_t aligned = address & ~0x3U;
+    const std::uint32_t rotated =
+        rotate == 0 ? value : (value >> rotate) | (value << (32U - rotate));
     [[maybe_unused]] const bool handled =
-        io_callbacks_.write32(io_callbacks_.context, address, value);
+        io_callbacks_.write32(io_callbacks_.context, aligned, rotated);
     return true;
+  }
+  if ((address % 4) != 0) {
+    return false;
   }
   if (info.region == Region::unknown) {
     return true;
@@ -865,6 +915,24 @@ void MemoryBus::hard_reset() {
   soft_reset();
   clear_game_pak_rom();
   clear_game_pak_save();
+}
+
+void MemoryBus::register_ram_reset(std::uint32_t flags) {
+  if ((flags & 0x0001U) != 0) {
+    ewram_.fill(0);
+  }
+  if ((flags & 0x0002U) != 0) {
+    iwram_.fill(0);
+  }
+  if ((flags & 0x0004U) != 0) {
+    palette_.fill(0);
+  }
+  if ((flags & 0x0008U) != 0) {
+    vram_.fill(0);
+  }
+  if ((flags & 0x0010U) != 0) {
+    oam_.fill(0);
+  }
 }
 
 std::size_t MemoryBus::save_size_for_type(GamePakSaveType type) {

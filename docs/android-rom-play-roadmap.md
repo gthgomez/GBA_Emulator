@@ -48,27 +48,32 @@ Controlled external beta per `docs/controlled-beta-readiness.md`: device soak ar
 | **`gba_android_core_*`** (`android_core_bridge.hpp`) | Opaque handle; `load_rom` → `MemoryBus::load_game_pak_rom`; `run(max_steps)` → `CoreSession::run`; `reset`; `state_hash`. **No** render/input/audio. Thread-safe mutex in bridge impl. |
 | **`AndroidRuntime`** (`android_runtime.hpp`) | `load_rom`, `reset`, `set_button_mask`, `set_render_control`, `step_frame(max_steps)`, `framebuffer()` / `pixel()`, `last_audio_batch()`. Status: `ok`, `invalid_argument`, `rom_rejected`, `input_rejected`. |
 | **`CoreSession`** | `step()`, `run(max_steps)`, `save_state` / `load_state`, `state_hash`. |
-| **`MemoryBus`** | `load_game_pak_rom`, `game_pak_header()`, `detect_game_pak_save_type()`, `configure_game_pak_save()`, import/export save bytes — **not** called from `AndroidRuntime::load_rom` today. |
-| **`CoreSchedulerRunResult`** | `stop_reason` (`max_steps`, `fetch_failed`, `unsupported_instruction`), `fetch_failures`, `unsupported_steps`, `final_pc` — **not** exposed through JNI `nativeStepFrame` (only `executed_steps` is). |
+| **`MemoryBus`** | `load_game_pak_rom`, `game_pak_header()`, `detect_game_pak_save_type()`, `configure_game_pak_save()`, import/export save bytes — save detect/configure + **`configure_for_game_boot`** (BIOS HLE, PC `0x08000000`) on `AndroidRuntime::load_rom` / bridge `load_rom`. |
+| **`CoreSchedulerRunResult`** | `stop_reason` exposed via JNI `nativeStepFrame` (7-tuple); `fetch_failures` / `final_pc` not yet in Kotlin overlay. |
 | **Workstation** | 13 mGBA suites GREEN; 7 video oracle aliases; `run-core-tests.ps1` includes `android_core_bridge_test`, `android_runtime_test`. |
 
-**Important behavioral gap:** `AndroidRuntime::step_frame` runs `session_.run(max_steps)` then renders **all 160 scanlines** from current VRAM — it is **instruction-bounded**, not **frame-cycle-bounded** (`PpuTiming::kCyclesPerFrame` = 280,896). Fine for 12-byte synthetic ROM tests; **insufficient for real game timing** until core adds frame-budget stepping.
+**Boot policy (2026-06-04):** `configure_for_game_boot()` sets BIOS HLE and ROM entry PC on load (fixes retail frame-0 `fetch_failed` at BIOS `0x4000`). **Remaining gap:** `step_frame` is cycle-bounded per frame budget but still uses a large step cap; long-run pacing/thermal validation is separate.
 
 ### Android (`GbaEmulatorAndroid`)
 
-| Done | Missing |
+| Done | Missing / follow-up |
 | --- | --- |
-| Compose shell (`MainActivity` → `GbaEmulatorScreen`) | SAF / document picker |
-| CMake links full core subset + `libgbaemulator.so` | Dedicated **game loop** Activity/screen |
-| JNI: `GbaCoreBridge` + `GbaRuntimeBridge` (`gba_jni.cpp`) | Persistent runtime handle across frames |
-| `BridgeSelfTest` / `RuntimeSelfTest` + `SyntheticRom` | Load user `.gba` in UI |
-| `Rgb565Framebuffer` preview on runtime self-test PASS | Touch input overlay |
-| `nativeCopyFramebuffer` / `nativePixel` | `last_audio_batch` JNI, Oboe/AAudio |
-| arm64-v8a + x86_64, minSdk 26 | Pause/lifecycle wiring, fast-forward |
-| Package `com.gba.emulator.shell` | Save file import/export UX |
-| `GbaEmulatorTheme`: default Material 3 light/dark from system | Custom brand tokens, typography, motion |
+| Compose shell (`MainActivity` → `GbaEmulatorScreen` + `GameScreen`) | Process-wide pause on `onStop` / `ProcessLifecycleOwner` |
+| CMake links full core subset + `libgbaemulator.so` | Cycle-bounded `step_frame` (280,896 cycles/frame) |
+| JNI: `GbaCoreBridge` + `GbaRuntimeBridge` (`gba_jni.cpp`) | Oboe/AAudio playback (batch counts only today) |
+| `BridgeSelfTest` / `RuntimeSelfTest` + `SyntheticRom` | Save file + save-state SAF UX |
+| SAF ROM import (`OpenDocument` + persistable URI) | Save export/import URIs |
+| `EmulatorSession` + `GameScreen` vsync loop | Fast-forward |
+| `Rgb565Framebuffer` + runtime self-test preview | GLES path (only if Compose blit fails soak) |
+| `nativeCopyFramebuffer` / `nativePixel` / `stop_reason` in `nativeStepFrame` | `set_render_control` JNI |
+| `TouchGameControls` overlay | 10+ min thermal / battery artifact |
+| arm64-v8a + x86_64, minSdk 26 | Recorded hardware model in evidence (adb replay template exists) |
+| Package `com.gba.emulator.shell` | Store-ready branding |
+| `GbaEmulatorTheme` + Flowframe tokens (partial) | Full product identity questionnaire (§11) |
 
-**Doc drift:** `docs/open-issues-status.md` / `android-integration-plan.md` still say “JNI + AndroidRuntime not wired”; the app **does** wire `GbaRuntimeBridge` and runtime self-test with framebuffer preview. Soak checklist remains valid (synthetic PASS only).
+**Doc alignment (2026-06-03):** `open-issues-status.md`, `android-integration-plan.md`, and
+[`GbaEmulatorAndroid/PROJECT_CONTEXT.md`](../../GbaEmulatorAndroid/PROJECT_CONTEXT.md) describe the
+same JNI/SAF/game-loop surface. P0 synthetic soak: [`evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md).
 
 **UI today (intentionally generic):** headline “GBA Emulator (dev shell)”, default `MaterialTheme` color schemes, `app_name` “GBA Emulator Dev” — placeholder until product identity questionnaire (§11) is answered and tokens land in `GbaEmulatorTheme.kt`.
 
@@ -250,8 +255,8 @@ flowchart TD
 
 ## 8. Immediate next 3 tasks (agent-assignable)
 
-1. **P0 — Record device soak**  
-   Build `GbaEmulatorAndroid` debug APK, run bridge + runtime self-tests on arm64 device/emulator, fill evidence template in `android-device-soak-checklist.md`, update `controlled-beta-readiness.md` Device Evidence row.
+1. **P0 — Record device soak** — **done (synthetic template)**  
+   Artifact: [`evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md). Re-run adb steps on hardware and fill model/ABI before external beta.
 
 2. **P1 core — Frame step + diagnostics JNI**  
    In `GBA_Emulator`: implement cycle-bounded `AndroidRuntime::step_frame` (or sibling API); on `load_rom`, call `detect_game_pak_save_type` + `configure_game_pak_save`; extend JNI/Kotlin to return `stop_reason`, `fetch_failures`, and cartridge header fields; add/update `android_runtime_test.cpp` + workstation gate.
@@ -291,7 +296,7 @@ const std::vector<ApuMixedSample>& last_audio_batch() const;
 
 - `GbaCoreBridge.nativeLoadRom` / `nativeRun` → bridge API  
 - `GbaRuntimeBridge.nativeLoadRom` / `nativeStepFrame` / `nativeCopyFramebuffer` / `nativeSetButtonMask`  
-- **Not yet:** audio buffer copy, `stop_reason`, header/save type, `set_render_control`
+- **Not yet:** Oboe playback, cartridge header/save type JNI, `set_render_control`, save-state JNI
 
 ### Keypad masks (`KeypadButton`)
 

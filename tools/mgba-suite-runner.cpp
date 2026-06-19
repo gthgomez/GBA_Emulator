@@ -390,6 +390,31 @@ struct VideoScanlineEvidence {
   std::int16_t last_captured_scanline = -1;
 };
 
+VideoScanlineEvidence render_video_scanline_evidence(gba::core::CoreSession& session,
+                                                     bool mask_oam0) {
+  const VideoFrameEvidence frame = render_video_frame_evidence(session, mask_oam0);
+  VideoScanlineEvidence evidence{};
+  evidence.active = true;
+  evidence.complete = frame.rendered_scanlines == gba::core::PpuRenderer::kScreenHeight;
+  evidence.captured_scanlines = frame.rendered_scanlines;
+  evidence.supported_scanlines = frame.supported_scanlines;
+  evidence.forced_blank_scanlines = frame.forced_blank_scanlines;
+  evidence.unsupported_scanlines = frame.unsupported_scanlines;
+  evidence.bg_pixels = frame.bg_pixels;
+  evidence.obj_pixels = frame.obj_pixels;
+  evidence.bitmap_pixels = frame.bitmap_pixels;
+  evidence.window_masked_pixels = frame.window_masked_pixels;
+  evidence.blend_pixels = frame.blend_pixels;
+  evidence.first_captured_scanline =
+      evidence.complete ? 0 : static_cast<std::int16_t>(-1);
+  evidence.last_captured_scanline =
+      evidence.complete
+          ? static_cast<std::int16_t>(gba::core::PpuRenderer::kScreenHeight - 1)
+          : static_cast<std::int16_t>(-1);
+  evidence.frame_hash = frame.frame_hash;
+  return evidence;
+}
+
 bool video_probe_reached(gba::core::CoreSession& session,
                          const VideoProbeTarget& target,
                          std::uint32_t attempted_steps) {
@@ -570,13 +595,19 @@ class VideoScanlineCapture {
     has_last_vcount_ = true;
     last_vcount_ = vcount;
 
+    const gba::core::PpuRenderControl control = session.ppu().render_control();
+    constexpr std::uint16_t kForcedBlank = 0x0080;
+    if ((control.dispcnt & kForcedBlank) != 0) {
+      return;
+    }
+
     if (vcount >= gba::core::PpuRenderer::kScreenHeight ||
         captured_.at(vcount)) {
       return;
     }
 
     const gba::core::PpuRenderStats stats = renderer_.render_scanline(
-        session.memory(), session.ppu().render_control(), vcount);
+        session.memory(), control, vcount);
     captured_.at(vcount) = true;
     evidence_.active = true;
     ++evidence_.captured_scanlines;
@@ -1373,7 +1404,6 @@ int main(int argc, char** argv) {
   try {
     const std::vector<std::uint8_t> rom = read_file(rom_path);
     gba::core::CoreSession session;
-    session.bios().set_mode(gba::core::BiosExecutionMode::hle);
     const bool loaded = session.memory().load_game_pak_rom(rom);
     std::cout << "suite_runner: rom_path=" << rom_path.string() << '\n';
     std::cout << "suite_runner: rom_bytes=" << rom.size() << '\n';
@@ -1394,6 +1424,7 @@ int main(int argc, char** argv) {
               << (save_configured ? "true" : "false") << '\n';
     std::cout << "suite_runner: save_bytes=" << session.memory().game_pak_save_size()
               << '\n';
+    session.configure_for_game_boot();
     std::cout << "suite_runner: bios_mode=hle\n";
     std::cout << "suite_runner: input_events=" << input_events.size() << '\n';
     std::cout << "suite_runner: recent_trace_limit=" << recent_trace_limit << '\n';
@@ -1403,8 +1434,6 @@ int main(int argc, char** argv) {
     if (header.has_value()) {
       std::cout << "suite_runner: title=" << header_text(header->title) << '\n';
     }
-
-    session.cpu().set_register(gba::core::Arm7tdmi::kPc, 0x08000000U);
     if (trace_steps > 0) {
       for (std::uint32_t index = 0; index < trace_steps; ++index) {
         const gba::core::CoreSchedulerFetchStepResult step = session.step();
@@ -1465,7 +1494,10 @@ int main(int argc, char** argv) {
         until_output == "VIDEO:DEGENERATE_OBJ_ACTUAL";
     const VideoFrameEvidence video_frame =
         render_video_frame_evidence(session, mask_oam0_for_video_evidence);
-    const VideoScanlineEvidence video_scanline = video_scanlines.evidence();
+    const VideoScanlineEvidence video_scanline =
+        runner_stop.reason == "video_probe"
+            ? render_video_scanline_evidence(session, mask_oam0_for_video_evidence)
+            : video_scanlines.evidence();
     std::cout << "suite_runner: video_frame_hash=" << video_frame.frame_hash << '\n';
     std::cout << "suite_runner: video_rendered_scanlines="
               << video_frame.rendered_scanlines << '\n';

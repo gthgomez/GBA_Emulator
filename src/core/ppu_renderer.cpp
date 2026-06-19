@@ -6,6 +6,8 @@ namespace {
 constexpr std::uint16_t kBgEnableBase = 0x0100;
 constexpr std::uint16_t kObjEnable = 0x1000;
 constexpr std::uint16_t kWin0Enable = 0x2000;
+constexpr std::uint16_t kWin1Enable = 0x4000;
+constexpr std::uint16_t kWindowLayerMask = 0x003FU;
 constexpr std::uint16_t kForcedBlank = 0x0080;
 constexpr std::uint16_t kDisplayFrameSelect = 0x0010;
 constexpr std::uint16_t kModeMask = 0x0007;
@@ -65,26 +67,39 @@ constexpr std::uint16_t kColorMask = 0x7FFF;
   return false;
 }
 
-[[nodiscard]] bool inside_win0(const PpuRenderControl& control, std::uint16_t x,
-                               std::uint16_t y) {
-  if ((control.dispcnt & kWin0Enable) == 0) {
-    return true;
-  }
-  const std::uint8_t x1 = static_cast<std::uint8_t>((control.win0h >> 8) & 0xFFU);
-  const std::uint8_t x2 = static_cast<std::uint8_t>(control.win0h & 0xFFU);
-  const std::uint8_t y1 = static_cast<std::uint8_t>((control.win0v >> 8) & 0xFFU);
-  const std::uint8_t y2 = static_cast<std::uint8_t>(control.win0v & 0xFFU);
+[[nodiscard]] bool inside_window_rect(std::uint16_t horizontal,
+                                      std::uint16_t vertical, std::uint16_t x,
+                                      std::uint16_t y) {
+  const std::uint8_t x1 = static_cast<std::uint8_t>((horizontal >> 8) & 0xFFU);
+  const std::uint8_t x2 = static_cast<std::uint8_t>(horizontal & 0xFFU);
+  const std::uint8_t y1 = static_cast<std::uint8_t>((vertical >> 8) & 0xFFU);
+  const std::uint8_t y2 = static_cast<std::uint8_t>(vertical & 0xFFU);
   const bool x_inside = x1 <= x2 ? x >= x1 && x < x2 : x >= x1 || x < x2;
   const bool y_inside = y1 <= y2 ? y >= y1 && y < y2 : y >= y1 || y < y2;
   return x_inside && y_inside;
 }
 
-[[nodiscard]] bool layer_allowed_by_window(const PpuRenderControl& control,
-                                           std::uint8_t layer_bit) {
-  if ((control.dispcnt & kWin0Enable) == 0) {
-    return true;
+[[nodiscard]] std::uint16_t window_layer_mask(const PpuRenderControl& control,
+                                              std::uint16_t x, std::uint16_t y) {
+  const bool win0_on = (control.dispcnt & kWin0Enable) != 0;
+  const bool win1_on = (control.dispcnt & kWin1Enable) != 0;
+  if (!win0_on && !win1_on) {
+    return kWindowLayerMask;
   }
-  return (control.winin & static_cast<std::uint16_t>(1U << layer_bit)) != 0;
+  if (win0_on && inside_window_rect(control.win0h, control.win0v, x, y)) {
+    return static_cast<std::uint16_t>(control.winin & kWindowLayerMask);
+  }
+  if (win1_on && inside_window_rect(control.win1h, control.win1v, x, y)) {
+    return static_cast<std::uint16_t>((control.winin >> 8) & kWindowLayerMask);
+  }
+  return static_cast<std::uint16_t>(control.winout & kWindowLayerMask);
+}
+
+[[nodiscard]] bool layer_allowed_by_window(const PpuRenderControl& control,
+                                           std::uint8_t layer_bit, std::uint16_t x,
+                                           std::uint16_t y) {
+  return (window_layer_mask(control, x, y) &
+          static_cast<std::uint16_t>(1U << layer_bit)) != 0;
 }
 
 [[nodiscard]] std::uint16_t brightness_blend(std::uint16_t color,
@@ -161,7 +176,8 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   const std::uint8_t mode = static_cast<std::uint8_t>(control.dispcnt & kModeMask);
   const bool supported_mode = mode <= 5;
   const bool obj_enabled = supported_mode && (control.dispcnt & kObjEnable) != 0;
-  const std::uint16_t backdrop = memory.read16(kBackdropColorAddress).value_or(0);
+  const std::uint16_t backdrop =
+      normalize_color(memory.read16(kBackdropColorAddress).value_or(0));
   std::uint16_t bg_pixels = 0;
   std::uint16_t obj_pixels = 0;
   std::uint16_t bitmap_pixels = 0;
@@ -178,17 +194,16 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   for (std::uint16_t x = 0; x < kScreenWidth; ++x) {
     std::uint16_t color = backdrop;
     std::uint8_t bg_priority = 4;
-    const bool inside_window = inside_win0(control, x, scanline);
-
-    if (!inside_window) {
+    const std::uint16_t layer_mask = window_layer_mask(control, x, scanline);
+    if (layer_mask == 0) {
       ++window_masked_pixels;
     }
 
-    if (mode <= 2 && inside_window) {
+    if (mode <= 2 && layer_mask != 0) {
       for (std::uint8_t bg_index = 0; bg_index < control.bg_control.size(); ++bg_index) {
         if (!bg_enabled(control.dispcnt, bg_index) ||
             !bg_available_in_mode(mode, bg_index) ||
-            !layer_allowed_by_window(control, bg_index)) {
+            !layer_allowed_by_window(control, bg_index, x, scanline)) {
           continue;
         }
         const BgControl bg = PpuBackgroundFetcher::decode_control(
@@ -204,22 +219,24 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
             static_cast<std::uint16_t>(mosaic_y + control.bg_scroll_y.at(bg_index)));
         if (bg_pixel.has_value() && !bg_pixel->transparent &&
             bg.priority <= bg_priority) {
-          color = bg_pixel->color;
+          color = normalize_color(bg_pixel->color);
           bg_priority = bg.priority;
           ++bg_pixels;
         }
       }
-    } else if (mode >= 3 && inside_window && layer_allowed_by_window(control, 2)) {
+    } else if (mode >= 3 && layer_mask != 0 &&
+               layer_allowed_by_window(control, 2, x, scanline)) {
       const std::optional<std::uint16_t> bitmap =
           fetch_bitmap_pixel(memory, control, mode, x, scanline);
       if (bitmap.has_value()) {
-        color = bitmap.value();
+        color = normalize_color(bitmap.value());
         bg_priority = 0;
         ++bitmap_pixels;
       }
     }
 
-    if (obj_enabled && inside_window && layer_allowed_by_window(control, 4)) {
+    if (obj_enabled && layer_mask != 0 &&
+        layer_allowed_by_window(control, 4, x, scanline)) {
       std::uint8_t best_obj_priority = 4;
       std::uint16_t best_obj_color = color;
       bool has_obj_pixel = false;
@@ -245,7 +262,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
         has_obj_pixel = true;
       }
       if (has_obj_pixel) {
-        color = best_obj_color;
+        color = normalize_color(best_obj_color);
         ++obj_pixels;
       }
     }

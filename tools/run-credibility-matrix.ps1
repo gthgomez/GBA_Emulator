@@ -348,6 +348,12 @@ $suiteEvidenceTargets = @{
     video_probe = "window-offscreen-reset-actual"
     oracle_field = "window_offscreen_reset_oracle"
   }
+  "video" = [ordered]@{
+    upstream_suite = "video"
+    kind = "video_suite_automation"
+    scope = "All seven interactive mGBA video tests via automated actual/expected oracle probes."
+    note = "pass/total is 7/7 when run-video-suite-all.ps1 reports GREEN."
+  }
 }
 
 function Resolve-SuiteEvidenceTarget {
@@ -415,7 +421,10 @@ foreach ($suite in $Suites) {
   $suiteError = $null
   $suiteOutput = @()
   try {
-    if ($evidenceTarget.kind -eq "video_oracle_alias") {
+    if ($evidenceTarget.kind -eq "video_suite_automation") {
+      $videoAllScript = Join-Path $PSScriptRoot "run-video-suite-all.ps1"
+      $suiteOutput = @(& $videoAllScript -MaxSteps $MaxSteps 2>&1)
+    } elseif ($evidenceTarget.kind -eq "video_oracle_alias") {
       $suiteOutput = @(& $suiteScript -Suite $evidenceTarget.upstream_suite -VideoProbe $evidenceTarget.video_probe -MaxSteps $MaxSteps -TraceSteps $TraceSteps 2>&1)
     } else {
       $suiteOutput = @(& $suiteScript -Suite $suite -MaxSteps $MaxSteps -TraceSteps $TraceSteps -UntilOutput "END:" 2>&1)
@@ -434,12 +443,22 @@ foreach ($suite in $Suites) {
 
   $expectedSuiteName = if ($expectedSuiteNames.ContainsKey($suite)) {
     $expectedSuiteNames[$suite]
+  } elseif ($evidenceTarget.kind -eq "video_suite_automation") {
+    $expectedSuiteNames["video"]
   } elseif ($evidenceTarget.kind -eq "video_oracle_alias" -and $expectedSuiteNames.ContainsKey($evidenceTarget.upstream_suite)) {
     $expectedSuiteNames[$evidenceTarget.upstream_suite]
   } else {
     ""
   }
-  $status = if ($evidenceTarget.kind -eq "video_oracle_alias") {
+  $status = if ($evidenceTarget.kind -eq "video_suite_automation") {
+    $summaryPath = Join-Path $repoRoot "build\test-results\video-suite-all-latest.json"
+    if (Test-Path -LiteralPath $summaryPath -PathType Leaf) {
+      $videoSummary = Get-Content -Raw -LiteralPath $summaryPath | ConvertFrom-Json
+      if ($videoSummary.status -eq "GREEN" -and $videoSummary.pass -eq $videoSummary.total) { "GREEN" } else { "RED" }
+    } else {
+      "RED"
+    }
+  } elseif ($evidenceTarget.kind -eq "video_oracle_alias") {
     ConvertTo-VideoOracleMatrixStatus -SuiteResult $suiteResult -EvidenceTarget $evidenceTarget
   } else {
     ConvertTo-MatrixStatus -SuiteResult $suiteResult -ExpectedSuiteName $expectedSuiteName
@@ -453,7 +472,15 @@ foreach ($suite in $Suites) {
   $suiteMismatch = $evidenceTarget.kind -ne "video_oracle_alias" -and
     $parsed -and -not [string]::IsNullOrWhiteSpace($expectedSuiteName) -and
     $parsed.suite -ne $expectedSuiteName
-  $passTotal = if ($evidenceTarget.kind -eq "video_oracle_alias") {
+  $passTotal = if ($evidenceTarget.kind -eq "video_suite_automation") {
+    $summaryPath = Join-Path $repoRoot "build\test-results\video-suite-all-latest.json"
+    if (Test-Path -LiteralPath $summaryPath -PathType Leaf) {
+      $videoSummary = Get-Content -Raw -LiteralPath $summaryPath | ConvertFrom-Json
+      "$($videoSummary.pass)/$($videoSummary.total)"
+    } else {
+      "0/7"
+    }
+  } elseif ($evidenceTarget.kind -eq "video_oracle_alias") {
     "video_probe"
   } elseif ($parsed -and $null -ne $parsed.pass -and $null -ne $parsed.total) {
     "$($parsed.pass)/$($parsed.total)"
@@ -495,6 +522,8 @@ foreach ($suite in $Suites) {
     evidence_note = $evidenceTarget.note
     type = if ($evidenceTarget.kind -eq "video_oracle_alias") {
       "mgba_video_oracle_alias"
+    } elseif ($evidenceTarget.kind -eq "video_suite_automation") {
+      "mgba_video_suite_automation"
     } elseif ($evidenceTarget.kind -eq "embedded_alias") {
       "mgba_evidence_alias"
     } else {

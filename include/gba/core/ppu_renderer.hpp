@@ -16,7 +16,10 @@ struct PpuRenderControl {
   std::array<std::uint16_t, 4> bg_scroll_y;
   std::uint16_t win0h = 0;
   std::uint16_t win0v = 0;
+  std::uint16_t win1h = 0;
+  std::uint16_t win1v = 0;
   std::uint16_t winin = 0x003F;
+  std::uint16_t winout = 0x003F;
   std::uint16_t bldcnt = 0;
   std::uint16_t bldalpha = 0;
   std::uint16_t bldy = 0;

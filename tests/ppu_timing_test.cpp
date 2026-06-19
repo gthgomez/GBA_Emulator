@@ -58,10 +58,16 @@ int main() {
          "PPU accepts BG0 vertical scroll writes for render control");
   expect(ppu.write_lcd_control(0x04000040, 0x7010),
          "PPU accepts WIN0H writes for render control");
+  expect(ppu.write_lcd_control(0x04000042, 0x6011),
+         "PPU accepts WIN1H writes for render control");
   expect(ppu.write_lcd_control(0x04000044, 0x5020),
          "PPU accepts WIN0V writes for render control");
+  expect(ppu.write_lcd_control(0x04000046, 0x4012),
+         "PPU accepts WIN1V writes for render control");
   expect(ppu.write_lcd_control(0x04000048, 0x1234),
          "PPU accepts WININ writes for render control");
+  expect(ppu.write_lcd_control(0x0400004A, 0x003C),
+         "PPU accepts WINOUT writes for render control");
   expect(ppu.write_lcd_control(0x04000050, 0x00BF),
          "PPU accepts BLDCNT writes for render control");
   expect(ppu.write_lcd_control(0x04000052, 0x1008),
@@ -75,8 +81,11 @@ int main() {
   expect(render_control.bg_scroll_x[0] == 7, "render control exposes BG0 X scroll");
   expect(render_control.bg_scroll_y[0] == 9, "render control exposes BG0 Y scroll");
   expect(render_control.win0h == 0x7010, "render control exposes WIN0H");
+  expect(render_control.win1h == 0x6011, "render control exposes WIN1H");
   expect(render_control.win0v == 0x5020, "render control exposes WIN0V");
+  expect(render_control.win1v == 0x4012, "render control exposes WIN1V");
   expect(render_control.winin == 0x1234, "render control exposes WININ");
+  expect(render_control.winout == 0x003C, "render control exposes WINOUT");
   expect(render_control.bldcnt == 0x00BF, "render control exposes BLDCNT");
   expect(render_control.bldalpha == 0x1008, "render control exposes BLDALPHA");
   expect(render_control.bldy == 0x000F, "render control exposes BLDY");

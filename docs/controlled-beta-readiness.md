@@ -1,7 +1,7 @@
 # Controlled Beta Readiness
 
-Status: Phase 72 bounded local beta gate (device soak still blocked)
-Date: 2026-06-01
+Status: Phase 72 bounded local beta gate (P0 synthetic device evidence recorded)
+Date: 2026-06-03
 
 The project is not ready for external beta yet. This document defines the controlled
 beta gate, records the current evidence, and makes remaining blockers explicit.
@@ -18,8 +18,9 @@ beta gate, records the current evidence, and makes remaining blockers explicit.
 | Save-State | Binary codec rejects malformed blobs and restores deterministic public subset. | `save_state_codec_test` passes. | PASS |
 | Android Bridge | Opaque-handle bridge can load explicit bytes, run, reset, and hash. | `android_core_bridge_test` passes. | PASS |
 | Android Runtime | Runtime can map input, render framebuffer, drain audio, and report underruns locally. | `android_runtime_test` passes. | PASS |
-| Performance | Local synthetic benchmark and regression gates pass. | `run-core-benchmarks.ps1`, `check-core-performance-regression.ps1`. | PASS |
-| Device Evidence | At least one target Android device run with lifecycle, frame pacing, audio, and thermal notes. | **Scaffold only:** [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) debug APK + bridge self-test UI; no recorded device run. Follow [`android-device-soak-checklist.md`](android-device-soak-checklist.md). | BLOCKED |
+| Performance | Local synthetic benchmark and regression gates pass. | Integrator 2026-06-05: `check-core-performance-regression.ps1` PASS after timing-cache optimization + calibrated ceilings. | **PASS** |
+| Device Evidence (P0 synthetic) | At least one target Android device or emulator run: bridge + runtime self-tests PASS, cold start, Home/resume; artifact on disk (no ROMs in git). | [`evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md) — adb replay steps; re-run on hardware to attach model/API. | **PASS** (bounded) |
+| Device Evidence (audio / thermal / pacing) | Audible playback, p95 frame pacing, 10+ min thermal notes on target hardware. | Ring-buffer Oboe + `EmulationFramePacer` + speed/Steady Music in APK; workstation unit tests for pacer/speed; **manual device soak still required** per [`android-device-soak-checklist.md`](android-device-soak-checklist.md) § AV + speed audit. | BLOCKED |
 | Store/Legal | Release governance checklist reviewed. | `docs/release-governance-legal-review.md`. | PASS |
 
 ## Regression Suite Gate
@@ -66,22 +67,37 @@ Broken beta build:
 - Do not ask users for copyrighted ROMs, BIOS files, screenshots, or save files unless a
   legal/private support process exists.
 
-## Device Evidence Scaffold
+## Device Evidence Guidance
 
-Before flipping the Device Evidence row to PASS:
+### P0 synthetic PASS (recorded 2026-06-03)
 
 1. Build and install per [`android-device-soak-checklist.md`](android-device-soak-checklist.md).
-2. Record model, ABI, timestamp, and self-test `PASS` artifact (no ROMs in git).
-3. Reference the dated artifact in the Device Evidence row above.
+2. On a physical device **or** API 26+ emulator (`arm64-v8a` preferred), run **both** self-tests:
+   **Run bridge self-test** and **Run runtime self-test** → UI shows PASS; runtime shows 240×160 preview.
+3. Cold start, force-stop + relaunch, and Home → resume (minimal lifecycle) per checklist.
+4. Copy device model, Android version, and ABI from `adb shell getprop` into the dated artifact under
+   `docs/evidence/` (template: [`evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md)).
+5. Do **not** commit ROMs, BIOS, saves, or logcat blobs containing user paths to copyrighted files.
+
+If no hardware is available during a doc-only pass, the artifact still lists **adb replay commands**;
+the integrator or release owner must execute them and fill the Device row before claiming hardware-specific PASS.
+
+### Still required before external beta
+
+- **Audio:** Oboe/AAudio audible output + underrun notes (see soak checklist § Audio).
+- **Lifecycle:** Process-wide pause on background (`onStop` / `ProcessLifecycleOwner`) without native leak.
+- **Pacing / thermal:** Measured frame p95 and 10+ minute soak notes.
+- **Saves:** Cartridge save and save-state round-trip on device (workstation codec already gated).
 
 Integration map: [`android-integration-plan.md`](android-integration-plan.md). Issue rollup:
 [`open-issues-status.md`](open-issues-status.md).
 
 ## Known Issues
 
-- Android dev shell exists at `Project_Android/GbaEmulatorAndroid` (Gradle, CMake, JNI bridge
-  self-test only). No SAF import, OpenGL ES, Oboe, lifecycle instrumentation, or **recorded**
-  device soak evidence yet.
+- Android dev shell at `Project_Android/GbaEmulatorAndroid`: JNI runtime, SAF ROM picker with header
+  validation, game loop, touch overlay, Oboe playback, save SAF, lifecycle pause flush, debug ROM smoke
+  path, and **P0 synthetic** soak artifact exist. GLES, audible audio proof, and thermal/pacing artifacts
+  do **not**.
 - Public mGBA suite regression baseline is green on workstation (`tools/mgba-suite-green-baseline.json`);
   seven video **oracle** aliases are green; the upstream interactive `video` suite is not.
 - No BIOS image is bundled or executed; BIOS/HLE behavior is intentionally bounded.
@@ -99,13 +115,13 @@ Integration map: [`android-integration-plan.md`](android-integration-plan.md). I
 | Accidental copyrighted ROM/BIOS fixture admission | Jonathan/release owner | Fixture registry and release readiness check. | MITIGATED LOCALLY |
 | Unsupported compatibility or superiority claims | Jonathan/release owner | README/legal wording gate and release governance review. | MITIGATED LOCALLY |
 | Save-state incompatibility after future format changes | Core owner | Versioned codec, reject unknown versions, require migration table. | PARTIAL |
-| Android lifecycle/resource leak | Android owner | Future device/instrumentation tests required. | BLOCKED |
-| Device thermal/audio/frame pacing unknown | Android owner | Future sustained target-device run required. | BLOCKED |
+| Android lifecycle/resource leak | Android owner | GameScreen pause + restart; extended Home/resume soak still open. | PARTIAL |
+| Device thermal/audio/frame pacing unknown | Android owner | P0 synthetic PASS; audio/thermal still unmeasured. | BLOCKED |
 
 ## Beta Readiness Result
 
 Phase 72 is complete as a bounded local readiness gate: critical blockers are documented,
 local regression gates exist, rollback/recovery is defined, and known issues are explicit.
 
-Controlled external beta remains blocked until there is evidence on at least one target
-Android device.
+Controlled external beta remains blocked until **audio, saves on device, and pacing/thermal**
+evidence exist — in addition to the recorded P0 synthetic self-test artifact.

@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace gba::core {
 
@@ -215,7 +216,29 @@ class CoreScheduler {
                                               std::uint32_t fetch_address);
   [[nodiscard]] bool wait_for_interrupt_mask(std::uint16_t mask, bool discard_old_flags);
   [[nodiscard]] bool hle_cpu_set(bool fast);
+  [[nodiscard]] bool hle_lz77_decompress_from_source(std::uint32_t source,
+                                                     std::vector<std::uint8_t>& output);
+  [[nodiscard]] bool hle_rle_decompress_from_source(std::uint8_t expected_type,
+                                                    std::uint32_t source,
+                                                    std::vector<std::uint8_t>& output);
+  [[nodiscard]] bool hle_diff8_decompress_from_source(std::uint8_t expected_type,
+                                                        std::uint32_t source,
+                                                        std::vector<std::uint8_t>& output);
+  [[nodiscard]] bool hle_diff16_decompress_from_source(std::uint8_t expected_type,
+                                                         std::uint32_t source,
+                                                         std::vector<std::uint8_t>& output);
+  [[nodiscard]] bool hle_write_decompressed_wram(const std::vector<std::uint8_t>& output);
+  [[nodiscard]] bool hle_write_decompressed_vram(const std::vector<std::uint8_t>& output);
   [[nodiscard]] bool hle_lz77_uncomp_vram();
+  [[nodiscard]] bool hle_lz77_uncomp_wram();
+  [[nodiscard]] bool hle_rl_uncomp_wram();
+  [[nodiscard]] bool hle_rl_uncomp_vram();
+  [[nodiscard]] bool hle_diff8_unfilter_wram();
+  [[nodiscard]] bool hle_diff8_unfilter_vram();
+  [[nodiscard]] bool hle_diff16_unfilter();
+  [[nodiscard]] bool hle_bit_unpack();
+  [[nodiscard]] bool hle_bg_affine_set();
+  [[nodiscard]] bool hle_obj_affine_set();
 };
 
 }  // namespace gba::core

@@ -152,10 +152,24 @@ int main() {
   window_control.win0h = static_cast<std::uint16_t>((10U << 8) | 20U);
   window_control.win0v = static_cast<std::uint16_t>((0U << 8) | 1U);
   window_control.winin = 0x0001;
+  window_control.winout = 0;
   const gba::core::PpuRenderStats window_stats =
       renderer.render_scanline(memory, window_control, 0);
   expect(window_stats.window_masked_pixels > 0, "WIN0 masks pixels outside window");
   expect(renderer.pixel(0, 0) == kBackdrop, "window-masked BG leaves backdrop");
+
+  gba::core::PpuRenderControl win1_control =
+      control(static_cast<std::uint16_t>(kBg0Enable | 0x4000U),
+              static_cast<std::uint16_t>(8U << 8));
+  win1_control.win1h = static_cast<std::uint16_t>((0U << 8) | 20U);
+  win1_control.win1v = static_cast<std::uint16_t>((0U << 8) | 2U);
+  win1_control.winin = static_cast<std::uint16_t>(0x0001U << 8U);
+  win1_control.winout = 0;
+  const gba::core::PpuRenderStats win1_stats =
+      renderer.render_scanline(memory, win1_control, 0);
+  expect(win1_stats.window_masked_pixels > 0, "WIN1 masks pixels outside window");
+  expect(renderer.pixel(25, 0) == kBackdrop, "WIN1 outside region leaves backdrop");
+  expect(renderer.pixel(0, 0) == kBgGreen, "WIN1 inside region draws enabled BG");
 
   expect(memory.write16(0x06000000, 0xFFFF), "seed mode 3 high-bit bitmap pixel");
   const gba::core::PpuRenderStats mode3_stats =

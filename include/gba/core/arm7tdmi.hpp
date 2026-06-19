@@ -424,6 +424,10 @@ class Arm7tdmi {
       std::uint16_t instruction);
   [[nodiscard]] static bool can_decode_thumb_software_interrupt(std::uint16_t instruction);
   [[nodiscard]] static ExceptionVector exception_vector(ExceptionKind kind);
+  [[nodiscard]] static constexpr std::uint32_t irq_vector_address() {
+    return 0x00000018U;
+  }
+  [[nodiscard]] static bool is_irq_vector_address(std::uint32_t address);
   [[nodiscard]] static std::optional<ArmCycleEstimate> estimate_arm_cycles(
       std::uint32_t instruction);
   [[nodiscard]] static std::optional<ArmElapsedCycleEstimate> estimate_arm_elapsed_cycles(

@@ -44,6 +44,13 @@ CoreSession::CoreSession()
   scheduler_.set_io_registers(io_);
 }
 
+void CoreSession::configure_for_game_boot() {
+  bios_.set_mode(BiosExecutionMode::hle);
+  (void)cpu_.set_cpsr(0x0000001FU);
+  cpu_.set_register(Arm7tdmi::kPc, 0x08000000U);
+  cpu_.set_register(13, 0x03007F00U);
+}
+
 void CoreSession::reset() {
   cpu_.reset();
   memory_.reset();

@@ -21,9 +21,6 @@ namespace {
 constexpr std::uint32_t kGamePakSequentialBoundary = 128U * 1024U;
 constexpr std::uint32_t kGamePakInlineLiteralWindowBytes = 256U;
 constexpr std::uint8_t kPrefetchBufferCapacityHalfwords = 8;
-constexpr std::uint32_t kBiosIrqVector = 0x00000018U;
-constexpr std::uint32_t kUserIrqHandlerPointer = 0x03007FFCU;
-constexpr std::uint32_t kBiosHleIrqReturnSentinel = 0x0FFFFF00U;
 constexpr std::uint32_t kMaxBiosWaitCycles = 280896U * 2U;
 constexpr std::uint32_t kBiosWaitBatchCycles = 1U;
 constexpr std::uint32_t kTimerIoBase = 0x04000100U;
@@ -31,25 +28,42 @@ constexpr std::uint32_t kTimerIoEnd = 0x04000110U;
 constexpr std::uint32_t kDispstatIo = 0x04000004U;
 constexpr std::uint32_t kInterruptFlagIo = 0x04000202U;
 constexpr std::uint8_t kAutoIrqLatencyCycles = 5;
+
+[[nodiscard]] bool cpu_thumb_misfetch_region(std::uint32_t pc) {
+  const Region region = MemoryBus::describe(pc).region;
+  return region == Region::game_pak_rom || region == Region::iwram ||
+         region == Region::ewram;
+}
+
+[[nodiscard]] bool looks_like_thumb_misfetch_as_arm(const MemoryBus& memory,
+                                                    std::uint32_t pc) {
+  if (!cpu_thumb_misfetch_region(pc)) {
+    return false;
+  }
+  const std::optional<std::uint32_t> arm_word = memory.read32(pc & ~0x3U);
+  if (!arm_word.has_value() || ((arm_word.value() >> 28U) & 0xFU) != 0xFU) {
+    return false;
+  }
+  const std::optional<std::uint16_t> thumb_half = memory.read16(pc);
+  return thumb_half.has_value();
+}
+
+void recover_thumb_state_from_rom_misfetch(Arm7tdmi& cpu, const MemoryBus& memory) {
+  if (cpu.thumb_state()) {
+    return;
+  }
+  const std::uint32_t pc = cpu.register_value(Arm7tdmi::kPc);
+  if (!looks_like_thumb_misfetch_as_arm(memory, pc)) {
+    return;
+  }
+  (void)cpu.set_cpsr(cpu.cpsr() | 0x20U);
+}
 constexpr std::uint8_t kAutoIrqSlowTimerLatencyCycles = 3;
 constexpr std::uint8_t kAutoIrqPostHleReturnLatencyCycles = 2;
 constexpr std::uint8_t kAutoIrqLongTimerChainedPostHleReturnLatencyCycles = 0;
 constexpr std::uint8_t kAutoIrqSlowTimerChainedPostHleReturnLatencyCycles = 0;
 constexpr std::uint8_t kAutoIrqPhase184SecondSpacedDataLatencyCycles = 4;
 constexpr std::uint8_t kAutoIrqChainedPostHleReturnLatencyCycles = 1;
-constexpr std::uint32_t kBiosHleIrqDispatchCycles = 21;
-constexpr std::uint32_t kBiosHlePostReturnIrqDispatchCycles = 24;
-constexpr std::uint32_t kBiosHleChainedPostReturnIrqDispatchCycles = 26;
-constexpr std::uint32_t kBiosHleLongTimerNonDataIrqDispatchExtraCycles = 2;
-constexpr std::uint32_t kBiosHleVeryLongTimerNonDataIrqDispatchAdvanceCycles = 3;
-constexpr std::uint32_t kBiosHleSpacedTimerDataIrqDispatchAdvanceCycles = 1;
-constexpr std::uint32_t kBiosHleLongTimerChainedPostReturnExtraCycles = 5;
-constexpr std::uint32_t kBiosHleSlowTimer0ActiveReturnExtraCycles = 1;
-constexpr std::uint32_t kBiosHleIrqReentryDispatchCycles = 29;
-constexpr std::uint32_t kBiosHleIrqReturnCycles = 3;
-constexpr std::uint32_t kBiosHleIntrWaitReturnCycles = 57;
-constexpr std::uint32_t kBiosHleVBlankIntrWaitReturnCycles = 515;
-constexpr std::uint32_t kBiosHleHblankHaltReturnCycles = 83;
 constexpr std::uint32_t kTimerIoDataPhaseCycles = 1;
 constexpr std::uint32_t kTimerIoLoadDataPhaseCycles = 3;
 constexpr std::uint32_t kDispstatIoLoadDataPhaseCycles = 2;
@@ -77,76 +91,8 @@ enum class HleSwiProfileKind : std::uint8_t {
   return static_cast<std::int32_t>(value);
 }
 
-[[nodiscard]] std::uint32_t as_u32(std::int64_t value) {
-  return static_cast<std::uint32_t>(static_cast<std::int32_t>(value));
-}
-
-[[nodiscard]] std::int32_t wrap_i32(std::uint32_t value) {
-  return static_cast<std::int32_t>(value);
-}
-
 [[nodiscard]] std::uint32_t wrap_u32(std::int32_t value) {
   return static_cast<std::uint32_t>(value);
-}
-
-[[nodiscard]] std::int32_t wrap_mul_i32(std::int32_t left, std::int32_t right) {
-  return wrap_i32(wrap_u32(left) * wrap_u32(right));
-}
-
-[[nodiscard]] std::int32_t wrap_shl_i32(std::int32_t value, std::uint8_t shift) {
-  return wrap_i32(wrap_u32(value) << shift);
-}
-
-[[nodiscard]] std::int32_t hle_arc_tan(std::int32_t value,
-                                       std::int32_t* scratch_r1,
-                                       std::int32_t* scratch_r3) {
-  const std::int32_t square = wrap_mul_i32(value, value);
-  std::int32_t polynomial = -(square >> 14);
-  std::int32_t factor = ((wrap_mul_i32(0xA9, polynomial)) >> 14) + 0x390;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x91C;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0xFB6;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x16AA;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x2081;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x3651;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0xA2F9;
-  if (scratch_r1 != nullptr) {
-    *scratch_r1 = polynomial;
-  }
-  if (scratch_r3 != nullptr) {
-    *scratch_r3 = factor;
-  }
-  return static_cast<std::int16_t>(wrap_mul_i32(value, factor) >> 16);
-}
-
-[[nodiscard]] std::int32_t hle_arc_tan2(std::int32_t x, std::int32_t y,
-                                        std::int32_t* scratch_r1) {
-  const std::int64_t wide_x = x;
-  const std::int64_t wide_y = y;
-  if (y == 0) {
-    return x >= 0 ? 0 : 0x8000;
-  }
-  if (x == 0) {
-    return y >= 0 ? 0x4000 : 0xC000;
-  }
-  if (y >= 0) {
-    if (x >= 0) {
-      if (x >= y) {
-        return hle_arc_tan(wrap_shl_i32(y, 14) / x, scratch_r1, nullptr);
-      }
-    } else if (-wide_x >= wide_y) {
-      return hle_arc_tan(wrap_shl_i32(y, 14) / x, scratch_r1, nullptr) + 0x8000;
-    }
-    return 0x4000 - hle_arc_tan(wrap_shl_i32(x, 14) / y, scratch_r1, nullptr);
-  }
-
-  if (x <= 0) {
-    if (-wide_x > -wide_y) {
-      return hle_arc_tan(wrap_shl_i32(y, 14) / x, scratch_r1, nullptr) + 0x8000;
-    }
-  } else if (wide_x >= -wide_y) {
-    return hle_arc_tan(wrap_shl_i32(y, 14) / x, scratch_r1, nullptr) + 0x10000;
-  }
-  return 0xC000 - hle_arc_tan(wrap_shl_i32(x, 14) / y, scratch_r1, nullptr);
 }
 
 [[nodiscard]] std::uint8_t hle_rom_wait_profile(const WaitStateControl* waitcnt) {
@@ -216,27 +162,6 @@ enum class HleSwiProfileKind : std::uint8_t {
   }
   const std::uint32_t magnitude = static_cast<std::uint32_t>(-adjustment);
   return base_cycles > magnitude ? base_cycles - magnitude : 0;
-}
-
-[[nodiscard]] std::uint32_t hle_div_base_cycles(std::int32_t numerator,
-                                                std::int32_t denominator) {
-  if (denominator == 0 ||
-      (denominator == -1 &&
-       numerator == std::numeric_limits<std::int32_t>::min())) {
-    return 330;
-  }
-  const auto abs64 = [](std::int32_t value) {
-    const std::int64_t wide = value;
-    return wide < 0 ? -wide : wide;
-  };
-  return abs64(numerator) < abs64(denominator) ? 70U : 330U;
-}
-
-[[nodiscard]] std::uint32_t hle_sqrt_base_cycles(std::uint32_t value) {
-  if (value == 0) {
-    return 99;
-  }
-  return value <= 0xFFU ? 214U : 1130U;
 }
 
 [[nodiscard]] std::uint32_t hle_cpu_set_base_cycles(std::uint32_t control,
@@ -1614,6 +1539,15 @@ DmaRunResult CoreScheduler::run_immediate_dma() {
 bool CoreScheduler::service_pending_irq(bool from_data_access,
                                         bool from_spaced_timer_io_access) {
   const bool serviced = interrupts_.service_pending_irq(cpu_);
+  if (serviced && bios_hle_enabled()) {
+    const std::uint32_t irq_link = cpu_.register_value(Arm7tdmi::kLinkRegister);
+    if (irq_link != BiosHleConstants::kIrqReturnSentinelPc) {
+      if (!hle_irq_return_lr_.has_value()) {
+        hle_irq_return_lr_ = irq_link;
+      }
+      (void)memory_.write32(0x03007FF8U, irq_link);
+    }
+  }
   if (serviced && hle_irq_post_return_latency_armed_) {
     const bool chained_spaced_data_service =
         hle_irq_post_return_chain_active_ && from_data_access &&
@@ -2299,12 +2233,13 @@ bool CoreScheduler::bios_hle_enabled() const {
 
 std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
     std::uint32_t fetch_address) {
-  if (!bios_hle_enabled() || fetch_address != kBiosIrqVector ||
+  if (!bios_hle_enabled() || fetch_address != BiosHleConstants::kIrqVectorAddress ||
       cpu_.current_mode() != CpuMode::irq) {
     return std::nullopt;
   }
 
-  const std::optional<std::uint32_t> handler = memory_.read32(kUserIrqHandlerPointer);
+  const std::optional<std::uint32_t> handler =
+      memory_.read32(BiosHleConstants::kUserIrqHandlerPointer);
   if (!handler.has_value() || handler.value() == 0) {
     return std::nullopt;
   }
@@ -2314,36 +2249,21 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
   if (!cpu_.set_cpsr(thumb_handler ? (cpsr | 0x20U) : (cpsr & ~0x20U))) {
     return std::nullopt;
   }
-  const std::uint32_t timer0_reload = timers_.reload(0);
+  BiosIrqDispatchTiming irq_timing{};
+  irq_timing.reentry = hle_irq_reentry_dispatch_pending_;
+  irq_timing.post_return = hle_irq_post_return_dispatch_pending_;
+  irq_timing.chained_post_return = hle_irq_chained_post_return_dispatch_pending_;
+  irq_timing.chained_post_return_data = hle_irq_chained_post_return_data_dispatch_pending_;
+  irq_timing.chained_post_return_spaced_data =
+      hle_irq_chained_post_return_spaced_data_dispatch_pending_;
+  irq_timing.timer0_reload = timers_.reload(0);
+  irq_timing.timer_io_access_gap_cycles = timer_io_access_gap_cycles_;
+  irq_timing.timer0_interrupt_requested =
+      interrupts_.requested(InterruptSource::timer0);
+  const std::uint32_t dispatch_cycles = BiosController::irq_dispatch_cycles(irq_timing);
   const bool long_timer_chained_post_return_dispatch =
-      hle_irq_chained_post_return_dispatch_pending_ &&
-      interrupts_.requested(InterruptSource::timer0) && timer0_reload <= 0xFF80U;
-  const bool spaced_long_timer_data_dispatch =
-      long_timer_chained_post_return_dispatch &&
-      hle_irq_chained_post_return_spaced_data_dispatch_pending_ &&
-      timer0_reload >= 0xF800U && timer0_reload < 0xFF80U;
-  std::uint32_t chained_dispatch_cycles =
-      kBiosHleChainedPostReturnIrqDispatchCycles;
-  if (long_timer_chained_post_return_dispatch &&
-      !hle_irq_chained_post_return_data_dispatch_pending_) {
-    chained_dispatch_cycles += kBiosHleLongTimerNonDataIrqDispatchExtraCycles;
-    if (timer0_reload <= 0x8000U &&
-        timer_io_access_gap_cycles_ >= kLooseTimerIoIrqDispatchGapCycles) {
-      chained_dispatch_cycles -=
-          kBiosHleVeryLongTimerNonDataIrqDispatchAdvanceCycles;
-    }
-  } else if (spaced_long_timer_data_dispatch) {
-    chained_dispatch_cycles -=
-        kBiosHleSpacedTimerDataIrqDispatchAdvanceCycles;
-  }
-  const std::uint32_t dispatch_cycles =
-      hle_irq_reentry_dispatch_pending_
-          ? kBiosHleIrqReentryDispatchCycles
-      : hle_irq_chained_post_return_dispatch_pending_
-          ? chained_dispatch_cycles
-      : hle_irq_post_return_dispatch_pending_
-          ? kBiosHlePostReturnIrqDispatchCycles
-          : kBiosHleIrqDispatchCycles;
+      irq_timing.chained_post_return && irq_timing.timer0_interrupt_requested &&
+      irq_timing.timer0_reload <= 0xFF80U;
   hle_irq_reentry_dispatch_pending_ = false;
   hle_irq_post_return_dispatch_pending_ = false;
   hle_irq_chained_post_return_dispatch_pending_ = false;
@@ -2354,13 +2274,18 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
   hle_irq_slow_timer0_return_pending_ =
       interrupts_.requested(InterruptSource::timer0) &&
       timers_.prescaler_divisor(0) > 1U;
-  hle_irq_return_lr_ = cpu_.register_value(Arm7tdmi::kLinkRegister);
+  const std::uint32_t irq_link = cpu_.register_value(Arm7tdmi::kLinkRegister);
+  if (!hle_irq_return_lr_.has_value() &&
+      irq_link != BiosHleConstants::kIrqReturnSentinelPc) {
+    hle_irq_return_lr_ = irq_link;
+    (void)memory_.write32(0x03007FF8U, irq_link);
+  }
   std::array<std::uint32_t, 13> saved_registers{};
   for (std::uint8_t reg = 0; reg < saved_registers.size(); ++reg) {
     saved_registers.at(reg) = cpu_.register_value(reg);
   }
   hle_irq_saved_registers_ = saved_registers;
-  cpu_.set_register(Arm7tdmi::kLinkRegister, kBiosHleIrqReturnSentinel);
+  cpu_.set_register(Arm7tdmi::kLinkRegister, BiosHleConstants::kIrqReturnSentinelPc);
   cpu_.set_register(Arm7tdmi::kPc, handler.value() & ~1U);
   const ArmStepResult cpu_step{ExecuteStatus::executed, dispatch_cycles,
                                cpu_.elapsed_cycles(), false, false};
@@ -2371,30 +2296,44 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
 
 std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_return(
     std::uint32_t fetch_address) {
-  if (!bios_hle_enabled() || !hle_irq_return_lr_.has_value() ||
-      fetch_address != kBiosHleIrqReturnSentinel || cpu_.current_mode() != CpuMode::irq) {
+  if (!bios_hle_enabled() || fetch_address != BiosHleConstants::kIrqReturnSentinelPc ||
+      cpu_.current_mode() != CpuMode::irq) {
     return std::nullopt;
   }
 
-  cpu_.set_register(Arm7tdmi::kLinkRegister, hle_irq_return_lr_.value());
-  hle_irq_return_lr_.reset();
+  if (!hle_irq_return_lr_.has_value()) {
+    const std::optional<std::uint32_t> fallback_lr = memory_.read32(0x03007FF8U);
+    if (fallback_lr.has_value() && fallback_lr.value() != 0U &&
+        fallback_lr.value() != BiosHleConstants::kIrqReturnSentinelPc) {
+      hle_irq_return_lr_ = fallback_lr.value();
+    } else {
+      return std::nullopt;
+    }
+  }
+
+  const std::uint32_t saved_return_lr = hle_irq_return_lr_.value();
+  cpu_.set_register(Arm7tdmi::kLinkRegister, saved_return_lr);
   if (hle_irq_saved_registers_.has_value()) {
     for (std::uint8_t reg = 0; reg < hle_irq_saved_registers_->size(); ++reg) {
       cpu_.set_register(reg, hle_irq_saved_registers_->at(reg));
     }
     hle_irq_saved_registers_.reset();
   }
-  const ExecuteStatus status = cpu_.return_from_exception(4);
+  const ExecuteStatus status = cpu_.return_from_exception(
+      (cpu_.spsr().has_value() && (cpu_.spsr().value() & 0x20U) != 0U) ? 2U : 4U);
+  if (status != ExecuteStatus::executed) {
+    hle_irq_return_lr_ = saved_return_lr;
+    const ArmStepResult failed_step{status, 1, cpu_.elapsed_cycles(), false, false};
+    return CoreSchedulerStepResult{failed_step, {}, {}, false, scheduler_cycles_,
+                                   std::nullopt};
+  }
+  hle_irq_return_lr_.reset();
+  recover_thumb_state_from_rom_misfetch(cpu_, memory_);
   const bool slow_timer0_active_return =
       hle_irq_slow_timer0_return_pending_ && timers_.enabled(0) &&
       timers_.prescaler_divisor(0) > 1U;
-  const std::uint32_t return_cycles =
-      kBiosHleIrqReturnCycles +
-      (hle_irq_long_timer_chained_return_pending_
-           ? kBiosHleLongTimerChainedPostReturnExtraCycles
-           : 0U) +
-      (slow_timer0_active_return ? kBiosHleSlowTimer0ActiveReturnExtraCycles
-                                  : 0U);
+  const std::uint32_t return_cycles = BiosController::irq_return_cycles(
+      hle_irq_long_timer_chained_return_pending_, slow_timer0_active_return);
   hle_irq_long_timer_chained_return_pending_ = false;
   hle_irq_slow_timer0_return_pending_ = false;
   const ArmStepResult cpu_step{status, return_cycles, cpu_.elapsed_cycles(), false,
@@ -2463,6 +2402,10 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
   }
 
   switch (call.service) {
+    case 0x01: {
+      memory_.register_ram_reset(cpu_.register_value(0));
+      return executed(200);
+    }
     case 0x02: {
       const bool entered_before_hblank_event =
           ppu_.line_cycle() < PpuTiming::kVisibleCycles;
@@ -2474,20 +2417,20 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
       if ((interrupts_.pending_mask() & hblank_irq) == 0) {
         return executed(1);
       }
-      return executed(entered_before_hblank_event && kBiosHleHblankHaltReturnCycles > 0
-                          ? kBiosHleHblankHaltReturnCycles - 1U
-                          : kBiosHleHblankHaltReturnCycles);
+      return executed(entered_before_hblank_event && BiosHleConstants::kHblankHaltReturnCycles > 0
+                          ? BiosHleConstants::kHblankHaltReturnCycles - 1U
+                          : BiosHleConstants::kHblankHaltReturnCycles);
     }
     case 0x04: {
       const bool discard = cpu_.register_value(0) != 0;
       const std::uint16_t mask = static_cast<std::uint16_t>(cpu_.register_value(1));
       return wait_for_interrupt_mask(mask, discard)
-                 ? executed(kBiosHleIntrWaitReturnCycles)
+                 ? executed(BiosHleConstants::kIntrWaitReturnCycles)
                  : unsupported();
     }
     case 0x05:
       return wait_for_interrupt_mask(0x0001U, true)
-                 ? executed(kBiosHleVBlankIntrWaitReturnCycles)
+                 ? executed(BiosHleConstants::kVBlankIntrWaitReturnCycles)
                  : unsupported();
     case 0x06:
     case 0x07: {
@@ -2495,42 +2438,25 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
           call.service == 0x06 ? as_i32(cpu_.register_value(0)) : as_i32(cpu_.register_value(1));
       const std::int32_t denominator =
           call.service == 0x06 ? as_i32(cpu_.register_value(1)) : as_i32(cpu_.register_value(0));
-      const std::uint32_t cycles = hle_div_base_cycles(numerator, denominator);
-      if (denominator == 0) {
-        cpu_.set_register(0, numerator < 0 ? 0xFFFFFFFFU : 1U);
-        cpu_.set_register(1, wrap_u32(numerator));
-        cpu_.set_register(3, 1U);
-        return executed(cycles, HleSwiProfileKind::literal);
-      }
-      if (denominator == -1 && numerator == std::numeric_limits<std::int32_t>::min()) {
-        cpu_.set_register(0, wrap_u32(std::numeric_limits<std::int32_t>::min()));
-        cpu_.set_register(1, 0);
-        cpu_.set_register(3, wrap_u32(std::numeric_limits<std::int32_t>::min()));
-        return executed(cycles, HleSwiProfileKind::literal);
-      }
-      const std::int64_t quotient =
-          static_cast<std::int64_t>(numerator) / static_cast<std::int64_t>(denominator);
-      const std::int64_t remainder =
-          static_cast<std::int64_t>(numerator) % static_cast<std::int64_t>(denominator);
-      const std::int64_t absolute = quotient < 0 ? -quotient : quotient;
-      cpu_.set_register(0, as_u32(quotient));
-      cpu_.set_register(1, as_u32(remainder));
-      cpu_.set_register(3, static_cast<std::uint32_t>(absolute));
+      const std::uint32_t cycles =
+          BiosController::hle_div_base_cycles(numerator, denominator);
+      cpu_.set_register(0, wrap_u32(BiosController::hle_div_quotient(numerator, denominator)));
+      cpu_.set_register(1, wrap_u32(BiosController::hle_div_remainder(numerator, denominator)));
+      cpu_.set_register(3, BiosController::hle_div_abs_scratch(numerator, denominator));
       return executed(cycles, HleSwiProfileKind::literal);
     }
     case 0x08: {
       const std::uint32_t input = cpu_.register_value(0);
-      const double value = static_cast<double>(input);
-      cpu_.set_register(0, static_cast<std::uint32_t>(std::sqrt(value)));
+      cpu_.set_register(0, BiosController::hle_sqrt(input));
       const HleSwiProfileKind profile =
           input > 0xFFU ? HleSwiProfileKind::literal : HleSwiProfileKind::simple;
-      return executed(hle_sqrt_base_cycles(input), profile);
+      return executed(BiosController::hle_sqrt_base_cycles(input), profile);
     }
     case 0x09: {
       std::int32_t scratch_r1 = 0;
       std::int32_t scratch_r3 = 0;
-      const std::int32_t result =
-          hle_arc_tan(as_i32(cpu_.register_value(0)), &scratch_r1, &scratch_r3);
+      const std::int32_t result = BiosController::hle_arc_tan(as_i32(cpu_.register_value(0)),
+                                                              &scratch_r1, &scratch_r3);
       cpu_.set_register(0, wrap_u32(result));
       cpu_.set_register(1, wrap_u32(scratch_r1));
       cpu_.set_register(3, wrap_u32(scratch_r3));
@@ -2538,9 +2464,9 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
     }
     case 0x0A: {
       std::int32_t scratch_r1 = as_i32(cpu_.register_value(1));
-      const std::int32_t result = hle_arc_tan2(as_i32(cpu_.register_value(0)),
-                                              as_i32(cpu_.register_value(1)),
-                                              &scratch_r1);
+      const std::int32_t result =
+          BiosController::hle_arc_tan2(as_i32(cpu_.register_value(0)),
+                                       as_i32(cpu_.register_value(1)), &scratch_r1);
       cpu_.set_register(0, static_cast<std::uint16_t>(result));
       cpu_.set_register(1, wrap_u32(scratch_r1));
       cpu_.set_register(3, 0x170U);
@@ -2556,9 +2482,35 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
                  ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), true),
                             HleSwiProfileKind::cpu_set)
                  : unsupported();
+    case 0x0E:
+      return hle_bg_affine_set() ? executed(3, HleSwiProfileKind::simple)
+                                 : unsupported();
+    case 0x0F:
+      return hle_obj_affine_set() ? executed(3, HleSwiProfileKind::simple)
+                                  : unsupported();
+    case 0x10:
+      return hle_bit_unpack() ? executed(3, HleSwiProfileKind::cpu_set) : unsupported();
+    case 0x11:
+      return hle_lz77_uncomp_wram() ? executed(3, HleSwiProfileKind::cpu_set)
+                                    : unsupported();
     case 0x12:
       return hle_lz77_uncomp_vram() ? executed(3, HleSwiProfileKind::cpu_set)
                                     : unsupported();
+    case 0x13:
+      return hle_rl_uncomp_wram() ? executed(3, HleSwiProfileKind::cpu_set)
+                                  : unsupported();
+    case 0x14:
+      return hle_rl_uncomp_vram() ? executed(3, HleSwiProfileKind::cpu_set)
+                                  : unsupported();
+    case 0x15:
+      return hle_diff8_unfilter_wram() ? executed(3, HleSwiProfileKind::cpu_set)
+                                       : unsupported();
+    case 0x16:
+      return hle_diff8_unfilter_vram() ? executed(3, HleSwiProfileKind::cpu_set)
+                                       : unsupported();
+    case 0x17:
+      return hle_diff16_unfilter() ? executed(3, HleSwiProfileKind::cpu_set)
+                                   : unsupported();
     default:
       return unsupported();
   }
@@ -2622,8 +2574,14 @@ bool CoreScheduler::hle_cpu_set(bool fast) {
           MemoryBus::describe(write_address).region == Region::game_pak_save
               ? write_address
               : (write_address & ~0x3U);
-      if (!value.has_value() || !memory_.write32(effective_write_address, value.value())) {
+      if (!value.has_value()) {
         return false;
+      }
+      if (!memory_.write32(effective_write_address, value.value())) {
+        const Region region = MemoryBus::describe(effective_write_address).region;
+        if (region != Region::bios && region != Region::game_pak_rom) {
+          return false;
+        }
       }
     }
     return true;
@@ -2647,8 +2605,15 @@ bool CoreScheduler::hle_cpu_set(bool fast) {
     const std::optional<std::uint16_t> value =
         fill ? (fill_value.has_value() ? fill_value : (fill_value = read_halfword(source)))
              : read_halfword(source + index * 2U);
-    if (!value.has_value() || !memory_.write16(dest + index * 2U, value.value())) {
+    if (!value.has_value()) {
       return false;
+    }
+    const std::uint32_t write_address = dest + index * 2U;
+    if (!memory_.write16(write_address, value.value())) {
+      const Region region = MemoryBus::describe(write_address).region;
+      if (region != Region::bios && region != Region::game_pak_rom) {
+        return false;
+      }
     }
   }
   return true;
@@ -2661,6 +2626,15 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
   if (hle_irq_return.has_value()) {
     reset_fetch_timing_sequence();
     return {CoreInstructionSet::arm, 4, fetch_address, std::nullopt, hle_irq_return, 0,
+            false, false, false, false, false, false, 0, false};
+  }
+  if (fetch_address == BiosHleConstants::kIrqReturnSentinelPc) {
+    reset_fetch_timing_sequence();
+    const ArmStepResult cpu_step{ExecuteStatus::unsupported, 1, cpu_.elapsed_cycles(),
+                                 false, false};
+    const CoreSchedulerStepResult step{cpu_step, {}, {}, false, scheduler_cycles_,
+                                       std::nullopt};
+    return {CoreInstructionSet::arm, 4, fetch_address, 0xFFFFFFFFU, step, 0,
             false, false, false, false, false, false, 0, false};
   }
 
@@ -2859,12 +2833,34 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
 }
 
 CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
+  recover_thumb_state_from_rom_misfetch(cpu_, memory_);
   if (!cpu_.thumb_state()) {
     suppress_next_thumb_prefetch_execute_bubble_ = false;
     return step_arm_from_pc();
   }
 
   const std::uint32_t fetch_address = cpu_.register_value(Arm7tdmi::kPc);
+  const std::optional<CoreSchedulerStepResult> hle_irq_return =
+      dispatch_hle_irq_return(fetch_address);
+  if (hle_irq_return.has_value()) {
+    reset_fetch_timing_sequence();
+    suppress_next_thumb_prefetch_execute_bubble_ = false;
+    previous_thumb_internal_load_ = false;
+    return {CoreInstructionSet::thumb, 2, fetch_address, std::nullopt, hle_irq_return, 0,
+            false, false, false, false, false, false, 0, false};
+  }
+  if (fetch_address == BiosHleConstants::kIrqReturnSentinelPc) {
+    reset_fetch_timing_sequence();
+    suppress_next_thumb_prefetch_execute_bubble_ = false;
+    previous_thumb_internal_load_ = false;
+    const ArmStepResult cpu_step{ExecuteStatus::unsupported, 1, cpu_.elapsed_cycles(),
+                                 false, false};
+    const CoreSchedulerStepResult step{cpu_step, {}, {}, false, scheduler_cycles_,
+                                       std::nullopt};
+    return {CoreInstructionSet::thumb, 2, fetch_address, 0xFFFFFFFFU, step, 0,
+            false, false, false, false, false, false, 0, false};
+  }
+
   const std::optional<std::uint16_t> instruction = memory_.read16(fetch_address);
   if (!instruction.has_value()) {
     reset_fetch_timing_sequence();
@@ -3212,10 +3208,70 @@ CoreSchedulerRunResult CoreScheduler::run_from_pc(std::uint32_t max_steps) {
   return result;
 }
 
-bool CoreScheduler::hle_lz77_uncomp_vram() {
-  std::uint32_t source = cpu_.register_value(0);
+bool CoreScheduler::hle_bg_affine_set() {
+  const std::uint32_t source = cpu_.register_value(0);
   const std::uint32_t dest = cpu_.register_value(1);
+  const std::int32_t count = static_cast<std::int32_t>(cpu_.register_value(2));
+  if (count <= 0) {
+    return false;
+  }
 
+  for (std::int32_t index = 0; index < count; ++index) {
+    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 6U;
+    const std::uint32_t dst = dest + static_cast<std::uint32_t>(index) * 16U;
+    const std::optional<std::uint16_t> scale_x = memory_.read16(src);
+    const std::optional<std::uint16_t> scale_y = memory_.read16(src + 2U);
+    const std::optional<std::uint16_t> rotation = memory_.read16(src + 4U);
+    if (!scale_x.has_value() || !scale_y.has_value() || !rotation.has_value()) {
+      return false;
+    }
+    const BiosController::AffineMatrix matrix = BiosController::hle_affine_matrix(
+        static_cast<std::int16_t>(scale_x.value()),
+        static_cast<std::int16_t>(scale_y.value()), rotation.value());
+    if (!memory_.write16(dst, static_cast<std::uint16_t>(matrix.pa)) ||
+        !memory_.write16(dst + 2U, static_cast<std::uint16_t>(matrix.pb)) ||
+        !memory_.write16(dst + 4U, static_cast<std::uint16_t>(matrix.pc)) ||
+        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_obj_affine_set() {
+  const std::uint32_t source = cpu_.register_value(0);
+  const std::uint32_t dest = cpu_.register_value(1);
+  const std::int32_t count = static_cast<std::int32_t>(cpu_.register_value(2));
+  const std::int32_t offset = static_cast<std::int32_t>(cpu_.register_value(3));
+  if (count <= 0 || offset <= 0) {
+    return false;
+  }
+
+  for (std::int32_t index = 0; index < count; ++index) {
+    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 6U;
+    const std::uint32_t dst =
+        dest + static_cast<std::uint32_t>(index) * static_cast<std::uint32_t>(offset);
+    const std::optional<std::uint16_t> scale_x = memory_.read16(src);
+    const std::optional<std::uint16_t> scale_y = memory_.read16(src + 2U);
+    const std::optional<std::uint16_t> rotation = memory_.read16(src + 4U);
+    if (!scale_x.has_value() || !scale_y.has_value() || !rotation.has_value()) {
+      return false;
+    }
+    const BiosController::AffineMatrix matrix = BiosController::hle_affine_matrix(
+        static_cast<std::int16_t>(scale_x.value()),
+        static_cast<std::int16_t>(scale_y.value()), rotation.value());
+    if (!memory_.write16(dst, static_cast<std::uint16_t>(matrix.pa)) ||
+        !memory_.write16(dst + 2U, static_cast<std::uint16_t>(matrix.pb)) ||
+        !memory_.write16(dst + 4U, static_cast<std::uint16_t>(matrix.pc)) ||
+        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_lz77_decompress_from_source(
+    std::uint32_t source, std::vector<std::uint8_t>& output) {
   const std::optional<std::uint8_t> header_type = memory_.read8(source++);
   const std::optional<std::uint8_t> size0 = memory_.read8(source++);
   const std::optional<std::uint8_t> size1 = memory_.read8(source++);
@@ -3229,7 +3285,7 @@ bool CoreScheduler::hle_lz77_uncomp_vram() {
       static_cast<std::uint32_t>(size0.value()) |
       (static_cast<std::uint32_t>(size1.value()) << 8U) |
       (static_cast<std::uint32_t>(size2.value()) << 16U);
-  std::vector<std::uint8_t> output;
+  output.clear();
   output.reserve(decompressed_size);
 
   while (output.size() < decompressed_size) {
@@ -3267,7 +3323,278 @@ bool CoreScheduler::hle_lz77_uncomp_vram() {
       }
     }
   }
+  return true;
+}
 
+bool CoreScheduler::hle_lz77_uncomp_wram() {
+  std::vector<std::uint8_t> output;
+  if (!hle_lz77_decompress_from_source(cpu_.register_value(0), output)) {
+    return false;
+  }
+  const std::uint32_t dest = cpu_.register_value(1);
+  for (std::size_t offset = 0; offset < output.size(); ++offset) {
+    if (!memory_.write8(dest + static_cast<std::uint32_t>(offset), output.at(offset))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_bit_unpack() {
+  std::uint32_t source = cpu_.register_value(0);
+  const std::uint32_t dest = cpu_.register_value(1);
+  const std::uint32_t info = cpu_.register_value(2);
+
+  const std::optional<std::uint16_t> length_word = memory_.read16(info);
+  const std::optional<std::uint8_t> src_bits = memory_.read8(info + 2U);
+  const std::optional<std::uint8_t> dest_bits = memory_.read8(info + 3U);
+  const std::optional<std::uint32_t> data_offset = memory_.read32(info + 4U);
+  if (!length_word.has_value() || !src_bits.has_value() || !dest_bits.has_value() ||
+      !data_offset.has_value()) {
+    return false;
+  }
+
+  const std::uint16_t length = length_word.value();
+  const std::uint8_t src_bit_num = src_bits.value();
+  const std::uint8_t dest_bit_num = dest_bits.value();
+  if (src_bit_num == 0U || src_bit_num > 8U) {
+    return false;
+  }
+  if (dest_bit_num != 1U && dest_bit_num != 2U && dest_bit_num != 4U &&
+      dest_bit_num != 8U && dest_bit_num != 16U && dest_bit_num != 32U) {
+    return false;
+  }
+
+  std::uint32_t bit_buffer = 0U;
+  std::uint32_t bit_count = 0U;
+  const auto read_bits = [&](std::uint8_t count) -> std::optional<std::uint32_t> {
+    while (bit_count < count) {
+      const std::optional<std::uint8_t> byte = memory_.read8(source++);
+      if (!byte.has_value()) {
+        return std::nullopt;
+      }
+      bit_buffer = (bit_buffer << 8U) | static_cast<std::uint32_t>(byte.value());
+      bit_count += 8U;
+    }
+    bit_count -= count;
+    const std::uint32_t mask =
+        count == 32U ? 0xFFFFFFFFU : ((1U << count) - 1U);
+    return (bit_buffer >> bit_count) & mask;
+  };
+
+  if (dest_bit_num == 8U) {
+    for (std::uint16_t index = 0; index < length; ++index) {
+      const std::optional<std::uint32_t> value = read_bits(src_bit_num);
+      if (!value.has_value()) {
+        return false;
+      }
+      if (!memory_.write8(dest + index,
+                          static_cast<std::uint8_t>(value.value() + data_offset.value()))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (dest_bit_num == 16U) {
+    for (std::uint16_t index = 0; index < length; ++index) {
+      const std::optional<std::uint32_t> value = read_bits(src_bit_num);
+      if (!value.has_value()) {
+        return false;
+      }
+      if (!memory_.write16(dest + static_cast<std::uint32_t>(index) * 2U,
+                           static_cast<std::uint16_t>(value.value() + data_offset.value()))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (dest_bit_num == 32U) {
+    for (std::uint16_t index = 0; index < length; ++index) {
+      const std::optional<std::uint32_t> value = read_bits(src_bit_num);
+      if (!value.has_value()) {
+        return false;
+      }
+      if (!memory_.write32(dest + static_cast<std::uint32_t>(index) * 4U,
+                           value.value() + data_offset.value())) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::uint32_t out_byte = 0U;
+  std::uint8_t out_bits = 0U;
+  std::uint32_t out_index = 0U;
+  for (std::uint16_t index = 0; index < length; ++index) {
+    const std::optional<std::uint32_t> value = read_bits(src_bit_num);
+    if (!value.has_value()) {
+      return false;
+    }
+    const std::uint32_t packed = value.value() + data_offset.value();
+    const std::uint32_t dest_mask = (1U << dest_bit_num) - 1U;
+    out_byte = (out_byte << dest_bit_num) | (packed & dest_mask);
+    out_bits = static_cast<std::uint8_t>(out_bits + dest_bit_num);
+    if (out_bits == 8U) {
+      if (!memory_.write8(dest + out_index, static_cast<std::uint8_t>(out_byte & 0xFFU))) {
+        return false;
+      }
+      ++out_index;
+      out_byte = 0U;
+      out_bits = 0U;
+    }
+  }
+  if (out_bits != 0U) {
+    out_byte <<= (8U - out_bits);
+    if (!memory_.write8(dest + out_index, static_cast<std::uint8_t>(out_byte & 0xFFU))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_lz77_uncomp_vram() {
+  std::vector<std::uint8_t> output;
+  if (!hle_lz77_decompress_from_source(cpu_.register_value(0), output)) {
+    return false;
+  }
+  return hle_write_decompressed_vram(output);
+}
+
+bool CoreScheduler::hle_rle_decompress_from_source(
+    std::uint8_t expected_type, std::uint32_t source,
+    std::vector<std::uint8_t>& output) {
+  const std::optional<std::uint8_t> header_type = memory_.read8(source++);
+  const std::optional<std::uint8_t> size0 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size1 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size2 = memory_.read8(source++);
+  if (!header_type.has_value() || !size0.has_value() || !size1.has_value() ||
+      !size2.has_value() || header_type.value() != expected_type) {
+    return false;
+  }
+
+  const std::uint32_t decompressed_size =
+      static_cast<std::uint32_t>(size0.value()) |
+      (static_cast<std::uint32_t>(size1.value()) << 8U) |
+      (static_cast<std::uint32_t>(size2.value()) << 16U);
+  output.clear();
+  output.reserve(decompressed_size);
+
+  while (output.size() < decompressed_size) {
+    const std::optional<std::uint8_t> flags = memory_.read8(source++);
+    if (!flags.has_value()) {
+      return false;
+    }
+    for (std::uint8_t bit = 0; bit < 8U && output.size() < decompressed_size; ++bit) {
+      const bool compressed = (flags.value() & (0x80U >> bit)) != 0;
+      if (!compressed) {
+        const std::optional<std::uint8_t> literal = memory_.read8(source++);
+        if (!literal.has_value()) {
+          return false;
+        }
+        output.push_back(literal.value());
+        continue;
+      }
+
+      const std::optional<std::uint8_t> length_byte = memory_.read8(source++);
+      const std::optional<std::uint8_t> value = memory_.read8(source++);
+      if (!length_byte.has_value() || !value.has_value()) {
+        return false;
+      }
+      const std::uint32_t length = static_cast<std::uint32_t>(length_byte.value()) + 3U;
+      for (std::uint32_t index = 0;
+           index < length && output.size() < decompressed_size; ++index) {
+        output.push_back(value.value());
+      }
+    }
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_diff8_decompress_from_source(
+    std::uint8_t expected_type, std::uint32_t source,
+    std::vector<std::uint8_t>& output) {
+  const std::optional<std::uint8_t> header_type = memory_.read8(source++);
+  const std::optional<std::uint8_t> size0 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size1 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size2 = memory_.read8(source++);
+  if (!header_type.has_value() || !size0.has_value() || !size1.has_value() ||
+      !size2.has_value() || header_type.value() != expected_type) {
+    return false;
+  }
+
+  const std::uint32_t decompressed_size =
+      static_cast<std::uint32_t>(size0.value()) |
+      (static_cast<std::uint32_t>(size1.value()) << 8U) |
+      (static_cast<std::uint32_t>(size2.value()) << 16U);
+  output.clear();
+  output.reserve(decompressed_size);
+
+  std::uint8_t previous = 0;
+  for (std::uint32_t index = 0; index < decompressed_size; ++index) {
+    const std::optional<std::uint8_t> delta = memory_.read8(source++);
+    if (!delta.has_value()) {
+      return false;
+    }
+    previous = static_cast<std::uint8_t>(previous + delta.value());
+    output.push_back(previous);
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_diff16_decompress_from_source(
+    std::uint8_t expected_type, std::uint32_t source,
+    std::vector<std::uint8_t>& output) {
+  const std::optional<std::uint8_t> header_type = memory_.read8(source++);
+  const std::optional<std::uint8_t> size0 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size1 = memory_.read8(source++);
+  const std::optional<std::uint8_t> size2 = memory_.read8(source++);
+  if (!header_type.has_value() || !size0.has_value() || !size1.has_value() ||
+      !size2.has_value() || header_type.value() != expected_type) {
+    return false;
+  }
+
+  const std::uint32_t decompressed_size =
+      static_cast<std::uint32_t>(size0.value()) |
+      (static_cast<std::uint32_t>(size1.value()) << 8U) |
+      (static_cast<std::uint32_t>(size2.value()) << 16U);
+  if ((decompressed_size % 2U) != 0U) {
+    return false;
+  }
+
+  output.clear();
+  output.reserve(decompressed_size);
+
+  std::uint16_t previous = 0;
+  for (std::uint32_t index = 0; index < decompressed_size; index += 2U) {
+    const std::optional<std::uint8_t> delta_lo = memory_.read8(source++);
+    const std::optional<std::uint8_t> delta_hi = memory_.read8(source++);
+    if (!delta_lo.has_value() || !delta_hi.has_value()) {
+      return false;
+    }
+    const std::uint16_t delta =
+        static_cast<std::uint16_t>(delta_lo.value()) |
+        (static_cast<std::uint16_t>(delta_hi.value()) << 8U);
+    previous = static_cast<std::uint16_t>(previous + delta);
+    output.push_back(static_cast<std::uint8_t>(previous & 0xFFU));
+    output.push_back(static_cast<std::uint8_t>((previous >> 8U) & 0xFFU));
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_write_decompressed_wram(const std::vector<std::uint8_t>& output) {
+  const std::uint32_t dest = cpu_.register_value(1);
+  for (std::size_t offset = 0; offset < output.size(); ++offset) {
+    if (!memory_.write8(dest + static_cast<std::uint32_t>(offset), output.at(offset))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CoreScheduler::hle_write_decompressed_vram(const std::vector<std::uint8_t>& output) {
+  const std::uint32_t dest = cpu_.register_value(1);
   for (std::size_t offset = 0; offset < output.size(); offset += 2U) {
     const std::uint16_t low = output.at(offset);
     const std::uint16_t high =
@@ -3279,6 +3606,46 @@ bool CoreScheduler::hle_lz77_uncomp_vram() {
     }
   }
   return true;
+}
+
+bool CoreScheduler::hle_rl_uncomp_wram() {
+  std::vector<std::uint8_t> output;
+  if (!hle_rle_decompress_from_source(0x30U, cpu_.register_value(0), output)) {
+    return false;
+  }
+  return hle_write_decompressed_wram(output);
+}
+
+bool CoreScheduler::hle_rl_uncomp_vram() {
+  std::vector<std::uint8_t> output;
+  if (!hle_rle_decompress_from_source(0x30U, cpu_.register_value(0), output)) {
+    return false;
+  }
+  return hle_write_decompressed_vram(output);
+}
+
+bool CoreScheduler::hle_diff8_unfilter_wram() {
+  std::vector<std::uint8_t> output;
+  if (!hle_diff8_decompress_from_source(0x21U, cpu_.register_value(0), output)) {
+    return false;
+  }
+  return hle_write_decompressed_wram(output);
+}
+
+bool CoreScheduler::hle_diff8_unfilter_vram() {
+  std::vector<std::uint8_t> output;
+  if (!hle_diff8_decompress_from_source(0x21U, cpu_.register_value(0), output)) {
+    return false;
+  }
+  return hle_write_decompressed_vram(output);
+}
+
+bool CoreScheduler::hle_diff16_unfilter() {
+  std::vector<std::uint8_t> output;
+  if (!hle_diff16_decompress_from_source(0x22U, cpu_.register_value(0), output)) {
+    return false;
+  }
+  return hle_write_decompressed_vram(output);
 }
 
 }  // namespace gba::core

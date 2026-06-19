@@ -1,5 +1,12 @@
+#include "gba/core/interrupt_controller.hpp"
+#include "gba/core/io_registers.hpp"
 #include "gba/core/memory_bus.hpp"
+#include "gba/core/ppu_timing.hpp"
+#include "gba/core/timers.hpp"
 #include "gba/core/wait_state_control.hpp"
+#include "gba/core/dma_controller.hpp"
+#include "gba/core/apu.hpp"
+#include "gba/core/keypad.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -412,6 +419,17 @@ int main() {
          "cartridge fixed-value header byte validates");
   expect(header->version == 0x02, "cartridge header version parses");
   expect(header->complement_check == 0xF0, "cartridge complement byte parses");
+  expect(!gba::core::MemoryBus::cartridge_complement_valid(tiny_rom),
+         "tiny test ROM complement is intentionally invalid in fixture");
+  {
+    std::uint32_t sum = 0x19U;
+    for (std::size_t offset = 0xA0U; offset <= 0xBCU; ++offset) {
+      sum = (sum + tiny_rom.at(offset)) & 0xFFU;
+    }
+    tiny_rom.at(0xBD) = static_cast<std::uint8_t>((0x100U - sum) & 0xFFU);
+  }
+  expect(gba::core::MemoryBus::cartridge_complement_valid(tiny_rom),
+         "cartridge complement validates when checksum byte corrected");
   expect(!bus.detect_game_pak_save_type().has_value(),
          "cartridge save-type detector returns nullopt when no marker is present");
   auto put_marker = [](std::vector<std::uint8_t>& rom, std::size_t offset,
@@ -608,6 +626,45 @@ int main() {
   bus.reset();
   expect_read(bus, 0x02000000, 0x00, "reset clears EWRAM");
   expect_read(bus, 0x03000000, 0x00, "reset clears IWRAM");
+
+  {
+    using gba::core::Apu;
+    using gba::core::DmaController;
+    using gba::core::InterruptController;
+    using gba::core::IoRegisters;
+    using gba::core::PpuTiming;
+    using gba::core::Timers;
+
+    InterruptController interrupts;
+    Timers timers;
+    DmaController dma;
+    PpuTiming ppu;
+    Apu apu;
+    WaitStateControl waitcnt;
+    gba::core::Keypad keypad;
+    IoRegisters io(interrupts, timers, dma, ppu, apu, waitcnt, keypad);
+    MemoryBus io_bus;
+    io_bus.set_io_callbacks(
+        {&io,
+         [](void* ctx, std::uint32_t address) {
+           return static_cast<IoRegisters*>(ctx)->read16(address);
+         },
+         [](void* ctx, std::uint32_t address) {
+           return static_cast<IoRegisters*>(ctx)->read32(address);
+         },
+         [](void* ctx, std::uint32_t address, std::uint16_t value) {
+           return static_cast<IoRegisters*>(ctx)->write16(address, value);
+         },
+         [](void* ctx, std::uint32_t address, std::uint32_t value) {
+           return static_cast<IoRegisters*>(ctx)->write32(address, value);
+         }});
+
+    constexpr std::uint32_t kLine159Cycles =
+        static_cast<std::uint32_t>(PpuTiming::kCyclesPerLine) * 159U;
+    [[maybe_unused]] const auto events = ppu.tick(kLine159Cycles, interrupts);
+    expect_read(io_bus, 0x04000006, 159, "IO VCOUNT low byte is readable via read8");
+    expect_read16(io_bus, 0x04000006, 159, "IO VCOUNT halfword read matches byte lane");
+  }
 
   std::cout << "memory_bus_test: PASS\n";
   return 0;
