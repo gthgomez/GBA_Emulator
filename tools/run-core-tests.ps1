@@ -1,405 +1,575 @@
+param(
+    [switch]$IncludeRomVideoSmoke
+)
+
 $ErrorActionPreference = "Stop"
-$PSNativeCommandUseErrorActionPreference = $true
 
 $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 $buildDir = Join-Path $repoRoot "build"
+$includeDir = Join-Path $repoRoot "include"
+$scriptPath = $PSCommandPath
 
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\keypad_test.cpp") `
-  -o (Join-Path $buildDir "keypad_test.exe")
-
-& (Join-Path $buildDir "keypad_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\memory_bus_test.cpp") `
-  -o (Join-Path $buildDir "memory_bus_test.exe")
-
-& (Join-Path $buildDir "memory_bus_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\arm7tdmi_test.cpp") `
-  -o (Join-Path $buildDir "arm7tdmi_test.exe")
-
-& (Join-Path $buildDir "arm7tdmi_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\timers_test.cpp") `
-  -o (Join-Path $buildDir "timers_test.exe")
-
-& (Join-Path $buildDir "timers_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\dma_test.cpp") `
-  -o (Join-Path $buildDir "dma_test.exe")
-
-& (Join-Path $buildDir "dma_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\ppu_timing_test.cpp") `
-  -o (Join-Path $buildDir "ppu_timing_test.exe")
-
-& (Join-Path $buildDir "ppu_timing_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_background.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\ppu_background_test.cpp") `
-  -o (Join-Path $buildDir "ppu_background_test.exe")
-
-& (Join-Path $buildDir "ppu_background_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_sprites.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\ppu_sprites_test.cpp") `
-  -o (Join-Path $buildDir "ppu_sprites_test.exe")
-
-& (Join-Path $buildDir "ppu_sprites_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_background.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_sprites.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_renderer.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\ppu_renderer_test.cpp") `
-  -o (Join-Path $buildDir "ppu_renderer_test.exe")
-
-& (Join-Path $buildDir "ppu_renderer_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "tests\apu_test.cpp") `
-  -o (Join-Path $buildDir "apu_test.exe")
-
-& (Join-Path $buildDir "apu_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "tests\bios_test.cpp") `
-  -o (Join-Path $buildDir "bios_test.exe")
-
-& (Join-Path $buildDir "bios_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\io_registers_test.cpp") `
-  -o (Join-Path $buildDir "io_registers_test.exe")
-
-& (Join-Path $buildDir "io_registers_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\core_scheduler_test.cpp") `
-  -o (Join-Path $buildDir "core_scheduler_test.exe")
-
-& (Join-Path $buildDir "core_scheduler_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\core_session_test.cpp") `
-  -o (Join-Path $buildDir "core_session_test.exe")
-
-& (Join-Path $buildDir "core_session_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\program_harness.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\program_harness_test.cpp") `
-  -o (Join-Path $buildDir "program_harness_test.exe")
-
-& (Join-Path $buildDir "program_harness_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\compatibility_corpus.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\program_harness.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\compatibility_corpus_test.cpp") `
-  -o (Join-Path $buildDir "compatibility_corpus_test.exe")
-
-& (Join-Path $buildDir "compatibility_corpus_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\save_state_codec.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\save_state_codec_test.cpp") `
-  -o (Join-Path $buildDir "save_state_codec_test.exe")
-
-& (Join-Path $buildDir "save_state_codec_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\instruction_cache.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\instruction_cache_test.cpp") `
-  -o (Join-Path $buildDir "instruction_cache_test.exe")
-
-& (Join-Path $buildDir "instruction_cache_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\android_core_bridge.cpp") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\android_core_bridge_test.cpp") `
-  -o (Join-Path $buildDir "android_core_bridge_test.exe")
-
-& (Join-Path $buildDir "android_core_bridge_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\android_runtime.cpp") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_background.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_renderer.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_sprites.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\android_runtime_test.cpp") `
-  -o (Join-Path $buildDir "android_runtime_test.exe")
-
-& (Join-Path $buildDir "android_runtime_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\game_boot_test.cpp") `
-  -o (Join-Path $buildDir "game_boot_test.exe")
-
-& (Join-Path $buildDir "game_boot_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\hle_swi_boot_test.cpp") `
-  -o (Join-Path $buildDir "hle_swi_boot_test.exe")
-
-& (Join-Path $buildDir "hle_swi_boot_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\hle_decompress_swi_test.cpp") `
-  -o (Join-Path $buildDir "hle_decompress_swi_test.exe")
-
-& (Join-Path $buildDir "hle_decompress_swi_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\android_performance_gate.cpp") `
-  (Join-Path $repoRoot "src\core\android_runtime.cpp") `
-  (Join-Path $repoRoot "src\core\arm7tdmi.cpp") `
-  (Join-Path $repoRoot "src\core\apu.cpp") `
-  (Join-Path $repoRoot "src\core\bios.cpp") `
-  (Join-Path $repoRoot "src\core\core_scheduler.cpp") `
-  (Join-Path $repoRoot "src\core\core_session.cpp") `
-  (Join-Path $repoRoot "src\core\dma_controller.cpp") `
-  (Join-Path $repoRoot "src\core\interrupt_controller.cpp") `
-  (Join-Path $repoRoot "src\core\io_registers.cpp") `
-  (Join-Path $repoRoot "src\core\keypad.cpp") `
-  (Join-Path $repoRoot "src\core\memory_bus.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_background.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_renderer.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_sprites.cpp") `
-  (Join-Path $repoRoot "src\core\ppu_timing.cpp") `
-  (Join-Path $repoRoot "src\core\timers.cpp") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\android_performance_gate_test.cpp") `
-  -o (Join-Path $buildDir "android_performance_gate_test.exe")
-
-& (Join-Path $buildDir "android_performance_gate_test.exe")
-
-g++ -std=c++17 -Wall -Wextra -Werror `
-  -I (Join-Path $repoRoot "include") `
-  (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
-  (Join-Path $repoRoot "tests\wait_state_control_test.cpp") `
-  -o (Join-Path $buildDir "wait_state_control_test.exe")
-
-& (Join-Path $buildDir "wait_state_control_test.exe")
-
-$localRomVideoSmoke = Join-Path $PSScriptRoot "run-local-rom-video-smoke.ps1"
-if (Test-Path -LiteralPath $localRomVideoSmoke) {
-  & $localRomVideoSmoke
+$includeHeaders = @()
+if (Test-Path -LiteralPath $includeDir) {
+    $includeHeaders = @(Get-ChildItem -LiteralPath $includeDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in @(".hpp", ".h", ".hh", ".hxx") })
 }
+
+function Resolve-SourcePaths {
+    param([string[]]$RelativePaths)
+    foreach ($relative in $RelativePaths) {
+        Join-Path $repoRoot $relative
+    }
+}
+
+function Assert-NativeExitCode {
+    param(
+        [string]$Step,
+        [int]$Expected = 0
+    )
+
+    if ($LASTEXITCODE -ne $Expected) {
+        Write-Host ""
+        Write-Host "run-core-tests: FAIL ($Step exited with $LASTEXITCODE)"
+        exit $LASTEXITCODE
+    }
+}
+
+function Get-SourceManifestPath {
+    param([string]$ExePath)
+    return "$ExePath.sources"
+}
+
+function Test-SourceManifestMatches {
+    param(
+        [string]$ManifestPath,
+        [string[]]$RelativeSources
+    )
+
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        return $false
+    }
+
+    $expected = ($RelativeSources | Sort-Object)
+    $actual = @(Get-Content -LiteralPath $ManifestPath -ErrorAction Stop)
+    if ($actual.Count -ne $expected.Count) {
+        return $false
+    }
+
+    for ($i = 0; $i -lt $expected.Count; $i++) {
+        if ($actual[$i] -ne $expected[$i]) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Write-SourceManifest {
+    param(
+        [string]$ManifestPath,
+        [string[]]$RelativeSources
+    )
+
+    $RelativeSources | Sort-Object | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+}
+
+function Test-NeedsCompile {
+    param(
+        [string]$ExePath,
+        [string[]]$RelativeSources,
+        [string[]]$ResolvedSources
+    )
+
+    if (-not (Test-Path -LiteralPath $ExePath)) {
+        return $true
+    }
+
+    if (-not (Test-SourceManifestMatches -ManifestPath (Get-SourceManifestPath -ExePath $ExePath) -RelativeSources $RelativeSources)) {
+        return $true
+    }
+
+    $exeTime = (Get-Item -LiteralPath $ExePath).LastWriteTimeUtc
+
+    if ((Get-Item -LiteralPath $scriptPath).LastWriteTimeUtc -gt $exeTime) {
+        return $true
+    }
+
+    foreach ($source in $ResolvedSources) {
+        if (-not (Test-Path -LiteralPath $source)) {
+            return $true
+        }
+        if ((Get-Item -LiteralPath $source).LastWriteTimeUtc -gt $exeTime) {
+            return $true
+        }
+    }
+
+    foreach ($header in $includeHeaders) {
+        if ($header.LastWriteTimeUtc -gt $exeTime) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Invoke-CoreTest {
+    param(
+        [string]$Name,
+        [string[]]$Sources,
+        [int]$Index,
+        [int]$Total,
+        [ref]$CompileElapsed,
+        [ref]$RunElapsed
+    )
+
+    $exePath = Join-Path $buildDir "$Name.exe"
+    $resolvedSources = @(Resolve-SourcePaths -RelativePaths $Sources)
+    $manifestPath = Get-SourceManifestPath -ExePath $exePath
+
+    if (Test-NeedsCompile -ExePath $exePath -RelativeSources $Sources -ResolvedSources $resolvedSources) {
+        Write-Host "[$Index/$Total] compile $Name ..."
+        $compileSw = [System.Diagnostics.Stopwatch]::StartNew()
+        & g++ -std=c++17 -Wall -Wextra -Werror `
+            -I $includeDir `
+            @resolvedSources `
+            -o $exePath
+        Assert-NativeExitCode -Step "g++ $Name"
+        Write-SourceManifest -ManifestPath $manifestPath -RelativeSources $Sources
+        $compileSw.Stop()
+        $CompileElapsed.Value = $CompileElapsed.Value.Add($compileSw.Elapsed)
+    } else {
+        Write-Host "[$Index/$Total] compile $Name (up-to-date, skip)"
+    }
+
+    Write-Host "[$Index/$Total] run $Name ..."
+    $runSw = [System.Diagnostics.Stopwatch]::StartNew()
+    & $exePath
+    Assert-NativeExitCode -Step $Name
+    $runSw.Stop()
+    $RunElapsed.Value = $RunElapsed.Value.Add($runSw.Elapsed)
+}
+
+$coreTests = @(
+    @{
+        Name = "keypad_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\keypad_test.cpp"
+        )
+    },
+    @{
+        Name = "memory_bus_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\timers.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\apu.cpp",
+            "src\core\keypad.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\memory_bus_test.cpp"
+        )
+    },
+    @{
+        Name = "arm7tdmi_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\arm7tdmi_test.cpp"
+        )
+    },
+    @{
+        Name = "timers_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\timers_test.cpp"
+        )
+    },
+    @{
+        Name = "dma_test"
+        Sources = @(
+            "src\core\apu.cpp",
+            "src\core\arm7tdmi.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\dma_test.cpp"
+        )
+    },
+    @{
+        Name = "ppu_timing_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\ppu_timing_test.cpp"
+        )
+    },
+    @{
+        Name = "ppu_background_test"
+        Sources = @(
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_background.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\ppu_background_test.cpp"
+        )
+    },
+    @{
+        Name = "ppu_sprites_test"
+        Sources = @(
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_sprites.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\ppu_sprites_test.cpp"
+        )
+    },
+    @{
+        Name = "ppu_renderer_test"
+        Sources = @(
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_background.cpp",
+            "src\core\ppu_sprites.cpp",
+            "src\core\ppu_renderer.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\ppu_renderer_test.cpp"
+        )
+    },
+    @{
+        Name = "apu_test"
+        Sources = @(
+            "src\core\apu.cpp",
+            "tests\apu_test.cpp"
+        )
+    },
+    @{
+        Name = "bios_test"
+        Sources = @(
+            "src\core\bios.cpp",
+            "tests\bios_test.cpp"
+        )
+    },
+    @{
+        Name = "io_registers_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\io_registers_test.cpp"
+        )
+    },
+    @{
+        Name = "core_scheduler_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\core_scheduler_test.cpp"
+        )
+    },
+    @{
+        Name = "core_session_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\core_session_test.cpp"
+        )
+    },
+    @{
+        Name = "program_harness_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\program_harness.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\program_harness_test.cpp"
+        )
+    },
+    @{
+        Name = "compatibility_corpus_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\compatibility_corpus.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\program_harness.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\compatibility_corpus_test.cpp"
+        )
+    },
+    @{
+        Name = "save_state_codec_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\save_state_codec.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\save_state_codec_test.cpp"
+        )
+    },
+    @{
+        Name = "instruction_cache_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\instruction_cache.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\instruction_cache_test.cpp"
+        )
+    },
+    @{
+        Name = "android_core_bridge_test"
+        Sources = @(
+            "src\core\android_core_bridge.cpp",
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\android_core_bridge_test.cpp"
+        )
+    },
+    @{
+        Name = "android_runtime_test"
+        Sources = @(
+            "src\core\android_runtime.cpp",
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_background.cpp",
+            "src\core\ppu_renderer.cpp",
+            "src\core\ppu_sprites.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\android_runtime_test.cpp"
+        )
+    },
+    @{
+        Name = "game_boot_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\game_boot_test.cpp"
+        )
+    },
+    @{
+        Name = "hle_swi_boot_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\hle_swi_boot_test.cpp"
+        )
+    },
+    @{
+        Name = "hle_decompress_swi_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\hle_decompress_swi_test.cpp"
+        )
+    },
+    @{
+        Name = "android_performance_gate_test"
+        Sources = @(
+            "src\core\android_performance_gate.cpp",
+            "src\core\android_runtime.cpp",
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_background.cpp",
+            "src\core\ppu_renderer.cpp",
+            "src\core\ppu_sprites.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\android_performance_gate_test.cpp"
+        )
+    },
+    @{
+        Name = "wait_state_control_test"
+        Sources = @(
+            "src\core\wait_state_control.cpp",
+            "tests\wait_state_control_test.cpp"
+        )
+    }
+)
+
+$overallSw = [System.Diagnostics.Stopwatch]::StartNew()
+$compileElapsed = [TimeSpan]::Zero
+$runElapsed = [TimeSpan]::Zero
+$totalTests = $coreTests.Count
+$index = 0
+
+Write-Host "run-core-tests: starting $totalTests core verifiers (ROM video smoke: $(if ($IncludeRomVideoSmoke) { 'ON' } else { 'OFF (default)' }))"
+
+foreach ($test in $coreTests) {
+    $index++
+    Invoke-CoreTest `
+        -Name $test.Name `
+        -Sources $test.Sources `
+        -Index $index `
+        -Total $totalTests `
+        -CompileElapsed ([ref]$compileElapsed) `
+        -RunElapsed ([ref]$runElapsed)
+}
+
+$smokeElapsed = [TimeSpan]::Zero
+if ($IncludeRomVideoSmoke) {
+    $localRomVideoSmoke = Join-Path $PSScriptRoot "run-local-rom-video-smoke.ps1"
+    if (Test-Path -LiteralPath $localRomVideoSmoke) {
+        Write-Host "run-core-tests: ROM video smoke (optional gate enabled) ..."
+        $smokeSw = [System.Diagnostics.Stopwatch]::StartNew()
+        & $localRomVideoSmoke
+        Assert-NativeExitCode -Step "run-local-rom-video-smoke"
+        $smokeSw.Stop()
+        $smokeElapsed = $smokeSw.Elapsed
+    } else {
+        Write-Host "run-core-tests: ROM video smoke skipped (script not found)"
+    }
+} else {
+    Write-Host "run-core-tests: ROM video smoke skipped (pass -IncludeRomVideoSmoke to enable)"
+}
+
+$overallSw.Stop()
+
+function Format-Seconds {
+    param([TimeSpan]$Duration)
+    return "{0:N1}s" -f $Duration.TotalSeconds
+}
+
+Write-Host ""
+Write-Host ("run-core-tests: PASS ({0} tests, compile {1}, run {2}, smoke {3}, total {4})" -f `
+    $totalTests, `
+    (Format-Seconds $compileElapsed), `
+    (Format-Seconds $runElapsed), `
+    (Format-Seconds $smokeElapsed), `
+    (Format-Seconds $overallSw.Elapsed))

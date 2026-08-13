@@ -352,15 +352,15 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
   const AddressInfo info = describe(address);
   switch (info.region) {
     case Region::ewram:
-      return ewram_.at(info.offset);
+      return ewram_[info.offset];
     case Region::iwram:
-      return iwram_.at(info.offset);
+      return iwram_[info.offset];
     case Region::palette:
-      return palette_.at(info.offset);
+      return palette_[info.offset];
     case Region::vram:
-      return vram_.at(info.offset);
+      return vram_[info.offset];
     case Region::oam:
-      return oam_.at(info.offset);
+      return oam_[info.offset];
     case Region::bios:
       if (info.offset > kBiosEnd) {
         return std::nullopt;
@@ -377,7 +377,7 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
         const std::uint32_t open_bus = game_pak_open_bus_aligned_word(address);
         return static_cast<std::uint8_t>((open_bus >> ((address & 0x3U) * 8U)) & 0xFFU);
       }
-      return game_pak_rom_.at(info.offset);
+      return game_pak_rom_[info.offset];
     case Region::game_pak_save:
       return read_game_pak_save_byte(info.offset);
     case Region::io:
@@ -418,6 +418,37 @@ std::optional<std::uint16_t> MemoryBus::read16(std::uint32_t address) const {
     return kMgbaDebugEnableMagic;
   }
 
+  // Fast paths for 16-bit reads
+  switch (info.region) {
+    case Region::iwram:
+      return static_cast<std::uint16_t>(iwram_[info.offset]) |
+             static_cast<std::uint16_t>(iwram_[info.offset + 1] << 8);
+    case Region::ewram:
+      return static_cast<std::uint16_t>(ewram_[info.offset]) |
+             static_cast<std::uint16_t>(ewram_[info.offset + 1] << 8);
+    case Region::vram:
+      return static_cast<std::uint16_t>(vram_[info.offset]) |
+             static_cast<std::uint16_t>(vram_[info.offset + 1] << 8);
+    case Region::palette:
+      return static_cast<std::uint16_t>(palette_[info.offset]) |
+             static_cast<std::uint16_t>(palette_[info.offset + 1] << 8);
+    case Region::oam:
+      return static_cast<std::uint16_t>(oam_[info.offset]) |
+             static_cast<std::uint16_t>(oam_[info.offset + 1] << 8);
+    case Region::game_pak_rom: {
+      if (game_pak_rom_.empty()) {
+        return std::nullopt;
+      }
+      if (info.offset + 1 >= game_pak_rom_.size()) {
+        break;
+      }
+      return static_cast<std::uint16_t>(game_pak_rom_[info.offset]) |
+             static_cast<std::uint16_t>(game_pak_rom_[info.offset + 1] << 8);
+    }
+    default:
+      break;
+  }
+
   const std::optional<std::uint8_t> b0 = read8(address);
   const std::optional<std::uint8_t> b1 = read8(address + 1);
   if (!b0.has_value() || !b1.has_value()) {
@@ -449,6 +480,68 @@ std::optional<std::uint32_t> MemoryBus::read32(std::uint32_t address) const {
   }
 
   const std::uint32_t aligned_address = align_word(address);
+  const AddressInfo info = (aligned_address == address) ? direct_info : describe(aligned_address);
+
+  // Fast paths for 32-bit reads
+  switch (info.region) {
+    case Region::iwram: {
+      const std::uint32_t aligned_value =
+          static_cast<std::uint32_t>(iwram_[info.offset]) |
+          (static_cast<std::uint32_t>(iwram_[info.offset + 1]) << 8) |
+          (static_cast<std::uint32_t>(iwram_[info.offset + 2]) << 16) |
+          (static_cast<std::uint32_t>(iwram_[info.offset + 3]) << 24);
+      return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+    }
+    case Region::ewram: {
+      const std::uint32_t aligned_value =
+          static_cast<std::uint32_t>(ewram_[info.offset]) |
+          (static_cast<std::uint32_t>(ewram_[info.offset + 1]) << 8) |
+          (static_cast<std::uint32_t>(ewram_[info.offset + 2]) << 16) |
+          (static_cast<std::uint32_t>(ewram_[info.offset + 3]) << 24);
+      return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+    }
+    case Region::vram: {
+      const std::uint32_t aligned_value =
+          static_cast<std::uint32_t>(vram_[info.offset]) |
+          (static_cast<std::uint32_t>(vram_[info.offset + 1]) << 8) |
+          (static_cast<std::uint32_t>(vram_[info.offset + 2]) << 16) |
+          (static_cast<std::uint32_t>(vram_[info.offset + 3]) << 24);
+      return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+    }
+    case Region::palette: {
+      const std::uint32_t aligned_value =
+          static_cast<std::uint32_t>(palette_[info.offset]) |
+          (static_cast<std::uint32_t>(palette_[info.offset + 1]) << 8) |
+          (static_cast<std::uint32_t>(palette_[info.offset + 2]) << 16) |
+          (static_cast<std::uint32_t>(palette_[info.offset + 3]) << 24);
+      return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+    }
+    case Region::oam: {
+      const std::uint32_t aligned_value =
+          static_cast<std::uint32_t>(oam_[info.offset]) |
+          (static_cast<std::uint32_t>(oam_[info.offset + 1]) << 8) |
+          (static_cast<std::uint32_t>(oam_[info.offset + 2]) << 16) |
+          (static_cast<std::uint32_t>(oam_[info.offset + 3]) << 24);
+      return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+    }
+    case Region::game_pak_rom: {
+      if (game_pak_rom_.empty()) {
+        return std::nullopt;
+      }
+      if (info.offset + 3 >= game_pak_rom_.size()) {
+        break;
+      }
+      const std::uint32_t aligned_value =
+          static_cast<std::uint32_t>(game_pak_rom_[info.offset]) |
+          (static_cast<std::uint32_t>(game_pak_rom_[info.offset + 1]) << 8) |
+          (static_cast<std::uint32_t>(game_pak_rom_[info.offset + 2]) << 16) |
+          (static_cast<std::uint32_t>(game_pak_rom_[info.offset + 3]) << 24);
+      return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
+    }
+    default:
+      break;
+  }
+
   const std::optional<std::uint8_t> b0 = read8(aligned_address);
   const std::optional<std::uint8_t> b1 = read8(aligned_address + 1);
   const std::optional<std::uint8_t> b2 = read8(aligned_address + 2);

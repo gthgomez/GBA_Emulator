@@ -249,11 +249,11 @@ SaveStateDecodeResult SaveStateCodec::decode_into(CoreSession& session,
   }
 
   session.reset();
-  for (std::uint8_t index = 0; index < Arm7tdmi::kRegisterCount; ++index) {
-    session.cpu().set_register(index, registers.at(index));
-  }
   if (!session.cpu().set_cpsr(cpsr) || !session.keypad().set_pressed_mask(pressed)) {
     return {SaveStateDecodeStatus::restore_rejected, version, state_hash};
+  }
+  for (std::uint8_t index = 0; index < Arm7tdmi::kRegisterCount; ++index) {
+    session.cpu().set_register(index, registers.at(index));
   }
   session.waitcnt().write_control(waitcnt);
   session.keypad().write_keycnt(keycnt);
