@@ -122,13 +122,13 @@ artifacts exist — not merely synthetic self-test PASS.
 
 | Item | Status |
 | --- | --- |
-| JNI + `AndroidRuntime` frame loop / Compose RGB565 upload | **Implemented** (`GbaRuntimeBridge`, `GameScreen`) |
-| SAF ROM import (`OpenDocument`) | **Implemented** (`GbaEmulatorScreen`); save export/import **not** implemented |
+| JNI + `AndroidRuntime` frame loop / `SurfaceView` RGB565 present | **Implemented** (`GbaRuntimeBridge`, `GameScreen`, `GameViewportSurfaceController`) |
+| SAF ROM import (`OpenDocument`) | **Implemented** (`GbaEmulatorScreen`); cartridge save + save-state export/import via SAF — see rows below |
 | Touch input overlay | **Implemented** (`TouchGameControls`) |
-| `stop_reason` / audio batch counts via JNI | **Implemented** (counts only; no speaker output) |
-| Oboe or AAudio playback | Not implemented |
-| GLES presentation | Not implemented (Compose `Image` path) |
-| Save-state + cartridge save SAF UX | Not implemented |
+| `stop_reason` / audio batch counts via JNI | **Implemented** (counts + Oboe playback path) |
+| Oboe playback (`ApuAudioEngine`) | **Implemented** — hardware output verified 2026-08-14; quality currently **FAIL** (underrun storm: 2,787 @ frame 60, 710,778 after restart) |
+| Presentation | **Implemented** (`SurfaceView` + `Canvas.drawBitmap`); GLES not implemented |
+| Cartridge save + save-state SAF UX | **Implemented** (`SaveRepository` + `CreateDocument`/`OpenDocument` flows); on-device round-trip verification still required |
 | Process-wide pause / thermal soak | Not recorded |
 
 ### Explicit non-goals (until evidence exists)
