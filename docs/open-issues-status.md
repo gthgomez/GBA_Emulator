@@ -1,7 +1,7 @@
 # Open Issues Status
 
-Status: Jun 2026 documentation rollup  
-Date: 2026-06-03
+Status: 2026-08-15 update — device soak audio/pacing FAILs + credibility matrix regression recorded  
+Date: 2026-06-03 (updated 2026-08-15)
 
 This document summarizes what is **closed** (verified with reproducible evidence) versus
 what **remains** for production and controlled beta. It does not replace per-suite logs in
@@ -28,25 +28,27 @@ what **remains** for production and controlled beta. It does not replace per-sui
 
 ### mGBA public suite regression baseline
 
-Thirteen upstream targets are **GREEN** in `tools/mgba-suite-green-baseline.json`
-(`END` with `pass=total`, zero parsed failures, zero unsupported instructions, zero fetch
-failures). Latest matrix: `build/test-results/credibility-matrix-latest.json` (2026-06-01).
+**⚠️ 2026-08-14 REGRESSION.** The 2026-06-01 matrix (below) was GREEN, but the 2026-08-14
+run (`build/test-results/credibility-matrix-20260814-210843-10140.json`, first valid pwsh-7
+run since June) is RED: `io-read` and `misc-edge` regressed and the `video` target is
+**missing** from the current matrix. The remaining 14 targets stay GREEN. Needs triage
+(PPU/IO-timing-adjacent cluster) before any beta candidate.
 
-| Target | Pass/total (latest) |
-| --- | --- |
-| `memory` | 1552/1552 |
-| `io-read` | 130/130 |
-| `bios-math` | 615/615 |
-| `dma` | 1256/1256 |
-| `shifter` | 140/140 |
-| `carry` | 93/93 |
-| `multiply-long` | 72/72 |
-| `timer-irq` | 90/90 |
-| `timers` | 936/936 |
-| `timing` | 2020/2020 |
-| `sio-read` | 90/90 |
-| `sio-timing` | 4/4 (four SKIPPED no-peer multiplayer cases) |
-| `misc-edge` | 12/12 |
+| Target | Pass/total (2026-06-01 baseline) | 2026-08-14 |
+| --- | --- | --- |
+| `memory` | 1552/1552 | GREEN |
+| `io-read` | 130/130 | **RED 51/130** (BG0HOFS + 79 other) |
+| `bios-math` | 615/615 | GREEN |
+| `dma` | 1256/1256 | GREEN |
+| `shifter` | 140/140 | GREEN |
+| `carry` | 93/93 | GREEN |
+| `multiply-long` | 72/72 | GREEN |
+| `timer-irq` | 90/90 | GREEN |
+| `timers` | 936/936 | GREEN |
+| `timing` | 2020/2020 | GREEN |
+| `sio-read` | 90/90 | GREEN |
+| `sio-timing` | 4/4 (four SKIPPED no-peer multiplayer cases) | GREEN |
+| `misc-edge` | 12/12 | **RED 6/12** (H-blank bit start Hblank) |
 
 Harness aliases (not in the regression baseline file, but green in the credibility matrix):
 `loadstore`, `ldmia`, `stmia`.
@@ -97,10 +99,10 @@ green:
 | Blocker | Owner hint | Doc |
 | --- | --- | --- |
 | P0 synthetic device soak | Android | **PASS** — [`evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md) |
-| Audible Oboe/AAudio on device | Android | **TEMPLATE** — [`evidence/2026-06-05-android-device-soak-av-template.md`](evidence/2026-06-05-android-device-soak-av-template.md); hardware replay required |
-| Process lifecycle pause + save flush on stop | Android | BLOCKED — partial (Home/resume manual only) |
-| Save import/export + save-state on device | Android | BLOCKED — workstation codec only |
-| Frame-cycle pacing + 10+ min thermal soak | Android / core | BLOCKED — instruction-bounded `step_frame`; no thermal artifact |
+| Audible Oboe/AAudio on device | Android | **FAIL** — [`evidence/2026-08-14-android-device-soak-p1-emerald-wireless.md`](evidence/2026-08-14-android-device-soak-p1-emerald-wireless.md): audible but choppy; 2,787 underruns @ frame 60, 710,778 after restart |
+| Process lifecycle pause + save flush on stop | Android | PARTIAL — force-stop + relaunch clean (2026-08-14); lock/unlock does not recover a stalled presentation loop |
+| Save import/export + save-state on device | Android | BLOCKED — workstation codec only; in-game save not reached on device (1.4 fps play) |
+| Frame-cycle pacing + 10+ min thermal soak | Android / core | **FAIL** — 1.4–2 fps → full stall (0 presents), `coreUnderruns=0`; thermal unmeasured |
 
 **Controlled external beta stays BLOCKED** until audio, durable saves, and measured pacing/thermal
 artifacts exist — not merely synthetic self-test PASS.
@@ -109,7 +111,7 @@ artifacts exist — not merely synthetic self-test PASS.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Upstream `video` suite | **GREEN (7/7 automation)** | `run-video-suite-all.ps1` + credibility matrix `video` row; upstream interactive suite still has no END pass/total |
+| Upstream `video` suite | **MISSING (2026-08-14)** | baseline expects the `video` alias group but the current matrix produces no `video` row — re-verify `run-video-suite-all.ps1` and the matrix config; seven oracle aliases were green as of 2026-06-01 |
 | Additional video tests | Open | Beyond the seven oracle aliases |
 | CPU pipeline / Thumb coverage | Partial | See `docs/production-engine-roadmap.md` |
 | PPU/APU hardware completeness | Seed-level | Renderer/mixer seeds, not full hardware |
