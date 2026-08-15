@@ -72,6 +72,8 @@ class AndroidRuntime {
   [[nodiscard]] AndroidRuntimeStatus load_rom(const std::vector<std::uint8_t>& rom);
   [[nodiscard]] AndroidRuntimeStatus set_button_mask(std::uint16_t pressed_mask);
   void set_render_control(const PpuRenderControl& control);
+  void set_state_hash_enabled(bool enabled);
+  [[nodiscard]] bool state_hash_enabled() const;
   [[nodiscard]] AndroidRuntimeFrameResult step_frame(std::uint32_t max_steps);
   [[nodiscard]] AndroidRuntimeFrameResult step_frame_with_fetch_trace(
       std::uint32_t max_steps, AndroidRuntimeUnsupportedDump* dump_on_unsupported);
@@ -88,6 +90,7 @@ class AndroidRuntime {
   PpuRenderer renderer_;
   PpuRenderControl render_control_;
   std::vector<ApuMixedSample> last_audio_batch_;
+  bool state_hash_enabled_ = false;
 };
 
 }  // namespace gba::core

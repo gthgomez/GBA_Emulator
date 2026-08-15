@@ -122,6 +122,14 @@ void AndroidRuntime::set_render_control(const PpuRenderControl& control) {
   render_control_ = control;
 }
 
+void AndroidRuntime::set_state_hash_enabled(bool enabled) {
+  state_hash_enabled_ = enabled;
+}
+
+bool AndroidRuntime::state_hash_enabled() const {
+  return state_hash_enabled_;
+}
+
 namespace {
 
 void record_fetch_trace(AndroidRuntimeUnsupportedDump* dump,
@@ -243,7 +251,7 @@ AndroidRuntimeFrameResult AndroidRuntime::step_frame_with_fetch_trace(
   }
   result.audio_samples = static_cast<std::uint32_t>(last_audio_batch_.size());
   result.audio_underruns = result.audio_samples == 0 ? 1U : 0U;
-  result.state_hash = session_.state_hash();
+  result.state_hash = state_hash_enabled() ? session_.state_hash() : 0;
   render_control_ = session_.ppu().render_control();
   return result;
 }

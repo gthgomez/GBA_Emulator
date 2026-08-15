@@ -12,6 +12,7 @@ AndroidFramePacingSummary run_android_performance_gate(
   if (config.frames == 0 || config.steps_per_frame == 0) {
     return summary;
   }
+  runtime.set_state_hash_enabled(true);
 
   std::vector<double> frame_ms;
   frame_ms.reserve(config.frames);
