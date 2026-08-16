@@ -1,7 +1,7 @@
 # Controlled Beta Readiness
 
-Status: Phase 72 bounded local beta gate (P0 synthetic device evidence recorded)
-Date: 2026-06-03
+Status: Phase 72 bounded local beta gate (device soak 2026-08-14: audio/pacing FAIL, matrix regression)
+Date: 2026-06-03 (updated 2026-08-15)
 
 The project is not ready for external beta yet. This document defines the controlled
 beta gate, records the current evidence, and makes remaining blockers explicit.
@@ -20,7 +20,7 @@ beta gate, records the current evidence, and makes remaining blockers explicit.
 | Android Runtime | Runtime can map input, render framebuffer, drain audio, and report underruns locally. | `android_runtime_test` passes. | PASS |
 | Performance | Local synthetic benchmark and regression gates pass. | Integrator 2026-06-05: `check-core-performance-regression.ps1` PASS after timing-cache optimization + calibrated ceilings. | **PASS** |
 | Device Evidence (P0 synthetic) | At least one target Android device or emulator run: bridge + runtime self-tests PASS, cold start, Home/resume; artifact on disk (no ROMs in git). | [`evidence/2026-06-03-android-device-soak-synthetic-pass.md`](evidence/2026-06-03-android-device-soak-synthetic-pass.md) — adb replay steps; re-run on hardware to attach model/API. | **PASS** (bounded) |
-| Device Evidence (audio / thermal / pacing) | Audible playback, p95 frame pacing, 10+ min thermal notes on target hardware. | Ring-buffer Oboe + `EmulationFramePacer` + speed/Steady Music in APK; workstation unit tests for pacer/speed; **manual device soak still required** per [`android-device-soak-checklist.md`](android-device-soak-checklist.md) § AV + speed audit. | BLOCKED |
+| Device Evidence (audio / thermal / pacing) | Audible playback, p95 frame pacing, 10+ min thermal notes on target hardware. | **FAIL** — soak 2026-08-14 (SM-S938U, Android 16, wireless adb, release build): audio audible but choppy/garbled (2,787 underruns @ frame 60; 710,778 after restart — restart leaves the Oboe stream broken); pacing ~1.4–2 fps degrading to a full presentation stall (0 presents) with `coreUnderruns=0` (core is not the bottleneck); thermal unmeasured. Artifact: [`evidence/2026-08-14-android-device-soak-p1-emerald-wireless.md`](evidence/2026-08-14-android-device-soak-p1-emerald-wireless.md). | **FAIL** |
 | Store/Legal | Release governance checklist reviewed. | `docs/release-governance-legal-review.md`. | PASS |
 
 ## Regression Suite Gate
@@ -84,9 +84,9 @@ the integrator or release owner must execute them and fill the Device row before
 
 ### Still required before external beta
 
-- **Audio:** Oboe/AAudio audible output + underrun notes (see soak checklist § Audio).
-- **Lifecycle:** Process-wide pause on background (`onStop` / `ProcessLifecycleOwner`) without native leak.
-- **Pacing / thermal:** Measured frame p95 and 10+ minute soak notes.
+- **Audio:** Oboe/AAudio **clean** output — 2026-08-14 soak measured an underrun storm (2,787 @ frame 60; 710,778 after restart): audible-but-choppy is a FAIL.
+- **Lifecycle:** Process-wide pause on background (`onStop` / `ProcessLifecycleOwner`) without native leak; force-stop + relaunch is clean, but lock/unlock during a stalled loop does not recover.
+- **Pacing / thermal:** Frame pacing at the 16.7 ms target — measured 1.4–2 fps with full stalls; 10+ minute thermal notes still missing.
 - **Saves:** Cartridge save and save-state round-trip on device (workstation codec already gated).
 
 Integration map: [`android-integration-plan.md`](android-integration-plan.md). Issue rollup:
@@ -96,8 +96,11 @@ Integration map: [`android-integration-plan.md`](android-integration-plan.md). I
 
 - Android dev shell at `Project_Android/GbaEmulatorAndroid`: JNI runtime, SAF ROM picker with header
   validation, game loop, touch overlay, Oboe playback, save SAF, lifecycle pause flush, debug ROM smoke
-  path, and **P0 synthetic** soak artifact exist. GLES, audible audio proof, and thermal/pacing artifacts
-  do **not**.
+  path, and **P0 synthetic** soak artifact exist. 2026-08-14 device soak (release build, wireless adb):
+  the game boots and plays to the title screen and Start-advance on hardware with byte-identical
+  framebuffer CRCs to the workstation — but audio is choppy (underrun storm) and the presentation loop
+  runs ~1.4–2 fps and degrades to a full stall. GLES, thermal artifact, and clean pacing do **not**
+  exist.
 - Public mGBA suite regression baseline is green on workstation (`tools/mgba-suite-green-baseline.json`);
   seven video **oracle** aliases are green; the upstream interactive `video` suite is not.
 - No BIOS image is bundled or executed; BIOS/HLE behavior is intentionally bounded.
@@ -115,13 +118,15 @@ Integration map: [`android-integration-plan.md`](android-integration-plan.md). I
 | Accidental copyrighted ROM/BIOS fixture admission | Jonathan/release owner | Fixture registry and release readiness check. | MITIGATED LOCALLY |
 | Unsupported compatibility or superiority claims | Jonathan/release owner | README/legal wording gate and release governance review. | MITIGATED LOCALLY |
 | Save-state incompatibility after future format changes | Core owner | Versioned codec, reject unknown versions, require migration table. | PARTIAL |
-| Android lifecycle/resource leak | Android owner | GameScreen pause + restart; extended Home/resume soak still open. | PARTIAL |
-| Device thermal/audio/frame pacing unknown | Android owner | P0 synthetic PASS; audio/thermal still unmeasured. | BLOCKED |
+| Android lifecycle/resource leak | Android owner | GameScreen pause + restart; 2026-08-14: force-stop + relaunch clean on release; lock/unlock during a stalled loop does not recover it. | PARTIAL |
+| Device thermal/audio/frame pacing unknown | Android owner | 2026-08-14 soak: audio FAIL (underrun storm), pacing FAIL (1.4–2 fps → stall); thermal unmeasured. | BLOCKED |
 
 ## Beta Readiness Result
 
 Phase 72 is complete as a bounded local readiness gate: critical blockers are documented,
 local regression gates exist, rollback/recovery is defined, and known issues are explicit.
 
-Controlled external beta remains blocked until **audio, saves on device, and pacing/thermal**
-evidence exist — in addition to the recorded P0 synthetic self-test artifact.
+Controlled external beta remains blocked: the 2026-08-14 device soak delivered the missing
+audio/pacing evidence and it is a **FAIL** (underrun storm + 1.4–2 fps presentation stall on a
+release build), and the workstation credibility matrix is RED (`io-read`, `misc-edge`
+regressions; `video` target missing). Saves on device and 10+ min thermal remain unmeasured.

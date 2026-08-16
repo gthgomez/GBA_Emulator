@@ -12,6 +12,9 @@ AndroidFramePacingSummary run_android_performance_gate(
   if (config.frames == 0 || config.steps_per_frame == 0) {
     return summary;
   }
+  // Measure gameplay pacing with hashing OFF so the hash never perturbs timing.
+  const bool previous = runtime.state_hash_enabled();
+  runtime.set_state_hash_enabled(false);
 
   std::vector<double> frame_ms;
   frame_ms.reserve(config.frames);
@@ -23,7 +26,6 @@ AndroidFramePacingSummary run_android_performance_gate(
     frame_ms.push_back(elapsed.count());
     ++summary.frames;
     summary.audio_underruns += result.audio_underruns;
-    summary.final_state_hash = result.state_hash;
     if (elapsed.count() > config.target_frame_ms) {
       ++summary.missed_frames;
     }
@@ -42,6 +44,9 @@ AndroidFramePacingSummary run_android_performance_gate(
   summary.thermal = summary.p95_frame_ms >= config.elevated_thermal_frame_ms
                         ? ThermalObservation::elevated
                         : ThermalObservation::nominal;
+  // Unmeasured determinism fingerprint of the post-run session state.
+  summary.final_state_hash = runtime.session().state_hash();
+  runtime.set_state_hash_enabled(previous);
   return summary;
 }
 

@@ -57,11 +57,20 @@ int main() {
   expect(summary.final_state_hash != 0, "performance gate records final hash");
   expect(summary.thermal == ThermalObservation::nominal,
          "wide thermal threshold records nominal observation");
+  // The gate measured with hashing disabled; the prior (disabled) flag must
+  // have been restored on return.
+  expect(!runtime.state_hash_enabled(), "gate restores initially-disabled hashing");
 
   config.target_frame_ms = 0.0;
+  // Run once more with hashing initially ENABLED: the gate must still measure
+  // with hashing off, fingerprint once, and restore the prior (enabled) flag.
+  runtime.set_state_hash_enabled(true);
   const gba::core::AndroidFramePacingSummary strict =
       gba::core::run_android_performance_gate(runtime, config);
   expect(strict.missed_frames == 4, "strict target records missed frames");
+  expect(strict.final_state_hash != 0, "strict run records final hash");
+  expect(runtime.state_hash_enabled(), "gate restores initially-enabled hashing");
+  runtime.set_state_hash_enabled(false);
 
   std::cout << "android_performance_gate_test: PASS\n";
   return 0;
