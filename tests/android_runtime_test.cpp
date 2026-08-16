@@ -75,6 +75,17 @@ int main() {
   expect(frame.audio_underruns == 0, "runtime reports no underrun when samples exist");
   expect(!runtime.last_audio_batch().empty(), "runtime exposes last audio batch");
 
+  // State-hash hot-path contract: per-frame hashing defaults to OFF so the
+  // 16 MB ROM traversal never runs in normal gameplay; opt-in only.
+  expect(!runtime.state_hash_enabled(), "state hashing defaults to disabled");
+  expect(frame.state_hash == 0, "disabled hashing reports state_hash 0");
+  runtime.set_state_hash_enabled(true);
+  const gba::core::AndroidRuntimeFrameResult hashed =
+      runtime.step_frame(kFullFrameStepBudget);
+  expect(hashed.state_hash != 0, "enabled hashing reports a real state hash");
+  runtime.set_state_hash_enabled(false);
+  expect(!runtime.state_hash_enabled(), "state hashing flag restores after opt-in");
+
   while (runtime.session().apu().pop_audio_sample().has_value()) {
   }
   const gba::core::AndroidRuntimeFrameResult underrun = runtime.step_frame(1);
