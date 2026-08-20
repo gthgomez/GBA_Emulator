@@ -48,7 +48,8 @@ constexpr std::uint8_t kAutoIrqLatencyCycles = 5;
   return thumb_half.has_value();
 }
 
-void recover_thumb_state_from_rom_misfetch(Arm7tdmi& cpu, const MemoryBus& memory) {
+void recover_thumb_state_from_rom_misfetch(Arm7tdmi& cpu, const MemoryBus& memory,
+                                           std::uint32_t& recovery_count) {
   if (cpu.thumb_state()) {
     return;
   }
@@ -56,6 +57,7 @@ void recover_thumb_state_from_rom_misfetch(Arm7tdmi& cpu, const MemoryBus& memor
   if (!looks_like_thumb_misfetch_as_arm(memory, pc)) {
     return;
   }
+  ++recovery_count;
   (void)cpu.set_cpsr(cpu.cpsr() | 0x20U);
 }
 constexpr std::uint8_t kAutoIrqSlowTimerLatencyCycles = 3;
@@ -172,22 +174,6 @@ enum class HleSwiProfileKind : std::uint8_t {
     return 318U + count * 12U;
   }
   return 64U + count * ((control & (1U << 26U)) != 0 ? 8U : 4U);
-}
-
-[[nodiscard]] bool immediate_dma_bus_visible_to_timers(std::uint32_t fetch_address,
-                                                       bool thumb,
-                                                       const WaitStateControl* waitcnt) {
-  const Region fetch_region = MemoryBus::describe(fetch_address).region;
-  if (fetch_region == Region::iwram) {
-    return false;
-  }
-  if (thumb && fetch_region == Region::game_pak_rom && waitcnt != nullptr &&
-      waitcnt->prefetch_enabled()) {
-    const MemoryAccessTiming timing =
-        MemoryBus::timing(fetch_address, AccessWidth::halfword, *waitcnt);
-    return timing.sequential > 1U;
-  }
-  return true;
 }
 
 [[nodiscard]] constexpr std::uint32_t align_word(std::uint32_t value) {
@@ -1190,7 +1176,8 @@ CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
       hle_irq_chained_spaced_data_service_count_(0),
       auto_irq_line_high_(false),
       auto_irq_latency_cycles_(0),
-      timer_io_access_gap_cycles_(0) {}
+      timer_io_access_gap_cycles_(0),
+      thumb_misfetch_recovery_count_(0) {}
 
 CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
                              InterruptController& interrupts, Timers& timers,
@@ -1229,7 +1216,8 @@ CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
       hle_irq_chained_spaced_data_service_count_(0),
       auto_irq_line_high_(false),
       auto_irq_latency_cycles_(0),
-      timer_io_access_gap_cycles_(0) {}
+      timer_io_access_gap_cycles_(0),
+      thumb_misfetch_recovery_count_(0) {}
 
 CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
                              InterruptController& interrupts, Timers& timers,
@@ -1268,10 +1256,15 @@ CoreScheduler::CoreScheduler(Arm7tdmi& cpu, MemoryBus& memory,
       hle_irq_chained_spaced_data_service_count_(0),
       auto_irq_line_high_(false),
       auto_irq_latency_cycles_(0),
-      timer_io_access_gap_cycles_(0) {}
+      timer_io_access_gap_cycles_(0),
+      thumb_misfetch_recovery_count_(0) {}
 
 std::uint64_t CoreScheduler::scheduler_cycles() const {
   return scheduler_cycles_;
+}
+
+std::uint32_t CoreScheduler::thumb_misfetch_recovery_count() const {
+  return thumb_misfetch_recovery_count_;
 }
 
 void CoreScheduler::reset_scheduler_cycles() {
@@ -1298,12 +1291,14 @@ void CoreScheduler::reset_scheduler_cycles() {
   suppress_next_thumb_prefetch_execute_bubble_ = false;
   previous_thumb_internal_load_ = false;
   timer_io_access_gap_cycles_ = 0;
+  thumb_misfetch_recovery_count_ = 0;
 }
 
 CoreSchedulerState CoreScheduler::save_state() const {
   return {scheduler_cycles_, halted_, last_fetch_address_, last_fetch_width_bytes_,
           last_fetch_window_, prefetch_buffer_halfwords_,
           suppress_next_game_pak_prefetch_, recover_next_game_pak_data_fetch_,
+          suppress_next_thumb_prefetch_execute_bubble_,
           previous_thumb_internal_load_, hle_irq_return_lr_,
           hle_irq_saved_registers_, hle_irq_reentry_dispatch_pending_,
           hle_irq_return_latency_pending_, hle_irq_post_return_latency_armed_,
@@ -1315,7 +1310,8 @@ CoreSchedulerState CoreScheduler::save_state() const {
           hle_irq_slow_timer0_return_pending_,
           hle_irq_post_return_chain_active_,
           hle_irq_chained_spaced_data_service_count_, auto_irq_line_high_,
-          auto_irq_latency_cycles_, timer_io_access_gap_cycles_};
+          auto_irq_latency_cycles_, timer_io_access_gap_cycles_,
+          thumb_misfetch_recovery_count_};
 }
 
 void CoreScheduler::load_state(const CoreSchedulerState& state) {
@@ -1327,6 +1323,7 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
   prefetch_buffer_halfwords_ = state.prefetch_buffer_halfwords;
   suppress_next_game_pak_prefetch_ = state.suppress_next_game_pak_prefetch;
   recover_next_game_pak_data_fetch_ = state.recover_next_game_pak_data_fetch;
+  suppress_next_thumb_prefetch_execute_bubble_ = state.suppress_next_thumb_prefetch_execute_bubble;
   previous_thumb_internal_load_ = state.previous_thumb_internal_load;
   hle_irq_return_lr_ = state.hle_irq_return_lr;
   hle_irq_saved_registers_ = state.hle_irq_saved_registers;
@@ -1351,6 +1348,7 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
   auto_irq_line_high_ = state.auto_irq_line_high;
   auto_irq_latency_cycles_ = state.auto_irq_latency_cycles;
   timer_io_access_gap_cycles_ = state.timer_io_access_gap_cycles;
+  thumb_misfetch_recovery_count_ = state.thumb_misfetch_recovery_count;
 }
 
 std::uint64_t CoreScheduler::state_hash() const {
@@ -1372,6 +1370,7 @@ std::uint64_t CoreScheduler::state_hash() const {
   hasher.add_u8(prefetch_buffer_halfwords_);
   hasher.add_bool(suppress_next_game_pak_prefetch_);
   hasher.add_bool(recover_next_game_pak_data_fetch_);
+  hasher.add_bool(suppress_next_thumb_prefetch_execute_bubble_);
   hasher.add_bool(previous_thumb_internal_load_);
   hasher.add_bool(hle_irq_return_lr_.has_value());
   if (hle_irq_return_lr_.has_value()) {
@@ -1473,6 +1472,41 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
       0, timers_.overflow_count(0) - timer0_overflows_before);
   consume_direct_sound_timer(
       1, timers_.overflow_count(1) - timer1_overflows_before);
+  if (triggered_dma.bus_cycles != 0) {
+    const std::uint64_t dma_timer0_before = timers_.overflow_count(0);
+    const std::uint64_t dma_timer1_before = timers_.overflow_count(1);
+    (void)timers_.tick(triggered_dma.bus_cycles, interrupts_);
+    if (io_ != nullptr) {
+      io_->tick(triggered_dma.bus_cycles);
+    }
+    // Advance PPU through DMA bus cycles with event generation.
+    // PPU events (HBlank/VBlank transitions, VCOUNT matches) are processed
+    // and IRQ requests are generated. However, DMA triggers from these
+    // events are handled in the next advance_devices() call to avoid
+    // cascading recursion within the DMA post-advance.
+    const PpuTickEvents dma_ppu_events =
+        ppu_.tick(triggered_dma.bus_cycles, interrupts_);
+    (void)dma_ppu_events;
+    (void)apu_.tick(triggered_dma.bus_cycles);
+    const auto consume_dma_direct_sound = [&](std::uint8_t timer_index,
+                                             std::uint64_t overflow_delta) {
+      for (std::uint64_t event = 0; event < overflow_delta; ++event) {
+        last_direct_sound = apu_.timer_overflow(timer_index);
+        if (last_direct_sound.fifo_a.refill_request) {
+          accumulate_dma(dma_.run_sound_fifo(DmaTrigger::fifo_a, memory_, apu_,
+                                             interrupts_, waitcnt_));
+        }
+        if (last_direct_sound.fifo_b.refill_request) {
+          accumulate_dma(dma_.run_sound_fifo(DmaTrigger::fifo_b, memory_, apu_,
+                                             interrupts_, waitcnt_));
+        }
+      }
+    };
+    consume_dma_direct_sound(
+        0, timers_.overflow_count(0) - dma_timer0_before);
+    consume_dma_direct_sound(
+        1, timers_.overflow_count(1) - dma_timer1_before);
+  }
   std::optional<ApuFrameStep> apu_frame_step = apu_.tick(cycles);
   scheduler_cycles_ += cycles + triggered_dma.bus_cycles;
   const std::uint32_t total_visible_cycles = cycles + triggered_dma.bus_cycles;
@@ -1759,8 +1793,7 @@ CoreSchedulerStepResult CoreScheduler::step_arm(
       merge_device_ticks(devices, remaining_devices);
     }
     dma_result = run_immediate_dma();
-    if (dma_result.bus_cycles != 0 &&
-        immediate_dma_bus_visible_to_timers(pre_step_pc, false, waitcnt_)) {
+    if (dma_result.bus_cycles != 0) {
       const CoreDeviceTickResult dma_devices = advance_devices(dma_result.bus_cycles);
       merge_device_ticks(devices, dma_devices);
     }
@@ -1970,8 +2003,7 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
       merge_device_ticks(devices, remaining_devices);
     }
     dma_result = run_immediate_dma();
-    if (dma_result.bus_cycles != 0 &&
-        immediate_dma_bus_visible_to_timers(pre_step_pc, true, waitcnt_)) {
+    if (dma_result.bus_cycles != 0) {
       const CoreDeviceTickResult dma_devices = advance_devices(dma_result.bus_cycles);
       merge_device_ticks(devices, dma_devices);
     }
@@ -2328,7 +2360,7 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_return(
                                    std::nullopt};
   }
   hle_irq_return_lr_.reset();
-  recover_thumb_state_from_rom_misfetch(cpu_, memory_);
+  recover_thumb_state_from_rom_misfetch(cpu_, memory_, thumb_misfetch_recovery_count_);
   const bool slow_timer0_active_return =
       hle_irq_slow_timer0_return_pending_ && timers_.enabled(0) &&
       timers_.prescaler_divisor(0) > 1U;
@@ -2833,7 +2865,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
 }
 
 CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
-  recover_thumb_state_from_rom_misfetch(cpu_, memory_);
+  recover_thumb_state_from_rom_misfetch(cpu_, memory_, thumb_misfetch_recovery_count_);
   if (!cpu_.thumb_state()) {
     suppress_next_thumb_prefetch_execute_bubble_ = false;
     return step_arm_from_pc();

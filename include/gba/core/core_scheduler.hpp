@@ -94,6 +94,7 @@ struct CoreSchedulerState {
   std::uint8_t prefetch_buffer_halfwords = 0;
   bool suppress_next_game_pak_prefetch = false;
   bool recover_next_game_pak_data_fetch = false;
+  bool suppress_next_thumb_prefetch_execute_bubble = false;
   bool previous_thumb_internal_load = false;
   std::optional<std::uint32_t> hle_irq_return_lr;
   std::optional<std::array<std::uint32_t, 13>> hle_irq_saved_registers;
@@ -111,6 +112,7 @@ struct CoreSchedulerState {
   bool auto_irq_line_high = false;
   std::uint8_t auto_irq_latency_cycles = 0;
   std::uint32_t timer_io_access_gap_cycles = 0;
+  std::uint32_t thumb_misfetch_recovery_count = 0;
 };
 
 class CoreScheduler {
@@ -125,6 +127,7 @@ class CoreScheduler {
                 const WaitStateControl& waitcnt, BiosController& bios);
 
   [[nodiscard]] std::uint64_t scheduler_cycles() const;
+  [[nodiscard]] std::uint32_t thumb_misfetch_recovery_count() const;
   void reset_scheduler_cycles();
   [[nodiscard]] CoreSchedulerState save_state() const;
   void load_state(const CoreSchedulerState& state);
@@ -188,6 +191,7 @@ class CoreScheduler {
   bool auto_irq_line_high_;
   std::uint8_t auto_irq_latency_cycles_;
   std::uint32_t timer_io_access_gap_cycles_;
+  std::uint32_t thumb_misfetch_recovery_count_;
 
   [[nodiscard]] std::uint32_t apply_fetch_timing(std::uint32_t fetch_address,
                                                  std::uint8_t width_bytes,

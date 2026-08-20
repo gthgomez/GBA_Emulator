@@ -862,31 +862,50 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
          MemoryBus::describe(data_address).region == Region::game_pak_rom;
 }
 
-[[nodiscard]] std::optional<std::uint32_t> read_pipeline_open_bus_word(
+[[nodiscard]] std::optional<std::uint32_t> read_arm_pipeline_open_bus_word(
     const MemoryBus& memory, std::uint32_t pc) {
   return memory.read32(pc + 8U);
 }
 
-[[nodiscard]] std::optional<std::uint8_t> read8_or_pipeline_open_bus(
+[[nodiscard]] std::optional<std::uint32_t> read_thumb_pipeline_open_bus_word(
+    const MemoryBus& memory, std::uint32_t pc) {
+  return memory.read32(pc + 4U);
+}
+
+[[nodiscard]] std::optional<std::uint8_t> read8_or_arm_pipeline_open_bus(
     const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
   const std::optional<std::uint8_t> value = memory.read8(address);
   if (value.has_value()) {
     return value;
   }
-  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  const std::optional<std::uint32_t> open_bus = read_arm_pipeline_open_bus_word(memory, pc);
   if (!open_bus.has_value()) {
     return std::nullopt;
   }
   return static_cast<std::uint8_t>((open_bus.value() >> ((address & 0x3U) * 8U)) & 0xFFU);
 }
 
-[[nodiscard]] std::optional<std::uint16_t> read16_or_pipeline_open_bus(
+[[nodiscard]] std::optional<std::uint8_t> read8_or_thumb_pipeline_open_bus(
+    const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
+  const std::optional<std::uint8_t> value = memory.read8(address);
+  if (value.has_value()) {
+    return value;
+  }
+  const std::optional<std::uint32_t> open_bus =
+      read_thumb_pipeline_open_bus_word(memory, pc);
+  if (!open_bus.has_value()) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint8_t>((open_bus.value() >> ((address & 0x3U) * 8U)) & 0xFFU);
+}
+
+[[nodiscard]] std::optional<std::uint16_t> read16_or_arm_pipeline_open_bus(
     const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
   const std::optional<std::uint16_t> value = memory.read16(address);
   if (value.has_value()) {
     return value;
   }
-  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  const std::optional<std::uint32_t> open_bus = read_arm_pipeline_open_bus_word(memory, pc);
   if (!open_bus.has_value()) {
     return std::nullopt;
   }
@@ -900,24 +919,42 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
   if (value.has_value()) {
     return value;
   }
-  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  const std::optional<std::uint32_t> open_bus =
+      read_thumb_pipeline_open_bus_word(memory, pc);
   if (!open_bus.has_value()) {
     return std::nullopt;
   }
   return static_cast<std::uint16_t>((open_bus.value() >> 16U) & 0xFFFFU);
 }
 
-[[nodiscard]] std::optional<std::uint32_t> read32_or_pipeline_open_bus(
+[[nodiscard]] std::optional<std::uint32_t> read32_or_arm_pipeline_open_bus(
     const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
   const std::optional<std::uint32_t> value = memory.read32(address);
   if (value.has_value()) {
     return value;
   }
-  const std::optional<std::uint32_t> open_bus = read_pipeline_open_bus_word(memory, pc);
+  const std::optional<std::uint32_t> open_bus = read_arm_pipeline_open_bus_word(memory, pc);
   if (!open_bus.has_value()) {
     return std::nullopt;
   }
   return rotate_right(open_bus.value(), static_cast<std::uint8_t>((address & 0x3U) * 8U));
+}
+
+[[nodiscard]] std::optional<std::uint32_t> read32_or_thumb_pipeline_open_bus(
+    const MemoryBus& memory, std::uint32_t address, std::uint32_t pc) {
+  const std::optional<std::uint32_t> value = memory.read32(address);
+  if (value.has_value()) {
+    return value;
+  }
+  const std::optional<std::uint16_t> half =
+      memory.read16(pc + 4U);
+  if (!half.has_value()) {
+    return std::nullopt;
+  }
+  const std::uint32_t duplicated =
+      static_cast<std::uint32_t>(half.value()) |
+      (static_cast<std::uint32_t>(half.value()) << 16U);
+  return rotate_right(duplicated, static_cast<std::uint8_t>((address & 0x3U) * 8U));
 }
 
 [[nodiscard]] std::optional<std::uint32_t> read32_or_thumb_block_open_bus(
@@ -2891,7 +2928,7 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
     switch (decoded.kind) {
       case ThumbMemoryTransferKind::word: {
         const std::optional<std::uint32_t> value =
-            read32_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+            read32_or_thumb_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -2900,7 +2937,7 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
       }
       case ThumbMemoryTransferKind::byte: {
         const std::optional<std::uint8_t> value =
-            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+            read8_or_thumb_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -2918,7 +2955,7 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
       }
       case ThumbMemoryTransferKind::signed_byte: {
         const std::optional<std::uint8_t> value =
-            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+            read8_or_thumb_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -3335,7 +3372,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
     if (decoded.load) {
       if (decoded.signed_transfer && !decoded.halfword) {
         const std::optional<std::uint8_t> value =
-            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+            read8_or_arm_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -3348,7 +3385,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
 
       if (decoded.signed_transfer && (address & 0x1U) != 0) {
         const std::optional<std::uint8_t> value =
-            read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+            read8_or_arm_pipeline_open_bus(memory, address, registers_.at(kPc));
         if (!value.has_value()) {
           return ExecuteStatus::unsupported;
         }
@@ -3363,7 +3400,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
           MemoryBus::describe(address).region == Region::game_pak_save ? address
                                                                        : (address & ~0x1U);
       const std::optional<std::uint16_t> value =
-          read16_or_pipeline_open_bus(memory, halfword_address, registers_.at(kPc));
+          read16_or_arm_pipeline_open_bus(memory, halfword_address, registers_.at(kPc));
       if (!value.has_value()) {
         return ExecuteStatus::unsupported;
       }
@@ -3428,7 +3465,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
   if (decoded.load) {
     if (decoded.byte) {
       const std::optional<std::uint8_t> value =
-          read8_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+          read8_or_arm_pipeline_open_bus(memory, address, registers_.at(kPc));
       if (!value.has_value()) {
         return ExecuteStatus::unsupported;
       }
@@ -3440,7 +3477,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
     }
 
     const std::optional<std::uint32_t> value =
-        read32_or_pipeline_open_bus(memory, address, registers_.at(kPc));
+        read32_or_arm_pipeline_open_bus(memory, address, registers_.at(kPc));
     if (!value.has_value()) {
       return ExecuteStatus::unsupported;
     }
