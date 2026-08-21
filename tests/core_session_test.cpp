@@ -211,8 +211,9 @@ int main() {
          "HBlank Halt-HLE before event executes");
   expect(hblank_halt_before_step.step->cpu_step.elapsed_cycles == 93,
          "HBlank Halt-HLE before raw event includes fetch and HLE return cycles");
-  expect(hblank_halt_before->ppu().line_cycle() == PpuTiming::kHblankFlagCycles + 50U,
-         "HBlank Halt-HLE entered before raw HBlank overlaps the event cycle");
+   expect(hblank_halt_before->ppu().line_cycle() ==
+              PpuTiming::kVisibleCycles + 96U,
+          "HBlank Halt-HLE entered before raw HBlank overlaps the event cycle");
 
   auto hblank_halt_pending = std::make_unique<CoreSession>();
   hblank_halt_pending->bios().set_mode(BiosExecutionMode::hle);
@@ -234,8 +235,9 @@ int main() {
          "pending HBlank Halt-HLE executes");
   expect(hblank_halt_pending_step.step->cpu_step.elapsed_cycles == 93,
          "pending HBlank Halt-HLE includes fetch and HLE return cycles");
-  expect(hblank_halt_pending->ppu().line_cycle() == PpuTiming::kHblankFlagCycles + 51U,
-         "pending HBlank Halt-HLE keeps the steady return phase");
+   expect(hblank_halt_pending->ppu().line_cycle() ==
+              PpuTiming::kVisibleCycles + 97U,
+          "pending HBlank Halt-HLE keeps the steady return phase");
 
   auto div_hle = std::make_unique<CoreSession>();
   div_hle->bios().set_mode(BiosExecutionMode::hle);
