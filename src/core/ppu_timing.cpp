@@ -145,13 +145,13 @@ PpuTickEvents PpuTiming::tick(std::uint32_t cycles, InterruptController& interru
   PpuTickEvents events{};
   while (cycles > 0) {
     const std::uint16_t next_event_cycle =
-        line_cycle_ < kVisibleCycles ? kVisibleCycles : kCyclesPerLine;
+        line_cycle_ < kHblankFlagCycles ? kHblankFlagCycles : kCyclesPerLine;
     const std::uint32_t cycles_to_event = next_event_cycle - line_cycle_;
     const std::uint32_t step = std::min(cycles, cycles_to_event);
     line_cycle_ = static_cast<std::uint16_t>(line_cycle_ + step);
     cycles -= step;
 
-    if (line_cycle_ == kVisibleCycles) {
+    if (line_cycle_ == kHblankFlagCycles) {
       enter_hblank(interrupts, events);
     }
     if (line_cycle_ == kCyclesPerLine) {

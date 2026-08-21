@@ -73,7 +73,7 @@ int main() {
     session->dma().write_control(0, 0xA000U);
 
     // Advance to HBlank boundary
-    const std::uint32_t pre_hblank = PpuTiming::kVisibleCycles - 1;
+    const std::uint32_t pre_hblank = PpuTiming::kHblankFlagCycles - 1;
     (void)session->scheduler().advance_devices(pre_hblank);
 
     const std::uint16_t ppu_line_before = session->ppu().vcount();
@@ -163,7 +163,7 @@ int main() {
 
     // Advance past HBlank point during VBlank line
     const CoreDeviceTickResult vblank_tick =
-        session->scheduler().advance_devices(PpuTiming::kVisibleCycles);
+        session->scheduler().advance_devices(PpuTiming::kHblankFlagCycles);
 
     // HBlank IRQ SHOULD fire during VBlank (IRQ fires on all lines)
     expect(session->interrupts().requested(InterruptSource::hblank),
@@ -201,7 +201,7 @@ int main() {
     session->interrupts().write_ime(1);
 
     // Advance to end of visible period on line 0
-    (void)session->scheduler().advance_devices(PpuTiming::kVisibleCycles - 1);
+    (void)session->scheduler().advance_devices(PpuTiming::kHblankFlagCycles - 1);
     expect(!session->ppu().vblank(), "PPU is on visible line");
     expect(!session->ppu().hblank(), "PPU is not in HBlank yet");
 
@@ -344,7 +344,7 @@ int main() {
 
     // Fire HBlank by advancing 5 more cycles
     const CoreDeviceTickResult hblank_tick =
-        session->scheduler().advance_devices(5);
+        session->scheduler().advance_devices(49);
 
     // DMA should have fired
     expect(hblank_tick.triggered_dma.channels_executed == 1,
@@ -392,7 +392,7 @@ int main() {
 
     // Fire HBlank (5 cycles to reach cycle 960)
     const CoreDeviceTickResult rollover_tick =
-        session->scheduler().advance_devices(5);
+        session->scheduler().advance_devices(49);
 
     // DMA should have fired with enough bus_cycles to cross line boundary
     const std::uint16_t line_after_dma = session->ppu().vcount();
@@ -462,7 +462,7 @@ int main() {
 
     // Fire HBlank (5 cycles to reach cycle 960)
     const CoreDeviceTickResult vblank_cross_tick =
-        session->scheduler().advance_devices(5);
+        session->scheduler().advance_devices(49);
 
     // DMA should have fired
     expect(vblank_cross_tick.triggered_dma.channels_executed >= 1,
@@ -549,7 +549,7 @@ int main() {
     const std::uint16_t timer_before_nested =
         session->timers().counter(0);
     const CoreDeviceTickResult nested_tick =
-        session->scheduler().advance_devices(5);
+        session->scheduler().advance_devices(49);
 
     // HBlank DMA should have fired
     expect(nested_tick.triggered_dma.channels_executed >= 1,
@@ -577,7 +577,7 @@ int main() {
     // CPU interval (5 cycles) plus every drained DMA cycle, modulo 16-bit wrap.
     const std::uint16_t timer_after_nested = session->timers().counter(0);
     const std::uint32_t timer_delta =
-        5U + nested_tick.triggered_dma.bus_cycles;
+        49U + nested_tick.triggered_dma.bus_cycles;
     const std::uint16_t expected_timer_after = static_cast<std::uint16_t>(
         static_cast<std::uint32_t>(timer_before_nested) + timer_delta);
 
@@ -636,7 +636,7 @@ int main() {
 
     // Fire HBlank
     const CoreDeviceTickResult timer_dma_tick =
-        session->scheduler().advance_devices(5);
+        session->scheduler().advance_devices(49);
 
     // DMA should have fired
     expect(timer_dma_tick.triggered_dma.channels_executed >= 1,
@@ -658,7 +658,7 @@ int main() {
       const std::uint16_t timer_reload = session->timers().reload(0);
       const std::uint32_t timer_period = 65536U - timer_reload;
       const std::uint32_t window_ticks =
-          5U + timer_dma_tick.triggered_dma.bus_cycles;
+          49U + timer_dma_tick.triggered_dma.bus_cycles;
       const std::uint32_t ticks_to_first_overflow =
           65536U - static_cast<std::uint32_t>(timer_before);
       std::uint16_t expected_timer_after;
@@ -724,7 +724,7 @@ int main() {
 
     // Fire HBlank
     const CoreDeviceTickResult sync_tick =
-        session->scheduler().advance_devices(5);
+        session->scheduler().advance_devices(49);
 
     // Verify synchronization
     const std::uint64_t final_sched = session->scheduler().scheduler_cycles();
@@ -749,3 +749,6 @@ int main() {
   std::cout << "dma_ppu_invariant_test: PASS\n";
   return 0;
 }
+
+
+
