@@ -2521,9 +2521,11 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
       if ((interrupts_.pending_mask() & hblank_irq) == 0) {
         return executed(1);
       }
-      return executed(entered_before_hblank_event && BiosHleConstants::kHblankHaltReturnCycles > 0
-                          ? BiosHleConstants::kHblankHaltReturnCycles - 1U
-                          : BiosHleConstants::kHblankHaltReturnCycles);
+      // Uniform wake-return latency: the previous 82/83 split keyed off a
+      // within-line boundary that flips across consecutive halts (confirmed
+      // via GBA_DEBUG_HALT trace: entries at cycle 544 -> 82, 1116 -> 83),
+      // injecting cadence jitter into misc-edge "H-blank bit start".
+      return executed(BiosHleConstants::kHblankHaltReturnCycles);
     }
     case 0x04: {
       const bool discard = cpu_.register_value(0) != 0;
@@ -3753,3 +3755,4 @@ bool CoreScheduler::hle_diff16_unfilter() {
 }
 
 }  // namespace gba::core
+
