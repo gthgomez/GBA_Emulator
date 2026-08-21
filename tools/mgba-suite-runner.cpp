@@ -1490,6 +1490,8 @@ int main(int argc, char** argv) {
               << '\n';
     std::cout << "suite_runner: scheduler_cycles=" << result.scheduler_cycles << '\n';
     std::cout << "suite_runner: state_hash=" << session.state_hash() << '\n';
+    std::cout << "suite_runner: thumb_misfetch_recovery_count="
+              << session.scheduler().thumb_misfetch_recovery_count() << '\n';
     const bool mask_oam0_for_video_evidence =
         until_output == "VIDEO:DEGENERATE_OBJ_ACTUAL";
     const VideoFrameEvidence video_frame =

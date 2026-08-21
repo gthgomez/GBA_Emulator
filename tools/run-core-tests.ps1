@@ -213,6 +213,25 @@ $coreTests = @(
         )
     },
     @{
+        Name = "dma_master_time_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\dma_master_time_test.cpp"
+        )
+    },
+    @{
         Name = "ppu_timing_test"
         Sources = @(
             "src\core\arm7tdmi.cpp",
@@ -519,6 +538,62 @@ $coreTests = @(
         Sources = @(
             "src\core\wait_state_control.cpp",
             "tests\wait_state_control_test.cpp"
+        )
+    },
+    @{
+        Name = "thumb_misfetch_recovery_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\thumb_misfetch_recovery_test.cpp"
+        )
+    },
+    @{
+        Name = "thumb_open_bus_asymmetric_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\thumb_open_bus_asymmetric_test.cpp"
+        )
+    },
+    @{
+        Name = "dma_ppu_invariant_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\dma_ppu_invariant_test.cpp"
         )
     }
 )

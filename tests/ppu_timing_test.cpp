@@ -144,7 +144,7 @@ int main() {
   ppu.tick(PpuTiming::kVisibleCycles, interrupts);
   expect(!ppu.hblank(), "DISPSTAT HBlank flag remains delayed during VBlank lines");
   expect(interrupts.requested(InterruptSource::hblank),
-         "HBlank IRQ is requested during VBlank scanlines");
+         "HBlank IRQ IS requested during VBlank scanlines (IRQ fires on all lines)");
   interrupts.write_interrupt_flags(irq_bit(InterruptSource::hblank));
 
   ppu.tick(PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles, interrupts);

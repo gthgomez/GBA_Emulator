@@ -1,6 +1,6 @@
-﻿# ROM video smoke evidence
+# ROM video smoke evidence
 
-Date: 2026-06-05 11:07:26
+Date: 2026-08-13 02:08:36
 ROM file: Pokemon - Emerald Version (USA, Europe).gba
 Frames requested: 216
 Exit code: 0
