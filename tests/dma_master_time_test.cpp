@@ -78,7 +78,7 @@ int main() {
     session->dma().write_control(0, 0xA000U);
     expect(session->dma().enabled(0), "DMA0 enabled for HBlank");
 
-    const std::uint32_t pre_hblank = PpuTiming::kVisibleCycles - 1;
+    const std::uint32_t pre_hblank = PpuTiming::kHblankFlagCycles - 1;
     [[maybe_unused]] const CoreDeviceTickResult pre =
         session->scheduler().advance_devices(pre_hblank);
     expect(session->timers().counter(0) == static_cast<std::uint16_t>(pre_hblank),
@@ -221,7 +221,7 @@ int main() {
     session->dma().write_word_count(0, 1);
     session->dma().write_control(0, 0xA000U);
 
-    const std::uint32_t pre_hblank = PpuTiming::kVisibleCycles - 1;
+    const std::uint32_t pre_hblank = PpuTiming::kHblankFlagCycles - 1;
     [[maybe_unused]] const CoreDeviceTickResult pre =
         session->scheduler().advance_devices(pre_hblank);
 
@@ -301,3 +301,4 @@ int main() {
   std::cout << "dma_master_time_test: PASS\n";
   return 0;
 }
+
