@@ -1,0 +1,17 @@
+# Normalize all text files to LF in the repository so that editors on any
+# platform stop producing whole-file diffs when only EOLs change
+# (see review notes on PR #4).
+* text=auto
+
+# Explicit binary guards. ROM/BIOS/save assets are out-of-tree by policy,
+# but keep them out of text normalization if ever present locally.
+*.gba binary
+*.gb binary
+*.gbc binary
+*.bin binary
+*.bios binary
+*.sav binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
