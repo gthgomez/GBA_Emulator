@@ -28,6 +28,11 @@ class PpuTiming {
   static constexpr std::uint16_t kVblankLines = 68;
   static constexpr std::uint16_t kTotalLines = kVisibleLines + kVblankLines;
   static constexpr std::uint16_t kVisibleCycles = 960;
+  // NOTE: hardware-calibrated target is 1004 (mGBA misc-edge "H-blank bit
+  // start" measures flag-high = 228 cycles/line). The DISPSTAT sampler in
+  // core_scheduler.cpp carries 1006-era compensation rules; changing this
+  // constant without reworking those rules regressions other measurements.
+  // See fix/misc-edge-hblank-flag-start investigation notes.
   static constexpr std::uint16_t kHblankFlagCycles = 1006;
   static constexpr std::uint16_t kHblankCycles = 272;
   static constexpr std::uint16_t kCyclesPerLine = kVisibleCycles + kHblankCycles;
