@@ -86,7 +86,7 @@ int main() {
   // The critical proof here is the Thumb asymmetric halfword duplication.
 
   // ==================================================================
-  // Test 3: No regression — Thumb LDR from valid memory
+  // Test 2: No regression — Thumb LDR from valid memory
   // ==================================================================
   {
     CoreSession session;
