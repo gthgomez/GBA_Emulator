@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <vector>
@@ -2507,6 +2508,11 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
     case 0x02: {
       const bool entered_before_hblank_event =
           ppu_.line_cycle() < PpuTiming::kVisibleCycles;
+      if (std::getenv("GBA_DEBUG_HALT") != nullptr) {
+        std::fprintf(stderr, "HALT entry line=%u cycle=%u before_event=%d\n",
+                     ppu_.vcount(), ppu_.line_cycle(),
+                     entered_before_hblank_event ? 1 : 0);
+      }
       if (!wait_for_interrupt_mask(interrupts_.interrupt_enable(), false)) {
         return unsupported();
       }
