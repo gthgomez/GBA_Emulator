@@ -1,3 +1,5 @@
+#requires -Version 7.3
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
@@ -5,6 +7,22 @@ $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 $buildDir = Join-Path $repoRoot "build"
 
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+
+function Assert-NativeExitCode {
+    param(
+        [string]$Step,
+        [int]$Expected = 0
+    )
+
+    if ($LASTEXITCODE -ne $Expected) {
+        Write-Host ""
+        Write-Host "core_benchmark: FAIL ($Step exited with $LASTEXITCODE)"
+        if ($null -eq $LASTEXITCODE) {
+            exit 1
+        }
+        exit $LASTEXITCODE
+    }
+}
 
 g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror `
   -I (Join-Path $repoRoot "include") `
@@ -26,4 +44,11 @@ g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror `
   (Join-Path $repoRoot "benchmarks\core_benchmark.cpp") `
   -o (Join-Path $buildDir "core_benchmark.exe")
 
+# A failed g++ must never fall through to rerun a stale benchmark binary.
+Assert-NativeExitCode -Step "g++ core_benchmark"
+
 & (Join-Path $buildDir "core_benchmark.exe")
+Assert-NativeExitCode -Step "core_benchmark.exe"
+
+# Explicit terminal exit code for orchestrators asserting on $LASTEXITCODE.
+exit 0

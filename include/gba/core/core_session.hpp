@@ -66,6 +66,13 @@ class CoreSession {
   [[nodiscard]] CoreSchedulerFetchStepResult step();
   [[nodiscard]] CoreSchedulerRunResult run(std::uint32_t max_steps);
 
+  // Input facade: mutates the keypad pressed mask and immediately polls the
+  // keypad IRQ line so KEYCNT-configured interrupts raise on input changes
+  // (S6). Android-facing input flow should route through these methods.
+  void press_button(KeypadButton button);
+  void release_button(KeypadButton button);
+  [[nodiscard]] bool set_input_mask(std::uint16_t pressed_mask);
+
   [[nodiscard]] CoreSessionState save_state() const;
   void load_state(const CoreSessionState& state);
   [[nodiscard]] std::uint64_t state_hash() const;

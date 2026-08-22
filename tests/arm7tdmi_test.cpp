@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include "test_helpers.hpp"
+
 namespace {
 
 constexpr std::uint32_t kCondAl = 0xE0000000;
@@ -35,6 +37,7 @@ constexpr std::uint32_t kHalfwordDataTransferRegister = 0x000000B0;
 constexpr std::uint32_t kSignedByteDataTransferRegister = 0x000000D0;
 constexpr std::uint32_t kSignedHalfwordDataTransferRegister = 0x000000F0;
 constexpr std::uint32_t kBlockDataTransfer = 0x08000000;
+constexpr std::uint32_t kForceUserBank = 0x00400000;
 constexpr std::uint32_t kMultiply = 0x00000090;
 constexpr std::uint32_t kMultiplyAccumulate = 0x00200090;
 constexpr std::uint32_t kMultiplyLong = 0x00800090;
@@ -293,13 +296,6 @@ std::vector<std::uint8_t> rom_with_word(std::uint32_t offset, std::uint32_t word
   rom.at(offset + 2U) = static_cast<std::uint8_t>((word >> 16) & 0xFFU);
   rom.at(offset + 3U) = static_cast<std::uint8_t>((word >> 24) & 0xFFU);
   return rom;
-}
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
 }
 
 void expect_cycles(const gba::core::ArmCycleEstimate& actual, std::uint8_t sequential,
@@ -580,8 +576,8 @@ int main() {
   expect(exception_cpu.current_mode() == CpuMode::supervisor, "SWI entry switches mode");
   expect(exception_cpu.register_value(Arm7tdmi::kPc) == 0x00000008,
          "SWI entry vectors PC");
-  expect(exception_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000404,
-         "SWI entry writes LR");
+  expect(exception_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000402,
+         "Thumb SWI entry links LR past the halfword instruction");
   expect(!exception_cpu.thumb_state(), "SWI entry clears Thumb state");
   expect(exception_cpu.spsr().value() == 0x40000030, "SWI entry saves prior CPSR");
 
@@ -729,7 +725,9 @@ int main() {
   constexpr std::uint16_t thumb_add_r4_pc_0x10 = thumb_load_address(false, 4, 0x04);
   constexpr std::uint16_t thumb_swi_7 = thumb_swi(7);
   constexpr std::uint16_t unsupported_thumb_condition = thumb_conditional_branch(14, 1);
-  constexpr std::uint16_t unsupported_low_only_high_add = thumb_high_register(0x0, 0, 1);
+  constexpr std::uint16_t low_only_high_add_alias = thumb_high_register(0x0, 0, 1);
+  constexpr std::uint16_t low_only_high_cmp_alias = thumb_high_register(0x1, 3, 2);
+  constexpr std::uint16_t low_only_high_mov_alias = thumb_high_register(0x2, 4, 5);
   constexpr std::uint16_t unsupported_thumb = 0xB100;
   expect(Arm7tdmi::can_decode_thumb_immediate(thumb_mov_r0_0x80),
          "Thumb MOV immediate decodes");
@@ -791,8 +789,15 @@ int main() {
   expect(decoded_thumb_high_mov.rs == 1, "Thumb high-register Rs decodes");
   expect(!Arm7tdmi::can_decode_thumb_conditional_branch(unsupported_thumb_condition),
          "unsupported Thumb branch condition does not decode");
-  expect(!Arm7tdmi::can_decode_thumb_high_register(unsupported_low_only_high_add),
-         "Thumb high-register ALU rejects low-register-only alias");
+  expect(Arm7tdmi::can_decode_thumb_high_register(low_only_high_add_alias),
+         "Thumb high-register ADD low-low alias decodes");
+  expect(Arm7tdmi::can_decode_thumb_high_register(low_only_high_cmp_alias),
+         "Thumb high-register CMP low-low alias decodes");
+  const auto decoded_low_mov_alias =
+      Arm7tdmi::decode_thumb_high_register(low_only_high_mov_alias);
+  expect(decoded_low_mov_alias.opcode == ThumbHighRegisterOpcode::mov &&
+             decoded_low_mov_alias.rd == 4 && decoded_low_mov_alias.rs == 5,
+         "Thumb high-register MOV low-low alias decodes registers");
   expect(Arm7tdmi::can_decode_thumb_memory_transfer(thumb_str_r1_r2_imm4_words),
          "Thumb STR immediate decodes");
   const auto decoded_thumb_str =
@@ -916,8 +921,13 @@ int main() {
   thumb_cpu.reset_elapsed_cycles();
   thumb_cpu.set_register(1, 0x12345678);
   thumb_cpu.set_register(2, 0xFF);
+  expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 2,
+         "Thumb MUL step times early exit from Rs magnitude");
+  thumb_cpu.reset_elapsed_cycles();
+  thumb_cpu.set_register(1, 5);
+  thumb_cpu.set_register(2, 0x12345678);
   expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 5,
-         "Thumb MUL step uses signed early-out destination timing");
+         "Thumb MUL step ignores Rd magnitude for early-out timing");
   thumb_cpu.set_register(0, 5);
   thumb_cpu.set_register(1, 6);
   expect(thumb_cpu.execute_thumb(thumb_add_r2_r0_r1) == ExecuteStatus::executed,
@@ -1168,8 +1178,26 @@ int main() {
   expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x08000004,
          "Thumb POP PC clears low target bit");
   expect(thumb_cpu.register_value(13) == 0x03000100, "Thumb POP increments SP");
+  expect(thumb_cpu.thumb_state(),
+         "Thumb POP PC interworks to Thumb from popped bit zero");
   expect(thumb_cpu.execute_thumb(thumb_empty_push, thumb_memory) == ExecuteStatus::unsupported,
          "Thumb empty PUSH remains unsupported");
+  // Reuses thumb_memory: each MemoryBus is ~0.4 MB of stack, so this test
+  // keeps the number of simultaneous bus instances minimal.
+  thumb_memory.reset();
+  Arm7tdmi pop_arm_cpu;
+  expect(pop_arm_cpu.set_cpsr(0x20U | static_cast<std::uint32_t>(CpuMode::system)),
+         "POP interwork fixture starts in Thumb state");
+  pop_arm_cpu.set_register(13, 0x03000200);
+  expect(thumb_memory.write32(0x03000200, 0x08000100),
+         "seed even Thumb POP return address");
+  constexpr std::uint16_t thumb_pop_pc_only = thumb_stack(true, true, 0x00);
+  expect(pop_arm_cpu.execute_thumb(thumb_pop_pc_only, thumb_memory) == ExecuteStatus::executed,
+         "execute Thumb POP PC-only with even return address");
+  expect(!pop_arm_cpu.thumb_state(),
+         "Thumb POP PC switches to ARM state when popped bit zero is clear");
+  expect(pop_arm_cpu.register_value(Arm7tdmi::kPc) == 0x08000100,
+         "Thumb POP PC keeps aligned ARM target");
   thumb_cpu.set_register(13, 0x03007EDC);
   expect(thumb_cpu.execute_thumb(thumb_sub_sp_0x34) == ExecuteStatus::executed,
          "execute Thumb SUB SP immediate");
@@ -1197,14 +1225,19 @@ int main() {
   expect(thumb_cpu.current_mode() == CpuMode::supervisor, "Thumb SWI enters supervisor");
   expect(thumb_cpu.register_value(Arm7tdmi::kPc) == 0x00000008,
          "Thumb SWI vectors PC");
-  expect(thumb_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000404,
-         "Thumb SWI writes LR through exception path");
+  expect(thumb_cpu.register_value(Arm7tdmi::kLinkRegister) == 0x08000402,
+         "Thumb SWI links LR past the halfword instruction");
   expect(!thumb_cpu.thumb_state(), "Thumb SWI clears Thumb state");
   expect(thumb_cpu.spsr().value() == 0x40000030, "Thumb SWI saves prior CPSR");
   expect(thumb_cpu.execute_thumb(unsupported_thumb_condition) == ExecuteStatus::unsupported,
          "unsupported Thumb branch condition is reported");
-  expect(thumb_cpu.execute_thumb(unsupported_low_only_high_add) == ExecuteStatus::unsupported,
-         "unsupported low-only Thumb high-register alias is reported");
+  thumb_cpu.set_register(1, 3);
+  expect(thumb_cpu.execute_thumb(low_only_high_add_alias) == ExecuteStatus::executed,
+         "execute Thumb low-low high-register ADD alias");
+  expect(thumb_cpu.register_value(0) == 3,
+         "Thumb low-low ADD alias writes low destination");
+  expect(thumb_cpu.current_mode() == CpuMode::supervisor,
+         "low-low alias execution stays in supervisor mode");
   expect(thumb_cpu.execute_thumb(unsupported_thumb) == ExecuteStatus::unsupported,
          "unsupported Thumb instruction is reported");
 
@@ -1278,8 +1311,8 @@ int main() {
   branch_step_cpu.set_register(2, 12);
   expect_step(branch_step_cpu.step_arm(cmp_r2_12), ExecuteStatus::executed, 1, 4, false, false,
               "scheduler step charges CMP");
-  expect_step(branch_step_cpu.step_arm(bne_skipped), ExecuteStatus::skipped_condition, 0, 4,
-              false, false, "scheduler step charges skipped condition");
+  expect_step(branch_step_cpu.step_arm(bne_skipped), ExecuteStatus::skipped_condition, 1, 5,
+              false, false, "skipped ARM condition charges one sequential cycle");
 
   constexpr std::uint32_t str_r1_base_plus_4 =
       kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | rn(6) | rd(1) | offset12(4);
@@ -1293,8 +1326,8 @@ int main() {
   cpu.set_register(6, 0x02000000);
   expect(Arm7tdmi::can_decode_single_data_transfer_immediate(str_r1_base_plus_4),
          "STR immediate decodes");
-  expect_cycles(Arm7tdmi::estimate_arm_cycles(str_r1_base_plus_4).value(), 0, 2, 0, false,
-                "STR cycle estimate matches store transfer shape");
+  expect_cycles(Arm7tdmi::estimate_arm_cycles(str_r1_base_plus_4).value(), 1, 1, 0, false,
+                "STR cycle estimate matches store S+N transfer shape");
   expect_cycles(Arm7tdmi::estimate_arm_cycles(ldr_r5_base_plus_4).value(), 1, 1, 1, false,
                 "LDR cycle estimate matches load transfer shape");
   expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(str_r1_base_plus_4, 0x02000004).value(),
@@ -1336,6 +1369,47 @@ int main() {
                      .value(),
                  3, false, true,
                  "WAITCNT-aware LDR estimate accepts HLE BIOS vector timing");
+
+  // Store bus cycles equal the load shape minus its internal cycle on the
+  // WAITCNT ROM region. LDRB carries no ROM load penalty, so the relation
+  // is exact: STRB = S+N = (N+S+internal) - internal.
+  constexpr std::uint32_t ldrb_r9_rom =
+      kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | kLoad |
+      kByteTransfer | rn(6) | rd(9) | offset12(4);
+  constexpr std::uint32_t strb_r1_rom =
+      kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | kByteTransfer |
+      rn(6) | rd(1) | offset12(4);
+  waitcnt.write_control(0);
+  expect_elapsed(Arm7tdmi::estimate_arm_elapsed_cycles(ldrb_r9_rom, 0x08000004, waitcnt)
+                     .value(),
+                 7, false, true,
+                 "default WAITCNT LDRB ROM estimate uses N+S plus internal cycle");
+  const std::uint32_t strb_rom_default_cycles =
+      Arm7tdmi::estimate_arm_elapsed_cycles(strb_r1_rom, 0x08000004, waitcnt)
+          .value()
+          .cycles;
+  expect(strb_rom_default_cycles == 6, "default WAITCNT STRB ROM costs one N plus one S");
+  expect(strb_rom_default_cycles ==
+             Arm7tdmi::estimate_arm_elapsed_cycles(ldrb_r9_rom, 0x08000004, waitcnt)
+                     .value()
+                     .cycles -
+                 1U,
+         "STRB ROM bus cycles equal LDRB minus the internal cycle");
+  waitcnt.write_control(WaitStateControl::kStandardGamePakSetting);
+  expect_elapsed(
+      Arm7tdmi::estimate_arm_elapsed_cycles(ldrb_r9_rom, 0x08000004, waitcnt).value(), 5,
+      false, true, "standard WAITCNT LDRB ROM estimate uses N+S plus internal cycle");
+  const std::uint32_t strb_rom_standard_cycles =
+      Arm7tdmi::estimate_arm_elapsed_cycles(str_r1_base_plus_4, 0x08000004, waitcnt)
+          .value()
+          .cycles;
+  expect(strb_rom_standard_cycles == 4,
+         "standard WAITCNT word STR ROM costs one N plus one S");
+  expect(Arm7tdmi::estimate_arm_elapsed_cycles(strb_r1_rom, 0x08000004, waitcnt)
+                 .value()
+                 .cycles == 4,
+         "standard WAITCNT STRB ROM costs one N plus one S");
+  waitcnt.write_control(0);
   Arm7tdmi scheduler_cpu;
   MemoryBus scheduler_memory;
   expect(scheduler_cpu.elapsed_cycles() == 0, "scheduler elapsed cycles start at zero");
@@ -1377,7 +1451,7 @@ int main() {
       kCondNe | kSingleDataTransferImmediate | kPreIndexed | kUp | kLoad | rn(6) |
       rd(5) | offset12(4);
   expect_step(scheduler_cpu.step_arm(ldrne_r5_base_plus_4, scheduler_memory),
-              ExecuteStatus::skipped_condition, 0, 0, false, false,
+              ExecuteStatus::skipped_condition, 1, 1, false, false,
               "false condition is still skipped before memory timing preflight");
   const auto decoded_store = Arm7tdmi::decode_single_data_transfer_immediate(str_r1_base_plus_4);
   expect(!decoded_store.load, "STR load bit decodes");
@@ -1569,8 +1643,8 @@ int main() {
   cpu.set_register(15, 0x04000008);
   expect(cpu.execute_arm(stmfd_sp_with_pc, memory) == ExecuteStatus::executed,
          "execute STMFD with PC in register list");
-  expect(memory.read32(0x03000FFC).value_or(0) == 0x04000008,
-         "STMFD stores pipeline PC value");
+  expect(memory.read32(0x03000FFC).value_or(0) == 0x04000014,
+         "STMFD stores R15 as instruction address plus twelve");
 
   constexpr std::uint32_t ldmia_writeback_base_in_list =
       kCondAl | kBlockDataTransfer | kUp | kLoad | kWriteBack | rn(7) |
@@ -2243,8 +2317,177 @@ int main() {
   expect(cpu.register_value(10) == 0xAAAAAAAA, "skipped UMULL preserves RdLo");
   expect(cpu.register_value(11) == 0xBBBBBBBB, "skipped UMULL preserves RdHi");
 
-  constexpr std::uint32_t unsupported_instruction = kCondAl | 0x0C000000;
-  constexpr std::uint32_t unsupported_branch_condition = kCondNv | kBranch | branch_offset(1);
+  // C1: write-to-PC data processing with S=1 restores CPSR from SPSR.
+  constexpr std::uint32_t subs_pc_lr_4 =
+      kCondAl | kDataProcessingImmediate | opcode(0x2) | kSetFlags |
+      rn(Arm7tdmi::kLinkRegister) | rd(Arm7tdmi::kPc) | imm(4);
+  constexpr std::uint32_t movs_pc_lr =
+      kCondAl | opcode(0xD) | kSetFlags | rd(Arm7tdmi::kPc) | rm(Arm7tdmi::kLinkRegister);
+  Arm7tdmi return_cpu;
+  return_cpu.set_register(Arm7tdmi::kPc, 0x08000100);
+  expect(return_cpu.set_cpsr(0xF0000030),
+         "SPSR-restore fixture seeds user Thumb state with NZCV set");
+  expect(return_cpu.enter_exception(ExceptionKind::software_interrupt) ==
+             ExecuteStatus::executed,
+         "SPSR-restore fixture enters supervisor via SWI");
+  return_cpu.set_register(Arm7tdmi::kLinkRegister, 0x08000106);
+  expect(return_cpu.execute_arm(subs_pc_lr_4) == ExecuteStatus::executed,
+         "execute SUBS PC, LR, #4 exception return");
+  expect(return_cpu.current_mode() == CpuMode::user,
+         "SUBS PC restores the prior user mode from SPSR");
+  expect(return_cpu.thumb_state(), "SUBS PC restores T state from SPSR");
+  expect(return_cpu.register_value(Arm7tdmi::kPc) == 0x08000100,
+         "SUBS PC returns to LR minus four masked to an ARM word address");
+  expect(return_cpu.negative() && return_cpu.zero() && return_cpu.carry() &&
+             return_cpu.overflow(),
+         "SUBS PC imports NZCV from SPSR instead of the ALU result");
+  expect(return_cpu.set_cpsr(0x90000013), "seed supervisor ARM state for MOVS return");
+  return_cpu.set_register(Arm7tdmi::kLinkRegister, 0x08000202);
+  expect(return_cpu.execute_arm(movs_pc_lr) == ExecuteStatus::executed,
+         "execute MOVS PC, LR exception return");
+  expect(return_cpu.register_value(Arm7tdmi::kPc) == 0x08000200,
+         "MOVS PC masks bits one and zero of the return address");
+  expect(return_cpu.current_mode() == CpuMode::user && return_cpu.thumb_state(),
+         "MOVS PC restores user Thumb mode from SPSR");
+  expect(return_cpu.negative() && return_cpu.overflow(),
+         "MOVS PC imports flags from SPSR instead of the shifter result");
+  expect(return_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::system)),
+         "switch to system mode without SPSR for write-to-PC fallback");
+  return_cpu.set_register(Arm7tdmi::kLinkRegister, 0x08000306);
+  expect(return_cpu.execute_arm(subs_pc_lr_4) == ExecuteStatus::executed,
+         "SUBS PC without SPSR falls back to ordinary data processing");
+  expect(return_cpu.current_mode() == CpuMode::system,
+         "no SPSR means no mode change on SUBS PC");
+  expect(!return_cpu.zero(), "fallback SUBS PC updates Z from the ALU result");
+
+  // C5: S-bit block transfers access the user bank. R8-R12 are physically
+  // shared outside FIQ, so the user-bank form is observable through R13/R14.
+  constexpr std::uint16_t kUserSpLrList =
+      static_cast<std::uint16_t>((1U << 9U) | (1U << 13U) | (1U << 14U));
+  constexpr std::uint32_t stmib_r0_user_sp_lr =
+      kCondAl | kBlockDataTransfer | kForceUserBank | kUp | kWriteBack | rn(0) |
+      reg_list(kUserSpLrList);
+  constexpr std::uint32_t ldmia_r0_user_sp_lr =
+      kCondAl | kBlockDataTransfer | kForceUserBank | kUp | kLoad | rn(0) |
+      reg_list(kUserSpLrList);
+  // Reuses `memory` (each MemoryBus is ~0.4 MB of stack); all prior uses of
+  // that bus are complete by this point in the test flow.
+  memory.reset();
+  Arm7tdmi user_bank_cpu;
+  expect(user_bank_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::user)),
+         "user-bank fixture seeds user mode");
+  user_bank_cpu.set_register(9, 0x11111111);
+  user_bank_cpu.set_register(13, 0x03007F00);
+  user_bank_cpu.set_register(14, 0x08001000);
+  expect(user_bank_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::irq)),
+         "user-bank fixture enters IRQ mode");
+  user_bank_cpu.set_register(9, 0x99999999);
+  user_bank_cpu.set_register(13, 0x03007000);
+  user_bank_cpu.set_register(14, 0x08002000);
+  user_bank_cpu.set_register(0, 0x02000200);
+  expect(Arm7tdmi::can_decode_block_data_transfer(stmib_r0_user_sp_lr),
+         "S-bit STM decodes instead of being rejected");
+  expect(user_bank_cpu.execute_arm(stmib_r0_user_sp_lr, memory) ==
+             ExecuteStatus::executed,
+         "execute STMIB r0!, {r9,r13,r14}^ from IRQ mode");
+  expect(memory.read32(0x02000200).value_or(0) == 0x99999999,
+         "STM^ stores R9 from the physically shared bank");
+  expect(memory.read32(0x02000204).value_or(0) == 0x03007F00 &&
+             memory.read32(0x02000208).value_or(0) == 0x08001000,
+         "STM^ stores USER-bank SP and LR instead of IRQ values");
+  expect(user_bank_cpu.register_value(13) == 0x03007000 &&
+             user_bank_cpu.register_value(14) == 0x08002000,
+         "STM^ leaves IRQ-bank SP and LR untouched");
+  expect(memory.write32(0x02000204, 0x0DEADBEE0) &&
+             memory.write32(0x02000208, 0x0800ABCD),
+         "mutate stored words for the LDM^ roundtrip");
+  user_bank_cpu.set_register(0, 0x02000200);
+  expect(user_bank_cpu.execute_arm(ldmia_r0_user_sp_lr, memory) ==
+             ExecuteStatus::executed,
+         "execute LDMIA r0, {r9,r13,r14}^ without PC in IRQ mode");
+  expect(user_bank_cpu.register_value(13) == 0x03007000 &&
+             user_bank_cpu.register_value(14) == 0x08002000,
+         "LDM^ without PC leaves IRQ-bank SP and LR untouched");
+  expect(user_bank_cpu.register_value(9) == 0x99999999,
+         "LDM^ keeps the shared R9 value visible in IRQ mode");
+  expect(user_bank_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::system)),
+         "switch to system mode to observe restored user bank");
+  expect(user_bank_cpu.register_value(13) == 0x0DEADBEE0 &&
+             user_bank_cpu.register_value(14) == 0x0800ABCD,
+         "LDM^ loaded values appear in the user/system bank");
+  expect(user_bank_cpu.register_value(9) == 0x99999999,
+         "R9 survives mode switches as a shared register");
+  expect(user_bank_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::irq)),
+         "re-enter IRQ bank before CPSR-restore form");
+  expect(user_bank_cpu.spsr().has_value(), "IRQ mode exposes its SPSR slot");
+  expect(user_bank_cpu.set_spsr(0xF0000030),
+         "seed IRQ SPSR with user Thumb NZCV for exception-return form");
+  user_bank_cpu.set_register(13, 0x030007F0);
+  expect(memory.write32(0x030007F0, 0x08000401),
+         "seed Thumb-bit return address for LDM{PC}^");
+  constexpr std::uint32_t ldmia_sp_pc_user_psr =
+      kCondAl | kBlockDataTransfer | kForceUserBank | kUp | kLoad | rn(13) |
+      reg_list(1U << 15U);
+  expect(user_bank_cpu.execute_arm(ldmia_sp_pc_user_psr, memory) ==
+             ExecuteStatus::executed,
+         "execute LDMIA r13, {PC}^ exception-return form");
+  expect(user_bank_cpu.current_mode() == CpuMode::user && user_bank_cpu.thumb_state(),
+         "LDM{PC}^ restores CPSR from SPSR including T state");
+  expect(user_bank_cpu.register_value(Arm7tdmi::kPc) == 0x08000400,
+         "LDM{PC}^ masks bits one and zero of the loaded PC");
+  expect(user_bank_cpu.negative() && user_bank_cpu.zero() && user_bank_cpu.carry() &&
+             user_bank_cpu.overflow(),
+         "LDM{PC}^ imports NZCV from SPSR");
+  Arm7tdmi user_bank_reject_cpu;
+  expect(user_bank_reject_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::user)),
+         "user-mode rejection fixture starts in user mode");
+  user_bank_reject_cpu.set_register(0, 0x02000200);
+  expect(user_bank_reject_cpu.execute_arm(stmib_r0_user_sp_lr, memory) ==
+             ExecuteStatus::unsupported,
+         "user-mode S-bit STM stays rejected as unpredictable at execution");
+
+  // C10: MSR CPSR control byte is silently ignored from user mode.
+  Arm7tdmi msr_user_cpu;
+  expect(msr_user_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::user)),
+         "MSR fixture starts in user mode");
+  msr_user_cpu.set_register(0, 0x000000D3);
+  expect(msr_user_cpu.execute_arm(arm_msr_register(false, 0x1, 0)) ==
+             ExecuteStatus::executed,
+         "user-mode MSR CPSR_c executes silently");
+  expect(msr_user_cpu.current_mode() == CpuMode::user,
+         "user-mode MSR CPSR_c cannot change mode");
+  expect(!msr_user_cpu.irq_disabled(),
+         "user-mode MSR CPSR_c cannot set interrupt masks");
+  msr_user_cpu.set_register(1, 0xB0000000);
+  expect(msr_user_cpu.execute_arm(arm_msr_register(false, 0x8, 1)) ==
+             ExecuteStatus::executed,
+         "user-mode MSR CPSR_f updates the flag field");
+  expect(msr_user_cpu.negative() && msr_user_cpu.overflow(),
+         "flag-field writes still apply from user mode");
+  expect(msr_user_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::supervisor)),
+         "leave user mode after MSR checks");
+
+  // Save-state roundtrip: every mutable CPU field survives save/load and the
+  // hash matches the pre-save snapshot.
+  const Arm7tdmi::State saved_state = cpu.save_state();
+  const std::uint64_t saved_hash = cpu.state_hash();
+  Arm7tdmi restored_cpu;
+  restored_cpu.set_register(3, 0xDEADBEEF);
+  expect(restored_cpu.load_state(saved_state), "Arm7tdmi load_state accepts a snapshot");
+  expect(restored_cpu.state_hash() == saved_hash,
+         "restored Arm7tdmi hash equals the snapshot hash");
+  expect(restored_cpu.elapsed_cycles() == cpu.elapsed_cycles(),
+         "restored elapsed cycles match the snapshot");
+  for (std::uint8_t index = 0; index < Arm7tdmi::kRegisterCount; ++index) {
+    expect(restored_cpu.register_value(index) == cpu.register_value(index),
+           "restored register matches the snapshot");
+  }
+  Arm7tdmi::State mutated_state = saved_state;
+  mutated_state.mode = static_cast<CpuMode>(0x00);
+  expect(!restored_cpu.load_state(mutated_state),
+         "load_state rejects snapshots with invalid mode bytes");
+
+  constexpr std::uint32_t unsupported_instruction = kCondAl | 0x0C000000;  constexpr std::uint32_t unsupported_branch_condition = kCondNv | kBranch | branch_offset(1);
   constexpr std::uint32_t unsupported_condition =
       kCondNv | kDataProcessingImmediate | opcode(0xD) | rd(5) | imm(1);
   expect(cpu.execute_arm(unsupported_instruction) == ExecuteStatus::unsupported,

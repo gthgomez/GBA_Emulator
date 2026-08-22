@@ -1,5 +1,7 @@
 #include "gba/core/bios.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -29,6 +31,51 @@ constexpr std::uint32_t kLooseTimerIoIrqDispatchGapCycles = 12;
 [[nodiscard]] std::int32_t wrap_shl_i32(std::int32_t value, std::uint8_t shift) {
   return wrap_i32(wrap_u32(value) << shift);
 }
+
+// Arithmetic shift right computed over unsigned storage so the result does
+// not depend on the (pre-C++20) implementation-defined behavior of
+// right-shifting negative signed integers. Matches ARM ASR semantics.
+[[nodiscard]] std::int32_t wrap_asr_i32(std::int32_t value, std::uint8_t shift) {
+  if (shift == 0) {
+    return value;
+  }
+  const std::uint32_t raw = wrap_u32(value);
+  const std::uint32_t shifted = raw >> shift;
+  const std::uint32_t sign_fill = (raw & 0x80000000U) != 0U
+                                      ? (~wrap_u32(0)) << (32U - shift)
+                                      : 0U;
+  return wrap_i32(shifted | sign_fill);
+}
+
+// Mechanically derived from the implemented HLE SWI handler table in
+// CoreScheduler::execute_hle_swi (core_scheduler.cpp). A service is "known"
+// iff this core actually emulates it; anything else — including real-hardware
+// services without an HLE handler here (SoftReset 0x00, Stop 0x03, sound
+// 0x0D/0x18-0x1F, multiplayer 0x21-0x2A, ...) — falls through to the
+// unknown/unimplemented path. Keep the two tables in lockstep.
+constexpr std::array<std::uint8_t, 21> kHleHandledGbaServices{
+    0x01,  // RegisterRamReset
+    0x02,  // Halt
+    0x04,  // IntrWait
+    0x05,  // VBlankIntrWait
+    0x06,  // Div
+    0x07,  // DivArm
+    0x08,  // Sqrt
+    0x09,  // ArcTan
+    0x0A,  // ArcTan2
+    0x0B,  // CpuSet
+    0x0C,  // CpuFastSet
+    0x0E,  // BgAffineSet
+    0x0F,  // ObjAffineSet
+    0x10,  // BitUnPack
+    0x11,  // LZ77UnCompWram
+    0x12,  // LZ77UnCompVram
+    0x13,  // RLUnCompWram
+    0x14,  // RLUnCompVram
+    0x15,  // Diff8bitUnFilterWram
+    0x16,  // Diff8bitUnFilterVram
+    0x17,  // Diff16bitUnFilter
+};
 
 }  // namespace
 
@@ -74,7 +121,8 @@ BiosSwiCall BiosController::decode_thumb_swi(std::uint16_t instruction) {
 }
 
 bool BiosController::known_gba_service(std::uint8_t service) {
-  return service <= 0x2AU;
+  return std::find(kHleHandledGbaServices.begin(), kHleHandledGbaServices.end(),
+                   service) != kHleHandledGbaServices.end();
 }
 
 std::uint32_t BiosController::irq_dispatch_cycles(const BiosIrqDispatchTiming& timing) {
@@ -181,21 +229,23 @@ std::uint32_t BiosController::hle_sqrt_base_cycles(std::uint32_t value) {
 std::int32_t BiosController::hle_arc_tan(std::int32_t value, std::int32_t* scratch_r1,
                                          std::int32_t* scratch_r3) {
   const std::int32_t square = wrap_mul_i32(value, value);
-  std::int32_t polynomial = -(square >> 14);
-  std::int32_t factor = ((wrap_mul_i32(0xA9, polynomial)) >> 14) + 0x390;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x91C;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0xFB6;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x16AA;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x2081;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0x3651;
-  factor = ((wrap_mul_i32(factor, polynomial)) >> 14) + 0xA2F9;
+  // All right shifts below use wrap_asr_i32 so negative operands follow ARM
+  // ASR semantics instead of relying on implementation-defined signed shifts.
+  std::int32_t polynomial = -wrap_asr_i32(square, 14);
+  std::int32_t factor = wrap_asr_i32(wrap_mul_i32(0xA9, polynomial), 14) + 0x390;
+  factor = wrap_asr_i32(wrap_mul_i32(factor, polynomial), 14) + 0x91C;
+  factor = wrap_asr_i32(wrap_mul_i32(factor, polynomial), 14) + 0xFB6;
+  factor = wrap_asr_i32(wrap_mul_i32(factor, polynomial), 14) + 0x16AA;
+  factor = wrap_asr_i32(wrap_mul_i32(factor, polynomial), 14) + 0x2081;
+  factor = wrap_asr_i32(wrap_mul_i32(factor, polynomial), 14) + 0x3651;
+  factor = wrap_asr_i32(wrap_mul_i32(factor, polynomial), 14) + 0xA2F9;
   if (scratch_r1 != nullptr) {
     *scratch_r1 = polynomial;
   }
   if (scratch_r3 != nullptr) {
     *scratch_r3 = factor;
   }
-  return static_cast<std::int16_t>(wrap_mul_i32(value, factor) >> 16);
+  return static_cast<std::int16_t>(wrap_asr_i32(wrap_mul_i32(value, factor), 16));
 }
 
 std::int32_t BiosController::hle_arc_tan2(std::int32_t x, std::int32_t y,

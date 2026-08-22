@@ -66,6 +66,11 @@ bool Keypad::irq_condition_met() const {
     return false;
   }
   const std::uint16_t selected = static_cast<std::uint16_t>(keycnt_ & kButtonMask);
+  // Deliberate divergence from hardware, kept for determinism: with no keys
+  // selected (KEYCNT[9:0] == 0) real hardware in AND mode evaluates
+  // "(~KEYINPUT) & selected == selected" as true and asserts KEYSIRQ
+  // continuously; this core instead treats a zero selection as never
+  // matching so no interrupt storm is raised from an unconfigured KEYCNT.
   if (selected == 0) {
     return false;
   }

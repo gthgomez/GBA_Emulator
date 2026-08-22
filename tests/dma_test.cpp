@@ -8,14 +8,9 @@
 #include <string_view>
 #include <vector>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void expect_read16(const gba::core::MemoryBus& bus, std::uint32_t address,
                    std::uint16_t expected, std::string_view message) {
@@ -29,10 +24,6 @@ void expect_read32(const gba::core::MemoryBus& bus, std::uint32_t address,
   const std::optional<std::uint32_t> value = bus.read32(address);
   expect(value.has_value(), message);
   expect(value.value() == expected, message);
-}
-
-constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
-  return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
 }
 
 void put_rom_word(std::vector<std::uint8_t>& rom, std::size_t offset,
@@ -229,6 +220,15 @@ int main() {
   expect(dma.active_count(3) == 0x10000, "DMA3 zero count normalizes to 0x10000");
   dma.write_control(3, 0);
 
+  // M6 regression: DMA3CNT_H bit 11 (Game Pak DRQ) is storable only on ch3.
+  dma.write_control(3, 0x8800);
+  expect(dma.control(3) == 0x8800, "DMA3 gamepak DRQ bit is storable");
+  dma.write_control(3, 0);
+  dma.write_control(2, 0x8800);
+  expect(dma.control(2) == 0x8000,
+         "gamepak DRQ bit is stripped for channels other than DMA3");
+  dma.write_control(2, 0);
+
   expect(memory.write16(0x02000030, 0x4444), "seed DMA2 delayed source");
   dma.write_source(2, 0x02000030);
   dma.write_destination(2, 0x03000030);
@@ -269,16 +269,41 @@ int main() {
   dma.write_source(3, 0x02000040);
   dma.write_destination(3, 0x03000040);
   dma.write_word_count(3, 1);
-  dma.write_control(3, 0x8260);
-  const gba::core::DmaRunResult repeat_first = dma.run_immediate(memory, interrupts);
+  // Repeat re-arms only for recurring triggers, so this regression uses
+  // VBlank start timing; the repeat+immediate termination case is covered
+  // below.
+  dma.write_control(3, 0x9260);
+  const gba::core::DmaRunResult repeat_first =
+      dma.run_trigger(gba::core::DmaTrigger::vblank, memory, interrupts);
   expect(repeat_first.channels_executed == 1, "repeat DMA3 first run executes");
   expect(dma.enabled(3), "repeat DMA3 stays enabled");
   expect(dma.active_count(3) == 1, "repeat DMA3 reloads active count");
   expect_read16(memory, 0x03000040, 0x5555, "repeat DMA3 writes first value");
-  const gba::core::DmaRunResult repeat_second = dma.run_immediate(memory, interrupts);
+  const gba::core::DmaRunResult repeat_second =
+      dma.run_trigger(gba::core::DmaTrigger::vblank, memory, interrupts);
   expect(repeat_second.channels_executed == 1, "repeat DMA3 second run executes");
   expect_read16(memory, 0x03000040, 0x6666, "repeat DMA3 destination reload overwrites dest");
   dma.write_control(3, 0);
+
+  // M2 regression: a repeat-enabled channel with immediate start timing must
+  // terminate after exactly one block instead of staying armed forever.
+  expect(memory.write32(0x02000044, 0x11111111), "seed repeat-immediate source word");
+  dma.write_source(3, 0x02000044);
+  dma.write_destination(3, 0x03000048);
+  dma.write_word_count(3, 2);
+  dma.write_control(3, 0x8200);  // enable | repeat | 32-bit | immediate | incrementing dest
+  expect(dma.immediate_pending(), "repeat+immediate enable latches pending");
+  const gba::core::DmaRunResult repeat_immediate = dma.run_immediate(memory, interrupts);
+  expect(repeat_immediate.channels_executed == 1,
+         "repeat+immediate DMA3 executes once");
+  expect(repeat_immediate.units_transferred == 2,
+         "repeat+immediate DMA3 transfers exactly word_count units");
+  expect(!dma.enabled(3), "repeat+immediate DMA3 disables on completion");
+  expect(dma.active_count(3) == 0, "repeat+immediate DMA3 leaves zero active count");
+  expect(!dma.immediate_pending(),
+         "repeat+immediate completion clears the immediate queue");
+  expect_read32(memory, 0x03000048, 0x11111111,
+                "repeat+immediate DMA3 copied its single block");
 
   dma.write_source(0, 0x02000000);
   dma.write_destination(0, 0x03000050);
@@ -310,6 +335,84 @@ int main() {
   expect(apu.fifo_size(gba::core::DirectSoundChannel::a) == 16,
          "FIFO DMA pushes sixteen bytes into Direct Sound FIFO A");
   expect(dma.enabled(1), "repeat FIFO DMA stays enabled for next refill");
+  dma.write_control(1, 0);
+
+  // M3 regression: the completion IRQ fires exactly once per full block.
+  // COUNT=16 words at four words per burst means four bursts, one IRQ.
+  interrupts.reset();
+  for (std::uint32_t word = 0; word < 16; ++word) {
+    expect(memory.write32(0x02000200 + word * 4U, 0x01000000U + word),
+           "seed FIFO block source word");
+  }
+  dma.write_source(1, 0x02000200);
+  dma.write_destination(1, 0x040000A0);
+  dma.write_word_count(1, 16);
+  dma.write_control(1, 0xF640);  // enable | irq | special | 32-bit | repeat | dest fixed
+  for (std::uint32_t burst = 1; burst <= 4; ++burst) {
+    const gba::core::DmaRunResult burst_result =
+        dma.run_sound_fifo(gba::core::DmaTrigger::fifo_a, memory, apu, interrupts);
+    expect(burst_result.channels_executed == 1, "FIFO block burst runs");
+    if (burst < 4U) {
+      expect(!interrupts.requested(InterruptSource::dma1),
+             "FIFO DMA holds the completion IRQ until count reaches zero");
+    } else {
+      expect(interrupts.requested(InterruptSource::dma1),
+             "FIFO DMA requests completion IRQ exactly at count-zero");
+    }
+  }
+  expect(dma.enabled(1), "repeat FIFO DMA re-arms after block completion");
+  expect(dma.active_count(1) == 16, "FIFO DMA reloads full block count at count-zero");
+  interrupts.reset();
+  expect(dma.run_sound_fifo(gba::core::DmaTrigger::fifo_a, memory, apu, interrupts)
+                 .channels_executed == 1,
+         "next FIFO block starts after reload");
+  expect(!interrupts.requested(InterruptSource::dma1),
+         "reloaded FIFO block does not re-raise completion IRQ immediately");
+  dma.write_control(1, 0);
+
+  // Save-state contract: symmetric snapshot across all channel registers,
+  // latched internals, and the immediate queue.
+  {
+    DmaController snapshot_peer;
+    snapshot_peer.write_source(0, 0x02345670);
+    snapshot_peer.write_destination(0, 0x03000FF0);
+    snapshot_peer.write_word_count(0, 21);
+    snapshot_peer.write_control(0, 0x84A0);  // immediate | 32-bit | src fixed | dest dec
+    const DmaController::State saved_dma_state = snapshot_peer.save_state();
+    const std::uint64_t saved_hash = snapshot_peer.state_hash();
+    expect(snapshot_peer.immediate_pending(), "armed immediate DMA reports pending");
+    snapshot_peer.write_control(0, 0);
+    snapshot_peer.write_source(1, 0xDEADBEEF);
+    expect(snapshot_peer.state_hash() != saved_hash, "DMA hash tracks state mutations");
+    expect(snapshot_peer.load_state(saved_dma_state),
+           "DMA state restore accepts armed snapshot");
+    expect(snapshot_peer.state_hash() == saved_hash,
+           "DMA state restore returns exact pre-mutation hash");
+    expect(snapshot_peer.immediate_pending(),
+           "restored DMA recomputes the immediate queue");
+    expect(snapshot_peer.source(0) == 0x02345670 &&
+               snapshot_peer.destination(0) == 0x03000FF0 &&
+               snapshot_peer.word_count(0) == 21 &&
+               snapshot_peer.control(0) == 0x84A0 &&
+               snapshot_peer.active_count(0) == 21 &&
+               !snapshot_peer.enabled(1) && snapshot_peer.source(1) == 0,
+           "restored DMA snapshot exposes all latched registers");
+
+    DmaController reject_peer;
+    DmaController::State bad_state{};
+    bad_state.channels.at(0).control = 0xFFFF;
+    expect(!reject_peer.load_state(bad_state),
+           "DMA state restore rejects control bits outside the ch0 mask");
+    bad_state.channels.at(0).control = 0;
+    bad_state.channels.at(3).control = 0x8000;
+    bad_state.channels.at(3).current_count = 0x20000;
+    expect(!reject_peer.load_state(bad_state),
+           "DMA state restore rejects active counts above the channel maximum");
+    bad_state.channels.at(3).current_count = 7;
+    bad_state.channels.at(3).control = 0;
+    expect(!reject_peer.load_state(bad_state),
+           "DMA state restore rejects disabled channels with active counts");
+  }
 
   std::cout << "dma_test: PASS\n";
   return 0;

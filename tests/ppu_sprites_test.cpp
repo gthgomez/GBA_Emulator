@@ -7,14 +7,9 @@
 #include <optional>
 #include <string_view>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void expect_pixel(const std::optional<gba::core::SpritePixel>& pixel,
                   std::uint8_t color_index, std::uint16_t color,
@@ -70,7 +65,7 @@ int main() {
   expect(memory.write16(0x05000200 + 4U * 32U + 9U * 2U, 0x7FFF),
          "seed OBJ0 palette color");
   const std::optional<gba::core::SpritePixel> obj0_pixel =
-      PpuSpriteFetcher::fetch_sprite_pixel(memory, obj0.value(), 0, 0);
+      PpuSpriteFetcher::fetch_sprite_pixel(memory, obj0.value(), 0, 0, true);
   expect_pixel(obj0_pixel, 9, 0x7FFF, "OBJ0 4bpp pixel fetches color");
   expect(!obj0_pixel->transparent, "OBJ0 nonzero color is opaque");
 
@@ -87,7 +82,7 @@ int main() {
   expect(write_obj_vram_byte(memory, 0x06010000 + 12U * 32U + 2U * 8U + 3U, 0x55),
          "seed OBJ1 8bpp tile pixel");
   expect(memory.write16(0x05000200 + 0x55U * 2U, 0x03E0), "seed OBJ1 palette color");
-  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj1.value(), 3, 2), 0x55,
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj1.value(), 3, 2, true), 0x55,
                0x03E0, "OBJ1 8bpp pixel fetches color");
 
   expect(memory.write16(0x07000010, 50), "seed OBJ2 attr0");
@@ -105,7 +100,7 @@ int main() {
          "seed OBJ2 flipped pixel");
   expect(memory.write16(0x05000200 + 2U * 32U + 11U * 2U, 0x001F),
          "seed OBJ2 palette color");
-  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj2.value(), 0, 0), 11,
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj2.value(), 0, 0, true), 11,
                0x001F, "OBJ2 hflip/vflip selects mirrored pixel");
 
   expect(memory.write16(0x07000018, static_cast<std::uint16_t>(60U | 0x0200U)),
@@ -116,7 +111,7 @@ int main() {
       PpuSpriteFetcher::read_sprite(memory, 3);
   expect(obj3.has_value(), "OBJ3 decodes");
   expect(obj3->disabled, "OBJ3 disabled bit decodes for non-affine object");
-  expect(!PpuSpriteFetcher::fetch_sprite_pixel(memory, obj3.value(), 0, 0).has_value(),
+  expect(!PpuSpriteFetcher::fetch_sprite_pixel(memory, obj3.value(), 0, 0, true).has_value(),
          "disabled OBJ does not fetch pixels");
 
   expect(memory.write16(0x07000000, static_cast<std::uint16_t>(0x0100U)),
@@ -138,7 +133,7 @@ int main() {
          "seed affine OBJ pixel");
   expect(memory.write16(0x05000200 + 3U * 32U + 7U * 2U, 0x4210),
          "seed affine OBJ palette color");
-  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, affine_obj.value(), 0, 0), 7,
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, affine_obj.value(), 0, 0, true), 7,
                0x4210, "identity affine OBJ samples texture pixel");
 
   expect(memory.write16(0x07000020, static_cast<std::uint16_t>(70U | (1U << 14))),
@@ -163,9 +158,46 @@ int main() {
          "seed transparent OBJ pixel");
   expect(memory.write16(0x05000200 + 1U * 32U, 0x2222), "seed OBJ transparent palette");
   const std::optional<gba::core::SpritePixel> transparent =
-      PpuSpriteFetcher::fetch_sprite_pixel(memory, obj5.value(), 0, 0);
+      PpuSpriteFetcher::fetch_sprite_pixel(memory, obj5.value(), 0, 0, true);
   expect_pixel(transparent, 0, 0x2222, "OBJ color zero fetches palette zero");
   expect(transparent->transparent, "OBJ color zero is transparent");
+
+  expect(memory.write16(0x07000030, static_cast<std::uint16_t>(0U | 0x0400U)),
+         "seed semi-transparent OBJ8 attr0");
+  expect(memory.write16(0x07000032, 0), "seed semi-transparent OBJ8 attr1");
+  expect(memory.write16(0x07000034, 0), "seed semi-transparent OBJ8 attr2");
+  const std::optional<gba::core::SpriteAttributes> obj8 =
+      PpuSpriteFetcher::read_sprite(memory, 6);
+  expect(obj8.has_value() && obj8->semi_transparent,
+         "attr0 graphics mode 01 decodes as semi-transparent");
+
+  expect(memory.write16(0x07000038, static_cast<std::uint16_t>(0U | 0x0800U)),
+         "seed OBJ-window OBJ9 attr0");
+  expect(memory.write16(0x0700003A, 0), "seed OBJ-window OBJ9 attr1");
+  expect(memory.write16(0x0700003C, 0), "seed OBJ-window OBJ9 attr2");
+  const std::optional<gba::core::SpriteAttributes> obj9 =
+      PpuSpriteFetcher::read_sprite(memory, 7);
+  expect(obj9.has_value() && obj9->obj_window && !obj9->semi_transparent,
+         "attr0 graphics mode 10 decodes as OBJ window");
+
+  expect(memory.write16(0x07000040, 100), "seed stride OBJ10 attr0");
+  expect(memory.write16(0x07000042,
+                        static_cast<std::uint16_t>(100U | (1U << 14))),
+         "seed stride OBJ10 attr1");
+  expect(memory.write16(0x07000044, 0), "seed stride OBJ10 attr2 tile 0");
+  const std::optional<gba::core::SpriteAttributes> obj10 =
+      PpuSpriteFetcher::read_sprite(memory, 8);
+  expect(obj10.has_value(), "stride OBJ decodes");
+  expect(write_obj_vram_byte(memory, 0x06010000 + 2U * 32U, 0x01),
+         "seed 1D row-stride tile pixel");
+  expect(write_obj_vram_byte(memory, 0x06010000 + 32U * 32U, 0x02),
+         "seed 2D row-stride tile pixel");
+  expect(memory.write16(0x05000200 + 1U * 2U, 0x001F), "seed 1D stride palette");
+  expect(memory.write16(0x05000200 + 2U * 2U, 0x03E0), "seed 2D stride palette");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj10.value(), 0, 8, true),
+               1, 0x001F, "1D mapping strides by width/8 tiles per texture row");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj10.value(), 0, 8, false),
+               2, 0x03E0, "2D mapping strides by a constant 32 tiles per row");
 
   std::cout << "ppu_sprites_test: PASS\n";
   return 0;

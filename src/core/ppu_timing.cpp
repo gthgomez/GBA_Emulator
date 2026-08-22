@@ -100,6 +100,15 @@ void PpuTiming::write_dispstat(std::uint16_t value) {
   dispstat_control_ = static_cast<std::uint16_t>(value & kWritableDispstatMask);
 }
 
+// DISPSTAT writes re-evaluate the VCOUNT match flag immediately on hardware;
+// returns true only when the write newly asserts the match so the caller can
+// raise the VCOUNT IRQ (Ppu has no InterruptController access).
+bool PpuTiming::recheck_vcount_match(std::uint16_t new_dispstat) {
+  const bool was_matching = vcount_match();
+  write_dispstat(new_dispstat);
+  return !was_matching && vcount_match();
+}
+
 std::optional<std::uint16_t> PpuTiming::read_lcd_control(std::uint32_t address) const {
   if (!is_lcd_control_address(address) || !is_lcd_control_readable(address)) {
     return std::nullopt;
@@ -128,6 +137,31 @@ PpuRenderControl PpuTiming::render_control() const {
     control.bg_scroll_x.at(index) = lcd_control_.at(lcd_control_index(scroll_base));
     control.bg_scroll_y.at(index) =
         lcd_control_.at(lcd_control_index(scroll_base + 2U));
+    if (index >= 2) {
+      // BG2/BG3 affine parameter blocks: PA/PB/PC/PD then reference X/Y.
+      const std::uint32_t affine_base =
+          index == 2 ? 0x04000020U : 0x04000030U;
+      control.bg_affine_pa.at(index) =
+          lcd_control_.at(lcd_control_index(affine_base));
+      control.bg_affine_pb.at(index) =
+          lcd_control_.at(lcd_control_index(affine_base + 2U));
+      control.bg_affine_pc.at(index) =
+          lcd_control_.at(lcd_control_index(affine_base + 4U));
+      control.bg_affine_pd.at(index) =
+          lcd_control_.at(lcd_control_index(affine_base + 6U));
+      const std::uint32_t ref_x_low =
+          lcd_control_.at(lcd_control_index(affine_base + 8U));
+      const std::uint32_t ref_x_high =
+          lcd_control_.at(lcd_control_index(affine_base + 0xAU));
+      const std::uint32_t ref_y_low =
+          lcd_control_.at(lcd_control_index(affine_base + 0xCU));
+      const std::uint32_t ref_y_high =
+          lcd_control_.at(lcd_control_index(affine_base + 0xEU));
+      control.bg_reference_x.at(index) =
+          (ref_x_high & 0x0FFFU) << 16 | ref_x_low;
+      control.bg_reference_y.at(index) =
+          (ref_y_high & 0x0FFFU) << 16 | ref_y_low;
+    }
   }
   control.win0h = lcd_control_.at(lcd_control_index(0x04000040U));
   control.win0v = lcd_control_.at(lcd_control_index(0x04000044U));
@@ -138,6 +172,7 @@ PpuRenderControl PpuTiming::render_control() const {
   control.bldcnt = lcd_control_.at(lcd_control_index(0x04000050U));
   control.bldalpha = lcd_control_.at(lcd_control_index(0x04000052U));
   control.bldy = lcd_control_.at(lcd_control_index(0x04000054U));
+  control.mosaic = lcd_control_.at(lcd_control_index(0x0400004CU));
   return control;
 }
 
@@ -236,8 +271,28 @@ std::uint64_t PpuTiming::state_hash() const {
   return hasher.value();
 }
 
+PpuTiming::State PpuTiming::save_state() const {
+  State state;
+  state.line = line_;
+  state.line_cycle = line_cycle_;
+  state.dispstat_control = dispstat_control_;
+  state.lcd_control = lcd_control_;
+  return state;
+}
+
+bool PpuTiming::load_state(const State& state) {
+  line_ = state.line;
+  line_cycle_ = state.line_cycle;
+  dispstat_control_ = state.dispstat_control;
+  lcd_control_ = state.lcd_control;
+  return true;
+}
+
 void PpuTiming::enter_hblank(InterruptController& interrupts, PpuTickEvents& events) {
-  if (line_ < kVisibleLines) {
+  if (line_ < kTotalLines - 1) {
+    // HBlank events count on every line except the final line 227; whether
+    // hardware suppresses the event on that line is UNVERIFIED, so it keeps
+    // the pre-existing behavior exactly.
     ++events.hblank_entries;
   }
   if (hblank_irq_enabled()) {

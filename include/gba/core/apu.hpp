@@ -42,9 +42,64 @@ class Apu {
   static constexpr std::uint32_t kCpuCyclesPerFrameSequencerStep = 32768;
   static constexpr std::uint8_t kFrameSequencerSteps = 8;
   static constexpr std::size_t kWaveRamHalfwords = 8;
+  static constexpr std::size_t kWaveRamBanks = 2;
   static constexpr std::size_t kFifoCapacity = 32;
   static constexpr std::size_t kFifoRefillThreshold = 16;
   static constexpr std::size_t kAudioBufferCapacity = 2048;
+
+  struct FifoState {
+    std::array<std::int8_t, kFifoCapacity> samples{};
+    std::size_t head = 0;
+    std::size_t size = 0;
+  };
+
+  struct SquareChannelState {
+    bool enabled = false;
+    std::uint8_t duty = 0;
+    std::uint8_t volume = 0;
+    std::uint16_t period_samples = 1;
+    std::uint16_t phase = 0;
+  };
+
+  struct WaveChannelState {
+    bool enabled = false;
+    std::uint8_t volume_shift = 0;
+    std::uint16_t period_samples = 1;
+    std::uint16_t phase = 0;
+  };
+
+  struct NoiseChannelState {
+    bool enabled = false;
+    std::uint8_t volume = 0;
+    std::uint16_t period_samples = 1;
+    std::uint16_t phase = 0;
+    std::uint16_t lfsr = 0x7FFF;
+    bool narrow_lfsr = false;
+  };
+
+  struct State {
+    std::uint16_t soundcnt_l = 0;
+    std::uint16_t soundcnt_h = 0;
+    std::uint16_t soundcnt_x_status = 0;
+    std::uint16_t soundbias = 0x0200;
+    std::array<std::array<std::uint16_t, kWaveRamHalfwords>, kWaveRamBanks>
+        wave_ram_banks{};
+    bool wave_bank_select = false;
+    std::array<FifoState, 2> fifos{};
+    std::array<std::int8_t, 2> direct_sound_latched_samples{};
+    std::array<SquareChannelState, 2> square_channels{};
+    WaveChannelState wave_channel{};
+    NoiseChannelState noise_channel{};
+    std::array<ApuMixedSample, kAudioBufferCapacity> audio_buffer_samples{};
+    std::size_t audio_buffer_head = 0;
+    std::size_t audio_buffer_size = 0;
+    std::uint64_t frame_step_count = 0;
+    std::uint64_t audio_sample_count = 0;
+    std::uint32_t frame_cycle_remainder = 0;
+    std::uint32_t audio_cycle_remainder = 0;
+    std::uint8_t frame_step = 0;
+    ApuMixedSample last_mixed_sample{0, 0};
+  };
 
   Apu();
 
@@ -54,6 +109,7 @@ class Apu {
   void write_soundcnt_h(std::uint16_t value);
   void write_soundcnt_x(std::uint16_t value);
   void write_soundbias(std::uint16_t value);
+  void set_wave_bank_select(bool playing_bank);
   void write_wave_ram(std::size_t index, std::uint16_t value);
   void write_fifo(DirectSoundChannel channel, std::uint32_t value);
   void configure_square_channel(std::uint8_t channel, std::uint8_t duty,
@@ -67,11 +123,15 @@ class Apu {
   [[nodiscard]] std::optional<ApuMixedSample> pop_audio_sample();
   void clear_audio_buffer();
 
+  [[nodiscard]] State save_state() const;
+  [[nodiscard]] bool load_state(const State& state);
+
   [[nodiscard]] std::uint16_t soundcnt_l() const;
   [[nodiscard]] std::uint16_t soundcnt_h() const;
   [[nodiscard]] std::uint16_t soundcnt_x() const;
   [[nodiscard]] std::uint16_t soundbias() const;
   [[nodiscard]] std::uint16_t wave_ram(std::size_t index) const;
+  [[nodiscard]] std::uint16_t wave_ram_playing(std::size_t index) const;
   [[nodiscard]] bool master_enabled() const;
   [[nodiscard]] std::uint8_t frame_step() const;
   [[nodiscard]] std::uint64_t frame_step_count() const;
@@ -129,7 +189,9 @@ class Apu {
   std::uint16_t soundcnt_h_;
   std::uint16_t soundcnt_x_status_;
   std::uint16_t soundbias_;
-  std::array<std::uint16_t, kWaveRamHalfwords> wave_ram_;
+  std::array<std::array<std::uint16_t, kWaveRamHalfwords>, kWaveRamBanks>
+      wave_ram_banks_;
+  bool wave_bank_select_;
   std::array<Fifo, 2> fifos_;
   std::array<std::int8_t, 2> direct_sound_latched_samples_;
   std::array<SquareChannel, 2> square_channels_;
@@ -149,7 +211,7 @@ class Apu {
   void push_fifo(DirectSoundChannel channel, std::int8_t sample);
   [[nodiscard]] DirectSoundSample pop_fifo(DirectSoundChannel channel);
   [[nodiscard]] ApuMixedSample mix_sample() const;
-  [[nodiscard]] std::int32_t mix_psg_sample() const;
+  [[nodiscard]] std::array<std::int32_t, 4> psg_channel_outputs() const;
   void push_audio_sample(ApuMixedSample sample);
   void generate_audio_sample();
   void advance_psg_generators();

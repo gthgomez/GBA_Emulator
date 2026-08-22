@@ -7,6 +7,9 @@ param(
   [string]$ProposalPath = ""
 )
 
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
@@ -28,10 +31,34 @@ if ($MedianMultiplier -lt 1.0 -or $WorstMultiplier -lt 1.0) {
   throw "core_performance_calibration: multipliers must be at least 1.0"
 }
 
+function Assert-NativeExitCode {
+  param(
+    [string]$Step,
+    [int]$Expected = 0
+  )
+
+  if ($LASTEXITCODE -ne $Expected) {
+    Write-Host ""
+    Write-Host "core_performance_calibration: FAIL ($Step exited with $LASTEXITCODE)"
+    if ($null -eq $LASTEXITCODE) {
+      exit 1
+    }
+    exit $LASTEXITCODE
+  }
+}
+
 $checkScript = Join-Path $PSScriptRoot "check-core-performance-regression.ps1"
 & $checkScript -Runs $Runs -BaselinePath $BaselinePath -ReportPath $ReportPath
+Assert-NativeExitCode -Step "check-core-performance-regression.ps1"
 
 $report = Get-Content -Raw -LiteralPath $ReportPath | ConvertFrom-Json
+
+# Fail loudly on an empty or missing report.summary: calibrating thresholds
+# from nothing would otherwise print an empty proposal and PASS.
+if ($null -eq $report -or $null -eq $report.summary -or @($report.summary).Count -eq 0) {
+  throw "core_performance_calibration: report has no summary rows; cannot calibrate (report: $ReportPath)"
+}
+
 $proposalRows = @()
 foreach ($row in $report.summary) {
   $medianCeiling = [double]$row.median_ns_per_operation * $MedianMultiplier

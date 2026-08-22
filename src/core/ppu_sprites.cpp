@@ -24,8 +24,14 @@ constexpr std::array<std::array<SpriteSize, 4>, 4> kSpriteSizes{{
                      : static_cast<std::int16_t>(raw);
 }
 
+// DISPCNT bit6 selects OBJ character mapping: stride is width/8 tiles per
+// texture row in 1D mode and a fixed 32 tiles in 2D mode.
 [[nodiscard]] std::uint16_t obj_tile_row_stride(const SpriteAttributes& sprite,
-                                                bool bpp8) {
+                                                bool bpp8,
+                                                bool character_mapping_1d) {
+  if (!character_mapping_1d) {
+    return 32U;
+  }
   return static_cast<std::uint16_t>(sprite.width / 8U * (bpp8 ? 2U : 1U));
 }
 
@@ -105,6 +111,8 @@ std::optional<SpriteAttributes> PpuSpriteFetcher::read_sprite(const MemoryBus& m
   const bool affine = (attr0.value() & 0x0100U) != 0;
   const bool double_size = affine && (attr0.value() & 0x0200U) != 0;
   const bool object_disabled = !affine && (attr0.value() & 0x0200U) != 0;
+  const std::uint8_t graphics_mode =
+      static_cast<std::uint8_t>((attr0.value() >> 10) & 0x3U);
 
   return SpriteAttributes{
       attr0.value(),
@@ -123,15 +131,19 @@ std::optional<SpriteAttributes> PpuSpriteFetcher::read_sprite(const MemoryBus& m
       static_cast<std::uint8_t>((attr1.value() >> 9) & 0x1FU),
       affine,
       double_size,
-      object_disabled || dimensions.width == 0 || dimensions.height == 0,
+      object_disabled || dimensions.width == 0 || dimensions.height == 0 ||
+          graphics_mode == 3U,
       !affine && (attr1.value() & 0x1000U) != 0,
       !affine && (attr1.value() & 0x2000U) != 0,
+      graphics_mode == 1U,
+      graphics_mode == 2U,
+      (attr0.value() & 0x0040U) != 0,
   };
 }
 
 std::optional<SpritePixel> PpuSpriteFetcher::fetch_sprite_pixel(
     const MemoryBus& memory, const SpriteAttributes& sprite, std::uint8_t local_x,
-    std::uint8_t local_y) {
+    std::uint8_t local_y, bool character_mapping_1d) {
   const std::uint8_t screen_width = sprite.double_size
                                         ? static_cast<std::uint8_t>(sprite.width * 2U)
                                         : sprite.width;
@@ -164,7 +176,9 @@ std::optional<SpritePixel> PpuSpriteFetcher::fetch_sprite_pixel(
   const std::uint8_t in_tile_x = static_cast<std::uint8_t>(pixel_x % 8U);
   const std::uint8_t in_tile_y = static_cast<std::uint8_t>(pixel_y % 8U);
   const std::uint16_t tile_number = static_cast<std::uint16_t>(
-      sprite.tile_id + tile_y * obj_tile_row_stride(sprite, bpp8) + tile_x * (bpp8 ? 2U : 1U));
+      sprite.tile_id +
+      tile_y * obj_tile_row_stride(sprite, bpp8, character_mapping_1d) +
+      tile_x * (bpp8 ? 2U : 1U));
   const std::uint32_t tile_address =
       kObjTileBase + static_cast<std::uint32_t>(tile_number) * 32U;
   const std::uint32_t pixel_address =

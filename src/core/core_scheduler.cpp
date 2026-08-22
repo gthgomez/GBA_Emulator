@@ -10,9 +10,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace gba::core {
@@ -23,12 +22,16 @@ constexpr std::uint32_t kGamePakSequentialBoundary = 128U * 1024U;
 constexpr std::uint32_t kGamePakInlineLiteralWindowBytes = 256U;
 constexpr std::uint8_t kPrefetchBufferCapacityHalfwords = 8;
 constexpr std::uint32_t kMaxBiosWaitCycles = 280896U * 2U;
-constexpr std::uint32_t kBiosWaitBatchCycles = 1U;
+// IntrWait/Halt busy-spin batches device advancement into chunks of up to
+// this many cycles; each chunk is shrunk to the next potential wake edge so
+// wake phases stay identical to legacy 1-cycle polling (see
+// intr_wait_batch_cycles).
+constexpr std::uint32_t kIntrWaitCoarseBatchCycles = 64U;
 constexpr std::uint32_t kTimerIoBase = 0x04000100U;
 constexpr std::uint32_t kTimerIoEnd = 0x04000110U;
 constexpr std::uint32_t kDispstatIo = 0x04000004U;
 constexpr std::uint32_t kInterruptFlagIo = 0x04000202U;
-constexpr std::uint8_t kAutoIrqLatencyCycles = 5;
+constexpr std::uint8_t kAutoIrqLatencyCycles = 5;  // trace-fitted (a729e69, 2026-05-11)
 // Safety valve for the event/DMA drain loop in advance_devices(). Legitimate
 // cascades (an HBlank DMA crossing into VBlank, FIFO refills during DMA time)
 // resolve within a few iterations; runaway repeat configurations (e.g. a
@@ -68,6 +71,12 @@ void recover_thumb_state_from_rom_misfetch(Arm7tdmi& cpu, const MemoryBus& memor
   ++recovery_count;
   (void)cpu.set_cpsr(cpu.cpsr() | 0x20U);
 }
+// Trace-fitted tuning (commit a729e69, 2026-05-11, "Make mGBA timers suite
+// pass"): the auto-IRQ latency constants below plus the reload-specific
+// slow-timer load windows (0xFFEE/0xFFED/0xFFF0 special cases in
+// adjust_slow_timer_load_pre_access_cycles) and the phase184 predicate were
+// calibrated against mGBA misc-edge timer-IRQ traces, not derived from
+// hardware documentation.
 constexpr std::uint8_t kAutoIrqSlowTimerLatencyCycles = 3;
 constexpr std::uint8_t kAutoIrqPostHleReturnLatencyCycles = 2;
 constexpr std::uint8_t kAutoIrqLongTimerChainedPostHleReturnLatencyCycles = 0;
@@ -118,6 +127,9 @@ enum class HleSwiProfileKind : std::uint8_t {
                                    (fast_sequential ? 4U : 0U));
 }
 
+// Trace-fitted tuning (commit d031c7f, 2026-05-08, "Improve GBA core
+// correctness coverage"): per-WAITCNT ROM-cycle adjustments for HLE SWI
+// latency were fitted against trace captures, not derived from hardware docs.
 [[nodiscard]] std::int32_t hle_swi_profile_adjustment(
     BiosSwiCall call, std::uint32_t fetch_address, const WaitStateControl* waitcnt,
     HleSwiProfileKind profile) {
@@ -281,6 +293,24 @@ struct DataAccessTimingProbe {
   }
   const std::uint32_t opcode = (instruction >> 21U) & 0xFU;
   return opcode >= 0x8U && opcode <= 0xBU;
+}
+
+// Thumb analog of arm_test_or_compare_instruction: flag-setting operations
+// that produce no register result (format 3 CMP immediate, format 4
+// TST/CMP/CMN ALU opcodes, and format 5 high-register CMP).
+[[nodiscard]] bool thumb_test_or_compare_instruction(std::uint16_t instruction) {
+  const std::uint16_t top5 = static_cast<std::uint16_t>(instruction >> 11U);
+  if (top5 == 0x05U) {
+    return true;  // format 3: CMP Rn, #imm
+  }
+  if ((instruction >> 10U) == 0x11U && ((instruction >> 8U) & 0x3U) == 0x1U) {
+    return true;  // format 5: CMP Rd, Rm (hi-register operations, opcode 01)
+  }
+  if ((instruction >> 10U) == 0x10U) {
+    const std::uint16_t alu_opcode = static_cast<std::uint16_t>((instruction >> 6U) & 0xFU);
+    return alu_opcode == 0x8U || alu_opcode == 0xAU || alu_opcode == 0xBU;  // TST/CMP/CMN
+  }
+  return false;
 }
 
 [[nodiscard]] bool arm_immediate_data_processing_without_pc_write(
@@ -556,6 +586,9 @@ dispstat_hblank_clear_timer_load_pre_access_cycles(
     return static_cast<std::uint32_t>(cycles_until_overflow);
   }
 
+  // Trace-fitted reload special cases (commit a729e69, 2026-05-11): these
+  // reload values appeared in mGBA misc-edge timer-IRQ traces; the extra
+  // windows below were fitted to those captures, not derived from docs.
   const std::uint16_t reload = timers.reload(0);
   if (reload == 0xFFEEU) {
     const std::uint32_t near_reload_extra_window =
@@ -592,7 +625,10 @@ dispstat_hblank_clear_timer_load_pre_access_cycles(
   return data_access.has_value() && data_access->load && timer_io_access &&
          spaced_timer_io_access && post_return_armed && timer0_irq_requested &&
          timers.enabled(0) && !timers.count_up(0) && timers.irq_enabled(0) &&
-         timers.prescaler_divisor(0) > 1U && timers.reload(0) == 0xFFEDU;
+         timers.prescaler_divisor(0) > 1U &&
+         // Trace-fitted: reload 0xFFED is the specific mGBA misc-edge trace
+         // capture this PC-replay mechanism was calibrated against.
+         timers.reload(0) == 0xFFEDU;
 }
 
 [[nodiscard]] bool should_defer_slow_timer_load_irq_until_after_access(
@@ -614,6 +650,8 @@ dispstat_hblank_clear_timer_load_pre_access_cycles(
   const std::uint16_t reload = timers.reload(0);
   if (reload == 0xFFEEU) {
     // Slow chained loads must observe timer0 before the IRQ handler stops it.
+    // Trace-fitted (commit a729e69, 2026-05-11): divisor/phase thresholds and
+    // the 0xFFED case below were fitted to mGBA misc-edge trace captures.
     return divisor == 256U || (divisor == 1024U && pre_access_cycles >= 5U);
   }
   return reload == 0xFFEDU && divisor == 256U && pre_access_cycles >= 7U;
@@ -1307,7 +1345,7 @@ CoreSchedulerState CoreScheduler::save_state() const {
           last_fetch_window_, prefetch_buffer_halfwords_,
           suppress_next_game_pak_prefetch_, recover_next_game_pak_data_fetch_,
           suppress_next_thumb_prefetch_execute_bubble_,
-          previous_thumb_internal_load_, hle_irq_return_lr_,
+          previous_thumb_internal_load_, last_waitcnt_control_, hle_irq_return_lr_,
           hle_irq_saved_registers_, hle_irq_reentry_dispatch_pending_,
           hle_irq_return_latency_pending_, hle_irq_post_return_latency_armed_,
           hle_irq_post_return_dispatch_pending_,
@@ -1333,6 +1371,7 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
   recover_next_game_pak_data_fetch_ = state.recover_next_game_pak_data_fetch;
   suppress_next_thumb_prefetch_execute_bubble_ = state.suppress_next_thumb_prefetch_execute_bubble;
   previous_thumb_internal_load_ = state.previous_thumb_internal_load;
+  last_waitcnt_control_ = state.last_waitcnt_control;
   hle_irq_return_lr_ = state.hle_irq_return_lr;
   hle_irq_saved_registers_ = state.hle_irq_saved_registers;
   hle_irq_reentry_dispatch_pending_ = state.hle_irq_reentry_dispatch_pending;
@@ -1380,6 +1419,10 @@ std::uint64_t CoreScheduler::state_hash() const {
   hasher.add_bool(recover_next_game_pak_data_fetch_);
   hasher.add_bool(suppress_next_thumb_prefetch_execute_bubble_);
   hasher.add_bool(previous_thumb_internal_load_);
+  hasher.add_bool(last_waitcnt_control_.has_value());
+  if (last_waitcnt_control_.has_value()) {
+    hasher.add_u16(last_waitcnt_control_.value());
+  }
   hasher.add_bool(hle_irq_return_lr_.has_value());
   if (hle_irq_return_lr_.has_value()) {
     hasher.add_u32(hle_irq_return_lr_.value());
@@ -1402,6 +1445,7 @@ std::uint64_t CoreScheduler::state_hash() const {
   hasher.add_bool(auto_irq_line_high_);
   hasher.add_u8(auto_irq_latency_cycles_);
   hasher.add_u32(timer_io_access_gap_cycles_);
+  hasher.add_u32(thumb_misfetch_recovery_count_);
   return hasher.value();
 }
 
@@ -1423,6 +1467,10 @@ bool CoreScheduler::wake_from_halt_if_irq_pending() {
 
 void CoreScheduler::set_io_registers(IoRegisters& io) {
   io_ = &io;
+}
+
+void CoreScheduler::set_debug_trace_sink(std::function<void(const char*)> sink) {
+  debug_trace_sink_ = std::move(sink);
 }
 
 CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
@@ -1596,6 +1644,9 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
     const bool slow_timer_chained_post_hle_return_irq =
         chained_post_hle_return_irq && slow_timer0_irq;
     const bool slow_timer_normal_irq = !post_hle_return_irq && slow_timer0_irq;
+    // Trace-fitted predicate (commit a729e69, 2026-05-11): enable phase 184
+    // with reload 0xFFEE / divisor 1024 identifies the second spaced-data IRQ
+    // of one specific mGBA misc-edge capture; latency 4 was fitted to it.
     const bool phase184_second_spaced_data_irq =
         slow_timer_chained_post_hle_return_irq && timers_.reload(0) == 0xFFEEU &&
         timers_.prescaler_divisor(0) == 1024U &&
@@ -1619,7 +1670,10 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
     // Use the earliest IRQ cycle from either the CPU interval or DMA time
     std::uint32_t event_cycle = cycles;
     if (timer_tick.first_irq_cycle.has_value()) {
-      event_cycle = std::min(event_cycle, timer_tick.first_irq_cycle.value());
+      // Timers::TickResult::first_irq_cycle is u64; clamp the min back into
+      // the scheduler's u32 cycle domain.
+      event_cycle = static_cast<std::uint32_t>(
+          std::min<std::uint64_t>(event_cycle, timer_tick.first_irq_cycle.value()));
     }
     if (dma_first_irq_cycle.has_value()) {
       // dma_first_irq_cycle is already absolute within this call
@@ -2019,14 +2073,31 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
         (chained_post_return_timer_io_irq ||
          armed_slow_timer0_post_return_timer_io_irq ||
          slow_timer0_post_return_timer_io_irq) &&
-        !defer_slow_timer_load_irq && auto_irq_ready() &&
-        service_pending_irq(true, spaced_timer_io_access)) {
-      timer_io_access_gap_cycles_ = 0;
-      hle_irq_return_latency_pending_ = false;
-      reset_auto_irq_latency();
-      const ArmStepResult irq_step{ExecuteStatus::executed, pre_access_cycles,
-                                   cpu_.elapsed_cycles(), false, false};
-      return {irq_step, devices, {}, true, scheduler_cycles_, data_access_trace};
+        !defer_slow_timer_load_irq && auto_irq_ready()) {
+      // ARM/Thumb parity (S2): mirror the ARM step path's slow-timer IRQ
+      // PC-replay so the IRQ handler observes a consistent fetch PC for
+      // width-appropriate offsets.
+      const bool replay_slow_timer_load = should_replay_slow_timer_load_after_irq(
+          data_access, timer_io_access, spaced_timer_io_access,
+          hle_irq_post_return_latency_armed_ ||
+              slow_timer0_post_return_timer_io_irq,
+          interrupts_.requested(InterruptSource::timer0), timers_);
+      const std::uint32_t irq_pc_before = cpu_.register_value(Arm7tdmi::kPc);
+      if (replay_slow_timer_load) {
+        cpu_.set_register(Arm7tdmi::kPc, pre_step_pc);
+      }
+      const bool serviced = service_pending_irq(true, spaced_timer_io_access);
+      if (!serviced && replay_slow_timer_load) {
+        cpu_.set_register(Arm7tdmi::kPc, irq_pc_before);
+      }
+      if (serviced) {
+        timer_io_access_gap_cycles_ = 0;
+        hle_irq_return_latency_pending_ = false;
+        reset_auto_irq_latency();
+        const ArmStepResult irq_step{ExecuteStatus::executed, pre_access_cycles,
+                                     cpu_.elapsed_cycles(), false, false};
+        return {irq_step, devices, {}, true, scheduler_cycles_, data_access_trace};
+      }
     }
   }
   const std::optional<ArmStepResult> hle_step =
@@ -2065,6 +2136,7 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
         cpu_step.elapsed_cycles > pre_access_cycles
             ? cpu_step.elapsed_cycles - pre_access_cycles
             : 0;
+    const bool irq_ready_before_remaining_cycles = auto_irq_ready();
     if (remaining_cycles != 0) {
       const CoreDeviceTickResult remaining_devices = advance_devices(remaining_cycles);
       merge_device_ticks(devices, remaining_devices);
@@ -2075,10 +2147,20 @@ CoreSchedulerStepResult CoreScheduler::step_thumb(
       merge_device_ticks(devices, dma_devices);
     }
     const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == pre_step_pc;
-    if (sequential_pc && auto_irq_ready()) {
+    // ARM/Thumb parity (S2): mirror the ARM step path's chained
+    // post-return IRQ deferral so Thumb does not service an armed chained
+    // IRQ one instruction early.
+    const bool defer_chained_post_return_irq =
+        !irq_ready_before_remaining_cycles && !data_access.has_value() &&
+        cpu_step.elapsed_cycles == 1 &&
+        !thumb_test_or_compare_instruction(instruction) &&
+        hle_irq_post_return_latency_armed_ &&
+        hle_irq_post_return_chain_active_ && auto_irq_ready();
+    if (sequential_pc && auto_irq_ready() && !defer_chained_post_return_irq) {
       cpu_.set_register(Arm7tdmi::kPc, pre_step_pc + 2U);
     }
     irq_serviced = sequential_pc && auto_irq_ready() &&
+                   !defer_chained_post_return_irq &&
                    service_pending_irq(deferred_slow_timer_load_irq_after_access,
                                        deferred_slow_timer_load_irq_after_access &&
                                            spaced_timer_io_access);
@@ -2506,12 +2588,15 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
       return executed(200);
     }
     case 0x02: {
-      const bool entered_before_hblank_event =
-          ppu_.line_cycle() < PpuTiming::kVisibleCycles;
-      if (std::getenv("GBA_DEBUG_HALT") != nullptr) {
-        std::fprintf(stderr, "HALT entry line=%u cycle=%u before_event=%d\n",
-                     ppu_.vcount(), ppu_.line_cycle(),
-                     entered_before_hblank_event ? 1 : 0);
+      // Deterministic core path: diagnostics go through the injectable sink
+      // (set_debug_trace_sink) instead of environment-variable gating.
+      if (debug_trace_sink_ != nullptr) {
+        const std::string trace = "HALT entry line=" + std::to_string(ppu_.vcount()) +
+                                  " cycle=" + std::to_string(ppu_.line_cycle()) +
+                                  " before_event=" +
+                                  (ppu_.line_cycle() < PpuTiming::kVisibleCycles ? "1"
+                                                                                 : "0");
+        debug_trace_sink_(trace.c_str());
       }
       if (!wait_for_interrupt_mask(interrupts_.interrupt_enable(), false)) {
         return unsupported();
@@ -2578,16 +2663,22 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
       cpu_.set_register(3, 0x170U);
       return executed(99, HleSwiProfileKind::simple);
     }
-    case 0x0B:
-      return hle_cpu_set(false)
-                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), false),
+    case 0x0B: {
+      const std::optional<std::uint32_t> consumed = hle_cpu_set(false);
+      return consumed.has_value()
+                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), false) -
+                                consumed.value(),
                             HleSwiProfileKind::cpu_set)
                  : unsupported();
-    case 0x0C:
-      return hle_cpu_set(true)
-                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), true),
+    }
+    case 0x0C: {
+      const std::optional<std::uint32_t> consumed = hle_cpu_set(true);
+      return consumed.has_value()
+                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), true) -
+                                consumed.value(),
                             HleSwiProfileKind::cpu_set)
                  : unsupported();
+    }
     case 0x0E:
       return hle_bg_affine_set() ? executed(3, HleSwiProfileKind::simple)
                                  : unsupported();
@@ -2622,6 +2713,98 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
   }
 }
 
+std::uint32_t CoreScheduler::intr_wait_ppu_horizon_cycles(std::uint16_t mask) const {
+  constexpr std::uint16_t kVblankBit =
+      static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(InterruptSource::vblank));
+  constexpr std::uint16_t kHblankBit =
+      static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(InterruptSource::hblank));
+  constexpr std::uint16_t kVcountBit =
+      static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(InterruptSource::vcount));
+
+  std::uint32_t horizon = kIntrWaitCoarseBatchCycles;
+  // PPU IRQ requests are gated on DISPSTAT enable bits, so a source that is
+  // not enabled cannot newly assert mid-wait and imposes no bound.
+  if ((mask & kHblankBit) != 0 && ppu_.hblank_irq_enabled()) {
+    const std::uint32_t line_cycle = ppu_.line_cycle();
+    const std::uint32_t distance =
+        line_cycle < PpuTiming::kHblankFlagCycles
+            ? PpuTiming::kHblankFlagCycles - line_cycle
+            : PpuTiming::kCyclesPerLine - line_cycle + PpuTiming::kHblankFlagCycles;
+    horizon = std::min(horizon, distance);
+  }
+  if ((mask & kVblankBit) != 0 && ppu_.vblank_irq_enabled()) {
+    const std::uint32_t vblank_edge =
+        static_cast<std::uint32_t>(PpuTiming::kVisibleLines) * PpuTiming::kCyclesPerLine;
+    const std::uint32_t frame_position = ppu_.frame_cycle() % PpuTiming::kCyclesPerFrame;
+    std::uint32_t distance =
+        (vblank_edge + PpuTiming::kCyclesPerFrame - frame_position) %
+        PpuTiming::kCyclesPerFrame;
+    if (distance == 0) {
+      distance = PpuTiming::kCyclesPerFrame;
+    }
+    horizon = std::min(horizon, distance);
+  }
+  if ((mask & kVcountBit) != 0 && ppu_.vcount_irq_enabled()) {
+    const std::uint32_t setting = ppu_.vcount_setting();
+    const std::uint32_t current_line = ppu_.vcount();
+    std::uint32_t lines_until_match = (setting + PpuTiming::kTotalLines - current_line) %
+                                      PpuTiming::kTotalLines;
+    if (lines_until_match == 0) {
+      lines_until_match = PpuTiming::kTotalLines;
+    }
+    const std::uint32_t distance = (lines_until_match - 1U) * PpuTiming::kCyclesPerLine +
+                                   (PpuTiming::kCyclesPerLine - ppu_.line_cycle());
+    horizon = std::min(horizon, distance);
+  }
+  return horizon;
+}
+
+std::uint32_t CoreScheduler::intr_wait_timer_horizon_cycles(std::uint16_t mask) const {
+  // A watched timer flag (direct or cascade-fed) can only assert after an
+  // overflow of some enabled free-running timer at or below it in the cascade
+  // chain, so the earliest such root overflow bounds every watched source.
+  bool has_root[Timers::kTimerCount] = {};
+  std::uint32_t earliest_root = kIntrWaitCoarseBatchCycles;
+  for (std::uint8_t timer = 0; timer < Timers::kTimerCount; ++timer) {
+    if (!timers_.enabled(timer) || timers_.count_up(timer)) {
+      continue;
+    }
+    has_root[timer] = true;
+    const std::uint32_t cycles_until_tick =
+        timers_.cycles_until_next_prescaler_tick(timer);
+    const std::uint32_t ticks_to_overflow =
+        0x10000U - static_cast<std::uint32_t>(timers_.counter(timer));
+    const std::uint64_t distance =
+        static_cast<std::uint64_t>(cycles_until_tick) +
+        static_cast<std::uint64_t>(ticks_to_overflow - 1U) *
+            timers_.prescaler_divisor(timer);
+    earliest_root = std::min<std::uint32_t>(
+        earliest_root,
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            distance, std::numeric_limits<std::uint32_t>::max())));
+  }
+  for (std::uint8_t timer = 0; timer < Timers::kTimerCount; ++timer) {
+    const std::uint16_t timer_bit = static_cast<std::uint16_t>(
+        1U << (static_cast<std::uint8_t>(InterruptSource::timer0) + timer));
+    if ((mask & timer_bit) == 0) {
+      continue;
+    }
+    for (std::uint8_t root = 0; root <= timer; ++root) {
+      if (has_root[root]) {
+        return std::min(kIntrWaitCoarseBatchCycles,
+                        std::max(earliest_root, 1U));
+      }
+    }
+  }
+  return kIntrWaitCoarseBatchCycles;
+}
+
+std::uint32_t CoreScheduler::intr_wait_batch_cycles(std::uint16_t mask) const {
+  return std::clamp(std::min(intr_wait_ppu_horizon_cycles(mask),
+                             intr_wait_timer_horizon_cycles(mask)),
+                    1U, kIntrWaitCoarseBatchCycles);
+}
+
 bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old_flags) {
   if (mask == 0) {
     return false;
@@ -2629,6 +2812,10 @@ bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old
   if (discard_old_flags) {
     interrupts_.write_interrupt_flags(mask);
   }
+  // S4: batch device advancement into deterministic chunks instead of a
+  // 1-cycle busy loop. intr_wait_batch_cycles never lets a chunk cross the
+  // next wake edge, so the cycle at which the wait returns is identical to
+  // the legacy per-cycle polling loop.
   for (std::uint32_t cycles = 0; cycles < kMaxBiosWaitCycles;) {
     if ((interrupts_.interrupt_flags() & mask) != 0) {
       if (interrupts_.irq_line() && !cpu_.irq_disabled()) {
@@ -2637,8 +2824,8 @@ bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old
       }
       return true;
     }
-    const std::uint32_t batch =
-        std::min<std::uint32_t>(kBiosWaitBatchCycles, kMaxBiosWaitCycles - cycles);
+    const std::uint32_t remaining = kMaxBiosWaitCycles - cycles;
+    const std::uint32_t batch = std::min(intr_wait_batch_cycles(mask), remaining);
     [[maybe_unused]] const CoreDeviceTickResult devices = advance_devices(batch);
     cycles += batch;
   }
@@ -2650,7 +2837,7 @@ bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old
   return matched;
 }
 
-bool CoreScheduler::hle_cpu_set(bool fast) {
+std::optional<std::uint32_t> CoreScheduler::hle_cpu_set(bool fast) {
   const std::uint32_t source = cpu_.register_value(0);
   const std::uint32_t dest = cpu_.register_value(1);
   const std::uint32_t control = cpu_.register_value(2);
@@ -2660,6 +2847,30 @@ bool CoreScheduler::hle_cpu_set(bool fast) {
   if (fast) {
     count = (count + 7U) & ~7U;
   }
+
+  // S5: long copies previously left devices frozen until the SWI's full
+  // latency was charged after execution. Advance devices in deterministic
+  // chunks between copy units; the caller deducts the consumed cycles from
+  // the charged SWI latency so final-cycle totals stay identical.
+  constexpr std::uint32_t kCpuSetChunkUnits = 64;
+  const std::uint32_t per_unit_cycles =
+      fast ? 12U : ((control & (1U << 26U)) != 0 ? 8U : 4U);
+  std::uint32_t consumed_cycles = 0;
+  std::uint32_t pending_units = 0;
+  const auto settle_chunk = [&]() {
+    if (pending_units == 0) {
+      return;
+    }
+    const std::uint32_t chunk_cycles = pending_units * per_unit_cycles;
+    consumed_cycles += chunk_cycles;
+    [[maybe_unused]] const CoreDeviceTickResult devices = advance_devices(chunk_cycles);
+    pending_units = 0;
+  };
+  const auto advance_unit = [&]() {
+    if (++pending_units == kCpuSetChunkUnits) {
+      settle_chunk();
+    }
+  };
 
   if (word) {
     std::optional<std::uint32_t> fill_value = std::nullopt;
@@ -2681,16 +2892,18 @@ bool CoreScheduler::hle_cpu_set(bool fast) {
               ? write_address
               : (write_address & ~0x3U);
       if (!value.has_value()) {
-        return false;
+        return std::nullopt;
       }
       if (!memory_.write32(effective_write_address, value.value())) {
         const Region region = MemoryBus::describe(effective_write_address).region;
         if (region != Region::bios && region != Region::game_pak_rom) {
-          return false;
+          return std::nullopt;
         }
       }
+      advance_unit();
     }
-    return true;
+    settle_chunk();
+    return consumed_cycles;
   }
 
   std::optional<std::uint16_t> fill_value = std::nullopt;
@@ -2712,17 +2925,53 @@ bool CoreScheduler::hle_cpu_set(bool fast) {
         fill ? (fill_value.has_value() ? fill_value : (fill_value = read_halfword(source)))
              : read_halfword(source + index * 2U);
     if (!value.has_value()) {
-      return false;
+      return std::nullopt;
     }
     const std::uint32_t write_address = dest + index * 2U;
     if (!memory_.write16(write_address, value.value())) {
       const Region region = MemoryBus::describe(write_address).region;
       if (region != Region::bios && region != Region::game_pak_rom) {
-        return false;
+        return std::nullopt;
       }
     }
+    advance_unit();
   }
-  return true;
+  settle_chunk();
+  return consumed_cycles;
+}
+
+// S8: shared body of the two duplicate simple-instruction fast paths inside
+// step_arm_from_pc. Executes the instruction, advances devices by the CPU
+// elapsed cycles, and services an auto-IRQ while keeping the PC rewind
+// discipline; callers own PC-advance/prefetch bookkeeping.
+CoreSchedulerStepResult CoreScheduler::step_simple_arm_fast_path(
+    std::uint32_t instruction, std::uint32_t fetch_address) {
+  ArmStepResult cpu_step = cpu_.step_arm(instruction);
+  CoreDeviceTickResult devices{0, std::nullopt};
+  bool irq_serviced = false;
+
+  if (cpu_step.status == ExecuteStatus::skipped_condition &&
+      cpu_step.elapsed_cycles > 0) {
+    devices = advance_devices(cpu_step.elapsed_cycles);
+  }
+
+  if (cpu_step.status == ExecuteStatus::executed && cpu_step.elapsed_cycles > 0) {
+    devices = advance_devices(cpu_step.elapsed_cycles);
+    const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+    if (sequential_pc && auto_irq_ready()) {
+      cpu_.set_register(Arm7tdmi::kPc, fetch_address + 4U);
+    }
+    irq_serviced = sequential_pc && auto_irq_ready() && service_pending_irq();
+    if (irq_serviced) {
+      reset_auto_irq_latency();
+    }
+    if (!irq_serviced && sequential_pc &&
+        cpu_.register_value(Arm7tdmi::kPc) == fetch_address + 4U) {
+      cpu_.set_register(Arm7tdmi::kPc, fetch_address);
+    }
+  }
+
+  return {cpu_step, devices, {}, irq_serviced, scheduler_cycles_, std::nullopt};
 }
 
 CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
@@ -2765,34 +3014,8 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
       !hle_irq_timing_sensitive_state(hle_irq_return_latency_pending_,
                                       hle_irq_post_return_latency_armed_,
                                       hle_irq_post_return_chain_active_)) {
-    ArmStepResult cpu_step = cpu_.step_arm(instruction.value());
-    CoreDeviceTickResult devices{0, std::nullopt};
-    bool irq_serviced = false;
-
-    if (cpu_step.status == ExecuteStatus::skipped_condition &&
-        cpu_step.elapsed_cycles > 0) {
-      devices = advance_devices(cpu_step.elapsed_cycles);
-    }
-
-    if (cpu_step.status == ExecuteStatus::executed &&
-        cpu_step.elapsed_cycles > 0) {
-      devices = advance_devices(cpu_step.elapsed_cycles);
-      const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
-      if (sequential_pc && auto_irq_ready()) {
-        cpu_.set_register(Arm7tdmi::kPc, fetch_address + 4U);
-      }
-      irq_serviced = sequential_pc && auto_irq_ready() && service_pending_irq();
-      if (irq_serviced) {
-        reset_auto_irq_latency();
-      }
-      if (!irq_serviced && sequential_pc &&
-          cpu_.register_value(Arm7tdmi::kPc) == fetch_address + 4U) {
-        cpu_.set_register(Arm7tdmi::kPc, fetch_address);
-      }
-    }
-
-    CoreSchedulerStepResult step{cpu_step, devices, {}, irq_serviced,
-                                 scheduler_cycles_, std::nullopt};
+    CoreSchedulerStepResult step =
+        step_simple_arm_fast_path(instruction.value(), fetch_address);
     const bool should_advance_pc =
         step.cpu_step.status != ExecuteStatus::unsupported &&
         cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
@@ -2823,35 +3046,11 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
       !hle_irq_timing_sensitive_state(hle_irq_return_latency_pending_,
                                       hle_irq_post_return_latency_armed_,
                                       hle_irq_post_return_chain_active_)) {
-    ArmStepResult cpu_step = cpu_.step_arm(instruction.value());
-    CoreDeviceTickResult devices{0, std::nullopt};
-    bool irq_serviced = false;
-
-    if (cpu_step.status == ExecuteStatus::skipped_condition &&
-        cpu_step.elapsed_cycles > 0) {
-      devices = advance_devices(cpu_step.elapsed_cycles);
-    }
-    if (cpu_step.status == ExecuteStatus::executed && cpu_step.elapsed_cycles > 0) {
-      devices = advance_devices(cpu_step.elapsed_cycles);
-      const bool sequential_pc = cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
-      if (sequential_pc && auto_irq_ready()) {
-        cpu_.set_register(Arm7tdmi::kPc, fetch_address + 4U);
-      }
-      irq_serviced = sequential_pc && auto_irq_ready() && service_pending_irq();
-      if (irq_serviced) {
-        reset_auto_irq_latency();
-      }
-      if (!irq_serviced && sequential_pc &&
-          cpu_.register_value(Arm7tdmi::kPc) == fetch_address + 4U) {
-        cpu_.set_register(Arm7tdmi::kPc, fetch_address);
-      }
-    }
-
+    CoreSchedulerStepResult step =
+        step_simple_arm_fast_path(instruction.value(), fetch_address);
     const bool should_advance_pc =
-        cpu_step.status != ExecuteStatus::unsupported &&
+        step.cpu_step.status != ExecuteStatus::unsupported &&
         cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
-    CoreSchedulerStepResult step{cpu_step, devices, {}, irq_serviced,
-                                 scheduler_cycles_, std::nullopt};
     if (should_charge_prefetch_execute_bubble(fetch_address, waitcnt_, step,
                                               should_advance_pc, prefetch_hit, 4,
                                               prefetch_buffer_halfwords_)) {
@@ -3230,7 +3429,11 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
           prefetch_buffer_halfwords_, boundary_forced_nonsequential};
 }
 
-CoreSchedulerRunResult CoreScheduler::run_arm_from_pc(std::uint32_t max_steps) {
+// S9: run_arm_from_pc and run_from_pc differ only in which fetch-step
+// function drives the loop, so both delegate to this shared implementation.
+CoreSchedulerRunResult CoreScheduler::run_steps_from_pc(
+    std::uint32_t max_steps,
+    CoreSchedulerFetchStepResult (CoreScheduler::*step_fn)()) {
   CoreSchedulerRunResult result{
       max_steps,
       0,
@@ -3244,7 +3447,7 @@ CoreSchedulerRunResult CoreScheduler::run_arm_from_pc(std::uint32_t max_steps) {
   };
 
   for (std::uint32_t step_index = 0; step_index < max_steps; ++step_index) {
-    const CoreSchedulerFetchStepResult fetched = step_arm_from_pc();
+    const CoreSchedulerFetchStepResult fetched = (this->*step_fn)();
     if (fetched.fetch_failed) {
       ++result.fetch_failures;
       result.stop_reason = CoreRunStopReason::fetch_failed;
@@ -3272,46 +3475,12 @@ CoreSchedulerRunResult CoreScheduler::run_arm_from_pc(std::uint32_t max_steps) {
   return result;
 }
 
+CoreSchedulerRunResult CoreScheduler::run_arm_from_pc(std::uint32_t max_steps) {
+  return run_steps_from_pc(max_steps, &CoreScheduler::step_arm_from_pc);
+}
+
 CoreSchedulerRunResult CoreScheduler::run_from_pc(std::uint32_t max_steps) {
-  CoreSchedulerRunResult result{
-      max_steps,
-      0,
-      0,
-      0,
-      0,
-      0,
-      CoreRunStopReason::max_steps,
-      cpu_.register_value(Arm7tdmi::kPc),
-      scheduler_cycles_,
-  };
-
-  for (std::uint32_t step_index = 0; step_index < max_steps; ++step_index) {
-    const CoreSchedulerFetchStepResult fetched = step_from_pc();
-    if (fetched.fetch_failed) {
-      ++result.fetch_failures;
-      result.stop_reason = CoreRunStopReason::fetch_failed;
-      break;
-    }
-
-    ++result.attempted_steps;
-    const ExecuteStatus status = fetched.step->cpu_step.status;
-    if (status == ExecuteStatus::executed) {
-      ++result.executed_steps;
-      continue;
-    }
-    if (status == ExecuteStatus::skipped_condition) {
-      ++result.skipped_steps;
-      continue;
-    }
-
-    ++result.unsupported_steps;
-    result.stop_reason = CoreRunStopReason::unsupported_instruction;
-    break;
-  }
-
-  result.final_pc = cpu_.register_value(Arm7tdmi::kPc);
-  result.scheduler_cycles = scheduler_cycles_;
-  return result;
+  return run_steps_from_pc(max_steps, &CoreScheduler::step_from_pc);
 }
 
 bool CoreScheduler::hle_bg_affine_set() {

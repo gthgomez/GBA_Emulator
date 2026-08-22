@@ -5,6 +5,7 @@
 #include "gba/core/io_registers.hpp"
 #include "gba/core/ppu_timing.hpp"
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <vector>
@@ -27,14 +28,22 @@ namespace {
 }
 
 [[nodiscard]] AndroidRuntimeVideoDiagnostics analyze_framebuffer(
-    const PpuRenderer::Framebuffer& framebuffer, const PpuRenderControl& control) {
+    const PpuRenderer::Framebuffer& framebuffer, const PpuRenderControl& control,
+    std::vector<std::uint32_t>& color_counts_scratch) {
   AndroidRuntimeVideoDiagnostics diagnostics{};
   diagnostics.dispcnt = control.dispcnt;
   diagnostics.forced_blank = (control.dispcnt & 0x0080U) != 0U;
   diagnostics.bg_enabled_mask =
       static_cast<std::uint8_t>((control.dispcnt >> 8U) & 0x1FU);
 
-  std::vector<std::uint32_t> color_counts(1U << 16, 0U);
+  // Reused caller-owned scratch histogram: sized once, zero-filled per call,
+  // so repeated diagnostics runs do not reallocate a 256 KB buffer.
+  if (color_counts_scratch.size() != (1U << 16)) {
+    color_counts_scratch.assign(1U << 16, 0U);
+  } else {
+    std::fill(color_counts_scratch.begin(), color_counts_scratch.end(), 0U);
+  }
+  std::vector<std::uint32_t>& color_counts = color_counts_scratch;
   std::uint32_t max_count = 0;
   std::uint16_t dominant_color = 0;
   for (const std::uint16_t pixel : framebuffer) {
@@ -113,7 +122,10 @@ AndroidRuntimeStatus AndroidRuntime::load_rom(const std::vector<std::uint8_t>& r
 }
 
 AndroidRuntimeStatus AndroidRuntime::set_button_mask(std::uint16_t pressed_mask) {
-  return session_.keypad().set_pressed_mask(pressed_mask)
+  // Route through the CoreSession input facade so KEYCNT-configured keypad
+  // interrupts are polled immediately on input changes instead of waiting for
+  // the next scheduler step to sample the pad.
+  return session_.set_input_mask(pressed_mask)
              ? AndroidRuntimeStatus::ok
              : AndroidRuntimeStatus::input_rejected;
 }
@@ -229,6 +241,10 @@ AndroidRuntimeFrameResult AndroidRuntime::step_frame_with_fetch_trace(
   const bool abnormal_stop =
       result.run.stop_reason == CoreRunStopReason::fetch_failed ||
       result.run.stop_reason == CoreRunStopReason::unsupported_instruction;
+  // The framebuffer/audio produced below are only fresh when the frame's full
+  // cycle budget was met and stepping stopped for a normal reason; otherwise
+  // the presentation surfaces are stale and frame_complete stays false.
+  result.frame_complete = frame_cycle_budget_met && !abnormal_stop;
   if (frame_cycle_budget_met && !abnormal_stop) {
     const PpuRenderControl control = session_.ppu().render_control();
     render_control_ = control;
@@ -250,7 +266,17 @@ AndroidRuntimeFrameResult AndroidRuntime::step_frame_with_fetch_trace(
     last_audio_batch_.push_back(sample.value());
   }
   result.audio_samples = static_cast<std::uint32_t>(last_audio_batch_.size());
-  result.audio_underruns = result.audio_samples == 0 ? 1U : 0U;
+  // Audio underrun policy: a frame counts as an underrun only when audio
+  // output is actually expected. Forced-blank frames (typical of early boot,
+  // before a game configures display and sound) legitimately produce zero
+  // samples, and with the APU master enable off nothing may legally emit
+  // audio at all; both are "designed silent" and are never counted.
+  const PpuRenderControl current_control = session_.ppu().render_control();
+  const bool designed_silent =
+      (current_control.dispcnt & 0x0080U) != 0U ||
+      !session_.apu().master_enabled();
+  result.audio_underruns =
+      (result.audio_samples == 0 && !designed_silent) ? 1U : 0U;
   result.state_hash = state_hash_enabled() ? session_.state_hash() : 0;
   render_control_ = session_.ppu().render_control();
   return result;
@@ -277,7 +303,8 @@ std::uint16_t AndroidRuntime::pixel(std::uint16_t x, std::uint16_t y) const {
 }
 
 AndroidRuntimeVideoDiagnostics AndroidRuntime::video_diagnostics() const {
-  return analyze_framebuffer(renderer_.framebuffer(), render_control_);
+  return analyze_framebuffer(renderer_.framebuffer(), render_control_,
+                             color_histogram_scratch_);
 }
 
 const std::vector<ApuMixedSample>& AndroidRuntime::last_audio_batch() const {

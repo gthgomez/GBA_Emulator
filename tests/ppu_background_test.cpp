@@ -6,14 +6,9 @@
 #include <optional>
 #include <string_view>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void expect_pixel(const std::optional<gba::core::BgPixel>& pixel, std::uint8_t color_index,
                   std::uint16_t color, std::string_view message) {
@@ -99,6 +94,54 @@ int main() {
       PpuBackgroundFetcher::fetch_text_pixel(memory, bg0, 16, 0);
   expect_pixel(transparent, 0, 0x1234, "BG color zero fetches palette zero");
   expect(transparent->transparent, "BG color zero is transparent");
+
+  const gba::core::BgControl affine_small =
+      PpuBackgroundFetcher::decode_control(static_cast<std::uint16_t>((20U << 8) |
+                                                                       (2U << 14)));
+  expect(PpuBackgroundFetcher::affine_map_pixels(affine_small) == 512,
+         "affine size 2 spans 512 pixels");
+  const gba::core::BgControl affine_large =
+      PpuBackgroundFetcher::decode_control(static_cast<std::uint16_t>((20U << 8) |
+                                                                       (3U << 14)));
+  expect(PpuBackgroundFetcher::affine_map_pixels(affine_large) == 1024,
+         "affine size 3 spans 1024 pixels");
+
+  const gba::core::BgControl aff =
+      PpuBackgroundFetcher::decode_control(static_cast<std::uint16_t>((20U << 8)));
+  expect(memory.write8(0x06000000U + 20U * 0x800U + 17U, 200),
+         "seed affine map entry with 8-bit tile index");
+  expect(memory.write8(0x06000000U + 200U * 64U + 1U * 8U + 1U, 0x0C),
+         "seed affine tile pixel beyond 255-tile index space");
+  expect(memory.write16(0x05000000 + 0x0CU * 2U, 0x4210),
+         "seed affine palette color");
+  const std::optional<gba::core::AffinePixel> aff_pixel =
+      PpuBackgroundFetcher::fetch_affine_pixel(memory, aff, 9, 9);
+  expect(aff_pixel.has_value(), "affine fetch resolves");
+  expect(aff_pixel->tile_index == 200, "affine map entries use 8-bit tile indices");
+  expect(aff_pixel->color_index == 0x0C && aff_pixel->color == 0x4210,
+         "affine tiles are 64-byte 8bpp cells into one palette");
+  expect(!aff_pixel->transparent, "nonzero affine color is opaque");
+
+  const std::optional<gba::core::AffinePixel> aff_oob =
+      PpuBackgroundFetcher::fetch_affine_pixel(memory, aff, -1, 9);
+  expect(aff_oob.has_value() && aff_oob->transparent,
+         "affine fetch outside a non-wrapped map is transparent");
+
+  const gba::core::BgControl aff_wrap =
+      PpuBackgroundFetcher::decode_control(static_cast<std::uint16_t>((20U << 8) |
+                                                                       (1U << 13)));
+  expect(memory.write8(0x06000000U + 20U * 0x800U + 31U, 7),
+         "seed mirrored affine map entry");
+  expect(memory.write8(0x06000000U + 7U * 64U + 1U * 8U + 7U, 0x0B),
+         "seed mirrored affine tile pixel");
+  expect(memory.write16(0x05000000 + 0x0BU * 2U, 0x03E0),
+         "seed mirrored affine palette color");
+  const std::optional<gba::core::AffinePixel> aff_wrapped =
+      PpuBackgroundFetcher::fetch_affine_pixel(memory, aff_wrap, -1, 9);
+  expect(aff_wrapped.has_value() && !aff_wrapped->transparent,
+         "BGxCNT bit13 wraps affine coordinates back into the map");
+  expect(aff_wrapped->tile_index == 7,
+         "wrapped affine coordinate lands on the mirrored map entry");
 
   std::cout << "ppu_background_test: PASS\n";
   return 0;

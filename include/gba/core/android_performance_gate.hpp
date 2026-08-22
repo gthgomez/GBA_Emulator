@@ -3,8 +3,16 @@
 #include "gba/core/android_runtime.hpp"
 
 #include <cstdint>
+#include <vector>
 
 namespace gba::core {
+
+// Nearest-rank percentile of an ASCENDING-sorted sample set: rank =
+// ceil(percentile * n / 100), reported as a 0-based index into the samples.
+// Returns 0.0 for an empty sample set.
+[[nodiscard]] double nearest_rank_percentile(
+    const std::vector<double>& sorted_samples, std::uint32_t percentile);
+
 
 enum class ThermalObservation : std::uint8_t {
   not_measured,

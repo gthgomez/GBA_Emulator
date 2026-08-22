@@ -32,6 +32,9 @@ struct SpriteAttributes {
   bool disabled;
   bool hflip;
   bool vflip;
+  bool semi_transparent;
+  bool obj_window;
+  bool mosaic_enabled;
 };
 
 struct SpritePixel {
@@ -52,7 +55,7 @@ class PpuSpriteFetcher {
       const MemoryBus& memory, std::uint16_t index);
   [[nodiscard]] static std::optional<SpritePixel> fetch_sprite_pixel(
       const MemoryBus& memory, const SpriteAttributes& sprite, std::uint8_t local_x,
-      std::uint8_t local_y);
+      std::uint8_t local_y, bool character_mapping_1d);
 };
 
 }  // namespace gba::core

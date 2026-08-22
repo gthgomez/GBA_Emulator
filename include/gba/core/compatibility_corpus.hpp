@@ -23,6 +23,12 @@ struct CompatibilityFixture {
   LoadedProgramRunSpec run_spec;
 };
 
+// LIFETIME CONTRACT: the string_views in CompatibilityFixtureResult::name
+// alias the corresponding CompatibilityFixture::name storage. Every result in
+// CompatibilityCorpusResult::results therefore remains valid only while the
+// fixtures vector passed to run_compatibility_corpus() is alive and unmodified
+// (no reallocation, no element mutation). Callers that must outlive the
+// fixtures should copy the names into owning strings.
 struct CompatibilityFixtureResult {
   std::string_view name;
   FixtureLicenseStatus license_status = FixtureLicenseStatus::missing_license;

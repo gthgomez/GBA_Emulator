@@ -16,7 +16,12 @@ constexpr std::uint16_t kFifoBReset = 0x8000;
 constexpr std::uint16_t kSoundCntHStoredMask =
     static_cast<std::uint16_t>(kSoundCntHMask & ~kFifoAReset & ~kFifoBReset);
 constexpr std::uint16_t kMasterEnable = 0x0080;
-constexpr std::uint16_t kSoundBiasMask = 0xC3FF;
+// GBATEK SOUNDBIAS: bias level bits 0-9 plus PWM resolution bits 14-15 are
+// writable (0x43FF), not the previously stored 0xC3FF.
+constexpr std::uint16_t kSoundBiasMask = 0x43FF;
+// Provenance (UNVERIFIED-vs-hardware): the 128 amplitude ratio between PSG
+// full-scale and Direct Sound full-scale keeps legacy output levels stable;
+// exact hardware PWM scaling was never measured against a real unit.
 constexpr std::int32_t kDirectSoundHalfScale = 128;
 constexpr std::array<std::uint8_t, 4> kSquareDutyHighSamples{{1, 2, 4, 6}};
 constexpr std::int32_t kPsgScale = 128;
@@ -54,7 +59,10 @@ void Apu::reset() {
   soundcnt_h_ = 0;
   soundcnt_x_status_ = 0;
   soundbias_ = 0x0200;
-  wave_ram_.fill(0);
+  for (std::array<std::uint16_t, kWaveRamHalfwords>& bank : wave_ram_banks_) {
+    bank.fill(0);
+  }
+  wave_bank_select_ = false;
   for (Fifo& state : fifos_) {
     state.samples.fill(0);
     state.head = 0;
@@ -113,20 +121,21 @@ void Apu::write_soundbias(std::uint16_t value) {
   soundbias_ = static_cast<std::uint16_t>(value & kSoundBiasMask);
 }
 
+void Apu::set_wave_bank_select(bool playing_bank) {
+  wave_bank_select_ = playing_bank;
+}
+
+// Policy: FIFO and wave-RAM writes bypass the NR52 master-enable gate. The
+// hardware lock covers PSG channel registers only; DMA FIFO preloads at init
+// must not be swallowed while sound is still disabled.
 void Apu::write_wave_ram(std::size_t index, std::uint16_t value) {
-  if (!master_enabled()) {
-    return;
-  }
-  if (index >= wave_ram_.size()) {
+  if (index >= wave_ram_banks_.at(0).size()) {
     throw std::out_of_range("wave RAM index out of range");
   }
-  wave_ram_.at(index) = value;
+  wave_ram_banks_.at(wave_bank_select_ ? 0U : 1U).at(index) = value;
 }
 
 void Apu::write_fifo(DirectSoundChannel channel, std::uint32_t value) {
-  if (!master_enabled()) {
-    return;
-  }
   for (std::uint8_t byte = 0; byte < 4; ++byte) {
     push_fifo(channel, static_cast<std::int8_t>((value >> (byte * 8U)) & 0xFFU));
   }
@@ -244,6 +253,110 @@ void Apu::clear_audio_buffer() {
   audio_buffer_.size = 0;
 }
 
+Apu::State Apu::save_state() const {
+  State state;
+  state.soundcnt_l = soundcnt_l_;
+  state.soundcnt_h = soundcnt_h_;
+  state.soundcnt_x_status = soundcnt_x_status_;
+  state.soundbias = soundbias_;
+  state.wave_ram_banks = wave_ram_banks_;
+  state.wave_bank_select = wave_bank_select_;
+  for (std::size_t index = 0; index < fifos_.size(); ++index) {
+    const Fifo& fifo_state = fifos_.at(index);
+    FifoState& saved = state.fifos.at(index);
+    saved.samples = fifo_state.samples;
+    saved.head = fifo_state.head;
+    saved.size = fifo_state.size;
+  }
+  state.direct_sound_latched_samples = direct_sound_latched_samples_;
+  for (std::size_t index = 0; index < square_channels_.size(); ++index) {
+    const SquareChannel& square = square_channels_.at(index);
+    SquareChannelState& saved = state.square_channels.at(index);
+    saved.enabled = square.enabled;
+    saved.duty = square.duty;
+    saved.volume = square.volume;
+    saved.period_samples = square.period_samples;
+    saved.phase = square.phase;
+  }
+  state.wave_channel.enabled = wave_channel_.enabled;
+  state.wave_channel.volume_shift = wave_channel_.volume_shift;
+  state.wave_channel.period_samples = wave_channel_.period_samples;
+  state.wave_channel.phase = wave_channel_.phase;
+  state.noise_channel.enabled = noise_channel_.enabled;
+  state.noise_channel.volume = noise_channel_.volume;
+  state.noise_channel.period_samples = noise_channel_.period_samples;
+  state.noise_channel.phase = noise_channel_.phase;
+  state.noise_channel.lfsr = noise_channel_.lfsr;
+  state.noise_channel.narrow_lfsr = noise_channel_.narrow_lfsr;
+  state.audio_buffer_samples = audio_buffer_.samples;
+  state.audio_buffer_head = audio_buffer_.head;
+  state.audio_buffer_size = audio_buffer_.size;
+  state.frame_step_count = frame_step_count_;
+  state.audio_sample_count = audio_sample_count_;
+  state.frame_cycle_remainder = frame_cycle_remainder_;
+  state.audio_cycle_remainder = audio_cycle_remainder_;
+  state.frame_step = frame_step_;
+  state.last_mixed_sample = last_mixed_sample_;
+  return state;
+}
+
+bool Apu::load_state(const State& state) {
+  for (const FifoState& fifo_state : state.fifos) {
+    if (fifo_state.head >= kFifoCapacity || fifo_state.size > kFifoCapacity ||
+        fifo_state.size > fifo_state.samples.size()) {
+      return false;
+    }
+  }
+  if (state.audio_buffer_head >= kAudioBufferCapacity ||
+      state.audio_buffer_size > kAudioBufferCapacity) {
+    return false;
+  }
+
+  soundcnt_l_ = state.soundcnt_l;
+  soundcnt_h_ = state.soundcnt_h;
+  soundcnt_x_status_ = state.soundcnt_x_status;
+  soundbias_ = state.soundbias;
+  wave_ram_banks_ = state.wave_ram_banks;
+  wave_bank_select_ = state.wave_bank_select;
+  for (std::size_t index = 0; index < fifos_.size(); ++index) {
+    const FifoState& saved = state.fifos.at(index);
+    Fifo& fifo_state = fifos_.at(index);
+    fifo_state.samples = saved.samples;
+    fifo_state.head = saved.head;
+    fifo_state.size = saved.size;
+  }
+  direct_sound_latched_samples_ = state.direct_sound_latched_samples;
+  for (std::size_t index = 0; index < square_channels_.size(); ++index) {
+    const SquareChannelState& saved = state.square_channels.at(index);
+    SquareChannel& square = square_channels_.at(index);
+    square.enabled = saved.enabled;
+    square.duty = saved.duty;
+    square.volume = saved.volume;
+    square.period_samples = saved.period_samples;
+    square.phase = saved.phase;
+  }
+  wave_channel_.enabled = state.wave_channel.enabled;
+  wave_channel_.volume_shift = state.wave_channel.volume_shift;
+  wave_channel_.period_samples = state.wave_channel.period_samples;
+  wave_channel_.phase = state.wave_channel.phase;
+  noise_channel_.enabled = state.noise_channel.enabled;
+  noise_channel_.volume = state.noise_channel.volume;
+  noise_channel_.period_samples = state.noise_channel.period_samples;
+  noise_channel_.phase = state.noise_channel.phase;
+  noise_channel_.lfsr = state.noise_channel.lfsr;
+  noise_channel_.narrow_lfsr = state.noise_channel.narrow_lfsr;
+  audio_buffer_.samples = state.audio_buffer_samples;
+  audio_buffer_.head = state.audio_buffer_head;
+  audio_buffer_.size = state.audio_buffer_size;
+  frame_step_count_ = state.frame_step_count;
+  audio_sample_count_ = state.audio_sample_count;
+  frame_cycle_remainder_ = state.frame_cycle_remainder;
+  audio_cycle_remainder_ = state.audio_cycle_remainder;
+  frame_step_ = state.frame_step;
+  last_mixed_sample_ = state.last_mixed_sample;
+  return true;
+}
+
 std::uint16_t Apu::soundcnt_l() const {
   return soundcnt_l_;
 }
@@ -253,7 +366,21 @@ std::uint16_t Apu::soundcnt_h() const {
 }
 
 std::uint16_t Apu::soundcnt_x() const {
-  return soundcnt_x_status_;
+  // NR52 readback exposes per-channel active status in bits 0-3.
+  std::uint16_t value = soundcnt_x_status_;
+  if (square_channels_.at(0).enabled) {
+    value = static_cast<std::uint16_t>(value | 0x0001U);
+  }
+  if (square_channels_.at(1).enabled) {
+    value = static_cast<std::uint16_t>(value | 0x0002U);
+  }
+  if (wave_channel_.enabled) {
+    value = static_cast<std::uint16_t>(value | 0x0004U);
+  }
+  if (noise_channel_.enabled) {
+    value = static_cast<std::uint16_t>(value | 0x0008U);
+  }
+  return value;
 }
 
 std::uint16_t Apu::soundbias() const {
@@ -261,10 +388,18 @@ std::uint16_t Apu::soundbias() const {
 }
 
 std::uint16_t Apu::wave_ram(std::size_t index) const {
-  if (index >= wave_ram_.size()) {
+  if (index >= wave_ram_banks_.at(0).size()) {
     throw std::out_of_range("wave RAM index out of range");
   }
-  return wave_ram_.at(index);
+  // CPU accesses target the non-playing bank of the two-bank wave RAM.
+  return wave_ram_banks_.at(wave_bank_select_ ? 0U : 1U).at(index);
+}
+
+std::uint16_t Apu::wave_ram_playing(std::size_t index) const {
+  if (index >= wave_ram_banks_.at(0).size()) {
+    throw std::out_of_range("wave RAM index out of range");
+  }
+  return wave_ram_banks_.at(wave_bank_select_ ? 1U : 0U).at(index);
 }
 
 bool Apu::master_enabled() const {
@@ -342,7 +477,10 @@ std::uint64_t Apu::state_hash() const {
   hasher.add_u16(soundcnt_h_);
   hasher.add_u16(soundcnt_x_status_);
   hasher.add_u16(soundbias_);
-  hasher.add_bytes(wave_ram_);
+  for (const std::array<std::uint16_t, kWaveRamHalfwords>& bank : wave_ram_banks_) {
+    hasher.add_bytes(bank);
+  }
+  hasher.add_bool(wave_bank_select_);
   for (const Fifo& fifo_state : fifos_) {
     hasher.add_bytes(fifo_state.samples);
     hasher.add_u64(static_cast<std::uint64_t>(fifo_state.head));
@@ -424,9 +562,22 @@ DirectSoundSample Apu::pop_fifo(DirectSoundChannel channel) {
 ApuMixedSample Apu::mix_sample() const {
   std::int32_t left = 0;
   std::int32_t right = 0;
-  const std::int32_t psg = mix_psg_sample();
-  left += psg;
-  right += psg;
+
+  const std::array<std::int32_t, 4> psg_outputs = psg_channel_outputs();
+  const std::uint16_t nr51 = static_cast<std::uint16_t>(soundcnt_l_ & 0x00FFU);
+  const std::uint16_t nr50 = static_cast<std::uint16_t>((soundcnt_l_ >> 8) & 0x00FFU);
+  const std::int32_t left_volume =
+      static_cast<std::int32_t>(((nr50 >> 4) & 0x7U) + 1U);
+  const std::int32_t right_volume =
+      static_cast<std::int32_t>((nr50 & 0x7U) + 1U);
+  for (std::size_t index = 0; index < psg_outputs.size(); ++index) {
+    if ((nr51 & static_cast<std::uint16_t>(1U << index)) != 0) {
+      right += psg_outputs.at(index) * right_volume;
+    }
+    if ((nr51 & static_cast<std::uint16_t>(1U << (index + 4U))) != 0) {
+      left += psg_outputs.at(index) * left_volume;
+    }
+  }
 
   const auto mix_direct_channel = [&](DirectSoundChannel channel) {
     if (!direct_sound_enabled(channel)) {
@@ -452,37 +603,46 @@ ApuMixedSample Apu::mix_sample() const {
 
   mix_direct_channel(DirectSoundChannel::a);
   mix_direct_channel(DirectSoundChannel::b);
+
+  // Deviation marker: SOUNDBIAS is masked and stored but intentionally not
+  // applied to mixed samples; faithful PWM bias semantics would shift every
+  // legacy output-level expectation (UNVERIFIED-vs-hardware).
   return {clamp_mixed_sample(left), clamp_mixed_sample(right)};
 }
 
-std::int32_t Apu::mix_psg_sample() const {
-  std::int32_t mixed = 0;
-  for (const SquareChannel& square : square_channels_) {
+std::array<std::int32_t, 4> Apu::psg_channel_outputs() const {
+  std::array<std::int32_t, 4> outputs{0, 0, 0, 0};
+  for (std::size_t index = 0; index < square_channels_.size(); ++index) {
+    const SquareChannel& square = square_channels_.at(index);
     if (!square.enabled || square.volume == 0) {
       continue;
     }
     const std::uint8_t duty_step =
         static_cast<std::uint8_t>((square.phase * 8U) / square.period_samples);
     const bool high = duty_step < kSquareDutyHighSamples.at(square.duty);
-    mixed += (high ? 1 : -1) * static_cast<std::int32_t>(square.volume) * kPsgScale;
+    outputs.at(index) =
+        (high ? 1 : -1) * static_cast<std::int32_t>(square.volume) * kPsgScale;
   }
 
   if (wave_channel_.enabled && wave_channel_.volume_shift != 0) {
     const std::uint8_t sample_index =
         static_cast<std::uint8_t>((wave_channel_.phase * 32U) / wave_channel_.period_samples);
-    const std::uint16_t packed = wave_ram_.at(sample_index / 4U);
+    const std::array<std::uint16_t, kWaveRamHalfwords>& playing_bank =
+        wave_ram_banks_.at(wave_bank_select_ ? 1U : 0U);
+    const std::uint16_t packed = playing_bank.at(sample_index / 4U);
     const std::uint8_t nibble_shift =
         static_cast<std::uint8_t>((3U - (sample_index % 4U)) * 4U);
     const std::int32_t sample =
         static_cast<std::int32_t>((packed >> nibble_shift) & 0x0FU) - 8;
-    mixed += (sample * kPsgScale) >> (wave_channel_.volume_shift - 1U);
+    outputs.at(2) = (sample * kPsgScale) >> (wave_channel_.volume_shift - 1U);
   }
 
   if (noise_channel_.enabled && noise_channel_.volume != 0) {
     const bool high = (noise_channel_.lfsr & 0x1U) == 0;
-    mixed += (high ? 1 : -1) * static_cast<std::int32_t>(noise_channel_.volume) * kPsgScale;
+    outputs.at(3) =
+        (high ? 1 : -1) * static_cast<std::int32_t>(noise_channel_.volume) * kPsgScale;
   }
-  return mixed;
+  return outputs;
 }
 
 void Apu::push_audio_sample(ApuMixedSample sample) {
@@ -530,6 +690,8 @@ void Apu::advance_psg_generators() {
   }
 }
 
+// Hardware preserves wave RAM across NR52 master-disable; only registers,
+// FIFOs, counters, and channel state reset here.
 void Apu::clear_sound_circuit() {
   soundcnt_l_ = 0;
   soundcnt_h_ = 0;
@@ -541,7 +703,7 @@ void Apu::clear_sound_circuit() {
   direct_sound_latched_samples_.fill(0);
   last_mixed_sample_ = {0, 0};
   frame_step_ = 0;
-  wave_ram_.fill(0);
+  wave_bank_select_ = false;
   for (SquareChannel& square : square_channels_) {
     square = {false, 0, 0, 1, 0};
   }

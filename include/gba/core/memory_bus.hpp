@@ -61,8 +61,6 @@ enum class FlashCommandState : std::uint8_t {
   erase_unlock1,
   erase_unlock2,
   erase_command,
-  erase_confirm_unlock1,
-  erase_confirm_unlock2,
   bank_select,
 };
 
@@ -160,6 +158,27 @@ class MemoryBus {
   static constexpr std::size_t kEeprom512Size = 512;
   static constexpr std::size_t kEeprom8kSize = 8 * 1024;
 
+  // Complete serializable snapshot of all mutable MemoryBus state, following
+  // the Timers::State save/load pattern. io_callbacks_ is wiring, not
+  // simulation state, and is intentionally excluded.
+  struct State {
+    std::array<std::uint8_t, kEwramSize> ewram{};
+    std::array<std::uint8_t, kIwramSize> iwram{};
+    std::array<std::uint8_t, kPaletteSize> palette{};
+    std::array<std::uint8_t, kVramSize> vram{};
+    std::array<std::uint8_t, kOamSize> oam{};
+    std::vector<std::uint8_t> game_pak_rom;
+    std::vector<std::uint8_t> game_pak_save;
+    GamePakSaveType game_pak_save_type = GamePakSaveType::none;
+    FlashCommandState flash_command_state = FlashCommandState::idle;
+    bool flash_id_mode = false;
+    std::uint8_t flash_bank = 0;
+    std::uint32_t open_bus_latch = 0;
+    bool open_bus_latch_valid = false;
+    std::array<std::uint8_t, 256> mgba_debug_string{};
+    std::string debug_output;
+  };
+
   MemoryBus();
 
   [[nodiscard]] static AddressInfo describe(std::uint32_t address);
@@ -204,6 +223,8 @@ class MemoryBus {
   [[nodiscard]] std::string debug_output() const;
   void clear_debug_output();
   [[nodiscard]] std::uint64_t state_hash() const;
+  [[nodiscard]] State save_state() const;
+  [[nodiscard]] bool load_state(const State& state);
   [[nodiscard]] bool write8(std::uint32_t address, std::uint8_t value);
   [[nodiscard]] bool write16(std::uint32_t address, std::uint16_t value);
   [[nodiscard]] bool write32(std::uint32_t address, std::uint32_t value);
