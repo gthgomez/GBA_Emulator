@@ -25,3 +25,14 @@ jobs:
           $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
           g++ --version
           .\tools\run-core-tests.ps1
+
+      - name: Benchmark regression gate (check-core-performance-regression.ps1)
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          g++ --version
+          .\tools\check-core-performance-regression.ps1
+
+      - name: Release readiness gate (check-release-readiness.ps1)
+        shell: pwsh
+        run: .\tools\check-release-readiness.ps1
