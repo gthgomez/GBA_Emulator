@@ -1,3 +1,12 @@
+#requires -Version 7.3
+
+param(
+    # Explicit opt-in destination for evidence markdown files (e.g. a
+    # reviewed docs\evidence path). Default output stays build-local so local
+    # runs never write dated artifacts into tracked documentation.
+    [string]$EvidenceDir = ""
+)
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
@@ -17,9 +26,16 @@ if (-not $roms -or $roms.Count -eq 0) {
     exit 0
 }
 
+# Artifacts default to the untracked build tree; only an explicit -EvidenceDir
+# routes them into a tracked evidence directory.
+if ([string]::IsNullOrWhiteSpace($EvidenceDir)) {
+    $artifactDir = Join-Path $repoRoot "build\test-results\rom-video-smoke-local"
+} else {
+    $artifactDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EvidenceDir)
+}
+New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
 $smokeScript = Join-Path $PSScriptRoot "run-rom-video-smoke.ps1"
-$evidenceDir = Join-Path $repoRoot "docs\evidence"
-New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
 
 $failures = 0
 foreach ($rom in $roms) {
@@ -28,7 +44,7 @@ foreach ($rom in $roms) {
     if ($slug.Length -gt 48) {
         $slug = $slug.Substring(0, 48)
     }
-    $artifact = Join-Path $evidenceDir ("2026-06-04-rom-video-{0}.md" -f $slug)
+    $artifact = Join-Path $artifactDir ("rom-video-{0}.md" -f $slug)
     Write-Output "run-local-rom-video-smoke: $($rom.Name)"
     & $smokeScript -RomPath $rom.FullName -Frames 216 -RequireValidHeader -ArtifactPath $artifact
     if ($LASTEXITCODE -ne 0) {

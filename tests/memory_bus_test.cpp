@@ -15,14 +15,9 @@
 #include <string_view>
 #include <vector>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void expect_read(const gba::core::MemoryBus& bus, std::uint32_t address, std::uint8_t expected,
                  std::string_view message) {
@@ -154,6 +149,16 @@ int main() {
   expect_cartridge(MemoryBus::describe_cartridge(0x0DFFFF00), CartridgeWindow::rom_wait2,
                    CartridgeSaveKind::eeprom_serial, 0x1FFFF00, 32 * 1024 * 1024, 1, true,
                    true, "large-ROM EEPROM candidate metadata");
+  // M8: candidacy window widened to every ROM-bus access >= 0x0D000000.
+  expect_cartridge(MemoryBus::describe_cartridge(0x0D000000), CartridgeWindow::rom_wait2,
+                   CartridgeSaveKind::eeprom_serial, 0x1000000, 32 * 1024 * 1024, 1, true,
+                   true, "widened EEPROM candidacy starts at the 0x0D000000 boundary");
+  expect_cartridge(MemoryBus::describe_cartridge(0x0DFFFFFF), CartridgeWindow::rom_wait2,
+                   CartridgeSaveKind::eeprom_serial, 0x1FFFFFF, 32 * 1024 * 1024, 1, true,
+                   true, "widened EEPROM candidacy covers upper wait2 mirror addresses");
+  expect_cartridge(MemoryBus::describe_cartridge(0x0CFFFFFF), CartridgeWindow::rom_wait2,
+                   CartridgeSaveKind::none, 0xFFFFFF, 32 * 1024 * 1024, 16, false,
+                   true, "addresses below the widened EEPROM window keep parallel metadata");
   expect_cartridge(MemoryBus::describe_cartridge(0x0E00FFFF), CartridgeWindow::save,
                    CartridgeSaveKind::sram_or_flash, 0xFFFF, 64 * 1024, 8, false, false,
                    "SRAM/Flash save metadata");
@@ -300,12 +305,29 @@ int main() {
   expect_read(bus, 0x02000008, 0xEF, "read16 byte 0 little-endian");
   expect_read(bus, 0x02000009, 0xBE, "read16 byte 1 little-endian");
 
-  expect(!bus.write16(0x02000003, 0xFFFF), "write16 rejects unaligned address");
+  // M5: unaligned halfword/word stores split into per-lane byte stores.
+  expect(bus.write16(0x02000003, 0xABCD), "unaligned write16 splits into byte lanes");
+  expect_read(bus, 0x02000003, 0xCD, "unaligned halfword low lane stored");
+  expect_read(bus, 0x02000004, 0xAB, "unaligned halfword high lane stored");
   expect(!bus.read16(0x02000003).has_value(),
          "read16 rejects odd address as unpredictable/unsupported");
-  expect(!bus.write32(0x02000002, 0xFFFFFFFF), "write32 rejects unaligned address");
-  expect_read32(bus, 0x02000004, 0x12345678,
-                "failed unaligned write32 preserves aligned word");
+  expect(bus.write32(0x02000002, 0xAABBCCDD), "unaligned write32 splits into byte lanes");
+  expect_read(bus, 0x02000002, 0xDD, "unaligned word lane 0 stored");
+  expect_read(bus, 0x02000003, 0xCC, "unaligned word lane 1 stored");
+  expect_read(bus, 0x02000004, 0xBB, "unaligned word lane 2 stored");
+  expect_read(bus, 0x02000005, 0xAA, "unaligned word lane 3 stored");
+  expect_read32(bus, 0x02000002, 0x00CACCDD,
+                "unaligned write32 lanes read back rotated like the read path");
+
+  // M5 regression: unaligned IWRAM word store lands each byte in the lane a
+  // read of the same address fetches it back from.
+  expect(bus.write32(0x03000001, 0xAABBCCDD), "unaligned IWRAM word store splits across lanes");
+  expect_read(bus, 0x03000001, 0xDD, "IWRAM unaligned lane 1 stored");
+  expect_read(bus, 0x03000002, 0xCC, "IWRAM unaligned lane 2 stored");
+  expect_read(bus, 0x03000003, 0xBB, "IWRAM unaligned lane 3 stored");
+  expect_read(bus, 0x03000004, 0xAA, "IWRAM unaligned lane 4 stored");
+  expect_read32(bus, 0x03000001, 0xCBBBCCDD,
+                "unaligned IWRAM word store round-trips through the read rotation");
   expect(!bus.write8(0x00000000, 0xFF), "BIOS range is not writable");
   expect(!bus.write16(0x00000000, 0xFFFF), "write16 BIOS range is not writable");
   expect(!bus.write32(0x00000000, 0xFFFFFFFF), "write32 BIOS range is not writable");
@@ -381,6 +403,23 @@ int main() {
   expect(bus.game_pak_rom_size() == tiny_rom.size(), "loaded cartridge ROM reports size");
   expect_read32(bus, 0x08000000, 0x12345678, "loaded cartridge ROM reads little-endian word");
   expect_read16(bus, 0x0A000000, 0x5678, "wait1 ROM mirror reads loaded data");
+  // M8: widened EEPROM candidacy must not misroute parallel ROM data reads
+  // for addresses inside the new window. Candidate addresses start at wait2
+  // offset 0x1000000, so a temporary wide fixture puts real bytes there.
+  {
+    std::vector<std::uint8_t> wide_rom(0x1000100U, 0);
+    wide_rom.at(0x1000000U) = 0x78;
+    wide_rom.at(0x1000001U) = 0x56;
+    wide_rom.at(0x1000002U) = 0x34;
+    wide_rom.at(0x1000003U) = 0x12;
+    expect(bus.load_game_pak_rom(wide_rom), "wide EEPROM-window fixture ROM loads");
+    expect_read16(bus, 0x0D000000, 0x5678,
+                  "EEPROM-candidate address still reads parallel ROM halfword data");
+    expect_read32(bus, 0x0D000000, 0x12345678,
+                  "EEPROM-candidate word read keeps little-endian ROM data");
+    expect(bus.load_game_pak_rom(tiny_rom),
+           "tiny ROM restored after EEPROM-window read checks");
+  }
   expect_read(bus, 0x0C000003, 0x12, "wait2 ROM mirror reads loaded data");
   expect_read(bus, 0x08000100, 0x80, "ROM out-of-bounds byte reads use open bus");
   expect_read(bus, 0x0A000101, 0x00, "ROM mirror out-of-bounds byte reads use open bus");
@@ -565,6 +604,24 @@ int main() {
   expect_read(bus, 0x0E000001, 0x09, "Flash128K ID mode reports device ID");
   flash_exit_id(bus);
 
+  // M9: the F0 terminate command is accepted from any address while idle,
+  // and bank selection survives leaving ID mode.
+  flash_switch_bank(bus, 1);
+  expect(bus.flash_protocol_status().bank == 1,
+         "Flash128K selects bank 1 before the ID exit check");
+  flash_program(bus, 0x0E000020, 0x5A);
+  expect_read(bus, 0x0E000020, 0x5A,
+              "Flash128K bank 1 byte programmed before the ID exit check");
+  flash_unlock(bus);
+  expect(bus.write8(0x0E005555, 0x90), "Flash128K re-enters ID mode for exit test");
+  expect(bus.flash_protocol_status().id_mode, "ID mode active before arbitrary-offset F0");
+  expect(bus.write8(0x0E001234, 0xF0),
+         "Flash terminate command accepted from a data offset");
+  const gba::core::FlashProtocolStatus after_id_exit = bus.flash_protocol_status();
+  expect(!after_id_exit.id_mode && after_id_exit.bank == 1,
+         "bank selection preserved across ID-mode exit");
+  expect_read(bus, 0x0E000020, 0x5A, "bank 1 view intact after ID-mode exit");
+
   std::vector<std::uint8_t> imported_eeprom(MemoryBus::kEeprom512Size, 0xC3);
   expect(bus.import_game_pak_save(GamePakSaveType::eeprom512, imported_eeprom),
          "EEPROM512 raw backing imports exact-size bytes");
@@ -628,6 +685,58 @@ int main() {
   expect_read(bus, 0x03000000, 0x00, "reset clears IWRAM");
 
   {
+    // Save-state contract: complete MemoryBus snapshot round-trip.
+    MemoryBus snapshot_bus;
+    expect(snapshot_bus.load_game_pak_rom(tiny_rom), "snapshot fixture loads ROM");
+    expect(snapshot_bus.configure_game_pak_save(GamePakSaveType::flash128k),
+           "snapshot fixture configures Flash128K backing");
+    flash_switch_bank(snapshot_bus, 1);
+    flash_unlock(snapshot_bus);
+    expect(snapshot_bus.write8(0x0E005555, 0x90), "snapshot fixture enters flash ID mode");
+    expect(snapshot_bus.write8(0x02000100, 0x77), "snapshot seeds EWRAM");
+    expect(snapshot_bus.write16(0x06000102, 0x5A5A), "snapshot seeds VRAM");
+    snapshot_bus.drive_open_bus(0xDEADBEEF);
+    expect(snapshot_bus.write8(0x04FFF600, 'H'), "snapshot seeds mGBA debug byte 0");
+    expect(snapshot_bus.write8(0x04FFF601, 'I'), "snapshot seeds mGBA debug byte 1");
+
+    const MemoryBus::State saved_bus_state = snapshot_bus.save_state();
+    const std::uint64_t saved_bus_hash = snapshot_bus.state_hash();
+    snapshot_bus.hard_reset();
+    expect(snapshot_bus.state_hash() != saved_bus_hash,
+           "hard reset perturbs the snapshotted bus state");
+    expect(snapshot_bus.load_state(saved_bus_state),
+           "bus state restore accepts a full snapshot");
+    expect(snapshot_bus.state_hash() == saved_bus_hash,
+           "bus state restore returns the exact pre-reset hash");
+    expect_read16(snapshot_bus, 0x08000000, 0x5678, "restored ROM backing reads data");
+    expect_read(snapshot_bus, 0x02000100, 0x77, "restored EWRAM byte round-trips");
+    expect_read16(snapshot_bus, 0x06000102, 0x5A5A, "restored VRAM halfword round-trips");
+    const gba::core::FlashProtocolStatus restored_flash =
+        snapshot_bus.flash_protocol_status();
+    expect(restored_flash.bank == 1 && restored_flash.id_mode,
+           "restored flash FSM keeps bank selection and ID mode");
+    expect(snapshot_bus.open_bus_latch().has_value() &&
+               snapshot_bus.open_bus_latch().value() == 0xDEADBEEF,
+           "restored open-bus latch value round-trips");
+    expect(snapshot_bus.game_pak_save_type() == GamePakSaveType::flash128k &&
+               snapshot_bus.game_pak_save_size() == MemoryBus::kFlash128kSize,
+           "restored save backing keeps type and size");
+
+    MemoryBus::State bad_bus_state = saved_bus_state;
+    bad_bus_state.flash_bank = 2U;
+    expect(!snapshot_bus.load_state(bad_bus_state),
+           "bus state restore rejects out-of-range flash banks");
+    bad_bus_state = saved_bus_state;
+    bad_bus_state.game_pak_save_type = GamePakSaveType::sram32k;
+    expect(!snapshot_bus.load_state(bad_bus_state),
+           "bus state restore rejects save type/backing size mismatches");
+    bad_bus_state = saved_bus_state;
+    bad_bus_state.flash_command_state = static_cast<gba::core::FlashCommandState>(200);
+    expect(!snapshot_bus.load_state(bad_bus_state),
+           "bus state restore rejects unknown flash command states");
+  }
+
+  {
     using gba::core::Apu;
     using gba::core::DmaController;
     using gba::core::InterruptController;
@@ -664,6 +773,24 @@ int main() {
     [[maybe_unused]] const auto events = ppu.tick(kLine159Cycles, interrupts);
     expect_read(io_bus, 0x04000006, 159, "IO VCOUNT low byte is readable via read8");
     expect_read16(io_bus, 0x04000006, 159, "IO VCOUNT halfword read matches byte lane");
+
+    // M4: byte stores to IO merge into the addressed lane of the aligned
+    // halfword, preserving the sibling byte.
+    expect(io.write16(IoRegisters::kIe, 0x1234), "IO facade seeds the IE halfword");
+    expect(io_bus.write8(0x04000201, 0x0A), "odd-lane IO byte store is accepted");
+    expect_read16(io_bus, IoRegisters::kIe, 0x0A34,
+                  "odd-lane byte store preserves the sibling low byte");
+    expect(io_bus.write8(0x04000200, 0xC5), "even-lane IO byte store is accepted");
+    expect_read16(io_bus, IoRegisters::kIe, 0x0AC5,
+                  "even-lane byte store preserves the sibling high byte");
+    expect(io.write16(IoRegisters::kDispstat, 0x0038),
+           "IO facade seeds DISPSTAT before read-only guard test");
+    expect(io_bus.write8(0x04000007, 0xFF),
+           "byte store targeting a read-only register still reports a bus cycle");
+    expect_read16(io_bus, IoRegisters::kDispstat, 0x0038,
+                  "byte store to read-only VCOUNT lane leaves DISPSTAT untouched");
+    expect_read16(io_bus, IoRegisters::kVcount, 159,
+                  "read-only VCOUNT keeps its live value after merged write rejection");
   }
 
   std::cout << "memory_bus_test: PASS\n";

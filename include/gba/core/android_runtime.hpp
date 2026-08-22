@@ -23,6 +23,11 @@ struct AndroidRuntimeFrameResult {
   std::uint16_t rendered_scanlines = 0;
   std::uint32_t audio_samples = 0;
   std::uint32_t audio_underruns = 0;
+  // True only when the frame cycle budget was fully met and stepping stopped
+  // for a normal reason; false when the step budget exhausted early or the
+  // frame aborted (fetch failure / unsupported instruction). Consumers must
+  // treat the framebuffer/audio as stale whenever this is false.
+  bool frame_complete = false;
   std::uint64_t state_hash = 0;
   std::uint64_t scheduler_cycles_delta = 0;
 };
@@ -90,6 +95,9 @@ class AndroidRuntime {
   PpuRenderer renderer_;
   PpuRenderControl render_control_;
   std::vector<ApuMixedSample> last_audio_batch_;
+  // Scratch histogram reused across video_diagnostics() calls to avoid a
+  // per-call 256 KB allocation. Mutable because diagnostics are const.
+  mutable std::vector<std::uint32_t> color_histogram_scratch_;
   bool state_hash_enabled_ = false;
 };
 

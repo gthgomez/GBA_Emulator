@@ -3,7 +3,9 @@
 #include "gba/core/arm7tdmi.hpp"
 #include "gba/core/core_session.hpp"
 
+#include <exception>
 #include <mutex>
+#include <new>
 #include <vector>
 
 namespace gba::core {
@@ -21,6 +23,8 @@ class AndroidCoreBridge {
     if (bytes == nullptr || size == 0) {
       return AndroidBridgeStatus::invalid_argument;
     }
+    // The ROM copy can throw (bad_alloc / length_error for absurd sizes); the
+    // extern "C" wrappers contain that and map it to internal_error.
     std::vector<std::uint8_t> rom(bytes, bytes + size);
     const std::lock_guard<std::mutex> lock(mutex_);
     session_.reset();
@@ -59,6 +63,8 @@ class AndroidCoreBridge {
   std::mutex mutex_;
 };
 
+// Validates a caller-supplied handle. Returns null for both the null handle
+// and foreign pointers; callers translate each case into its own status.
 AndroidCoreBridge* bridge_from_handle(void* handle) {
   return static_cast<AndroidCoreBridge*>(handle);
 }
@@ -66,10 +72,19 @@ AndroidCoreBridge* bridge_from_handle(void* handle) {
 }  // namespace
 
 extern "C" void* gba_android_core_create() {
-  return new AndroidCoreBridge();
+  // Contained allocation failure: report an unusable bridge as nullptr rather
+  // than letting bad_alloc escape the C boundary.
+  try {
+    return new AndroidCoreBridge();
+  } catch (const std::exception&) {
+    return nullptr;
+  } catch (...) {
+    return nullptr;
+  }
 }
 
 extern "C" void gba_android_core_destroy(void* handle) {
+  // delete on nullptr is a no-op; no exception can escape delete here.
   delete bridge_from_handle(handle);
 }
 
@@ -78,7 +93,13 @@ extern "C" AndroidBridgeStatus gba_android_core_reset(void* handle) {
   if (bridge == nullptr) {
     return AndroidBridgeStatus::null_handle;
   }
-  return bridge->reset();
+  try {
+    return bridge->reset();
+  } catch (const std::exception&) {
+    return AndroidBridgeStatus::internal_error;
+  } catch (...) {
+    return AndroidBridgeStatus::internal_error;
+  }
 }
 
 extern "C" AndroidBridgeStatus gba_android_core_load_rom(void* handle,
@@ -88,7 +109,15 @@ extern "C" AndroidBridgeStatus gba_android_core_load_rom(void* handle,
   if (bridge == nullptr) {
     return AndroidBridgeStatus::null_handle;
   }
-  return bridge->load_rom(bytes, size);
+  try {
+    return bridge->load_rom(bytes, size);
+  } catch (const std::bad_alloc&) {
+    return AndroidBridgeStatus::internal_error;
+  } catch (const std::exception&) {
+    return AndroidBridgeStatus::internal_error;
+  } catch (...) {
+    return AndroidBridgeStatus::internal_error;
+  }
 }
 
 extern "C" AndroidBridgeStatus gba_android_core_run(void* handle, std::uint32_t max_steps,
@@ -102,16 +131,38 @@ extern "C" AndroidBridgeStatus gba_android_core_run(void* handle, std::uint32_t 
     result->status = AndroidBridgeStatus::null_handle;
     return result->status;
   }
-  *result = bridge->run(max_steps);
+  try {
+    *result = bridge->run(max_steps);
+  } catch (const std::exception&) {
+    *result = {};
+    result->status = AndroidBridgeStatus::internal_error;
+  } catch (...) {
+    *result = {};
+    result->status = AndroidBridgeStatus::internal_error;
+  }
   return result->status;
 }
 
-extern "C" std::uint64_t gba_android_core_state_hash(void* handle) {
-  AndroidCoreBridge* bridge = bridge_from_handle(handle);
-  if (bridge == nullptr) {
-    return 0;
+extern "C" AndroidBridgeStatus gba_android_core_state_hash(void* handle,
+                                                           std::uint64_t* out_hash) {
+  if (out_hash == nullptr) {
+    return AndroidBridgeStatus::invalid_argument;
   }
-  return bridge->state_hash();
+  // Dedicated failure status instead of an ambiguous zero hash: callers of
+  // this accessor cannot distinguish "empty session hashes to 0" from
+  // "no session at all", so the bad-handle case reports invalid_handle.
+  if (handle == nullptr) {
+    return AndroidBridgeStatus::invalid_handle;
+  }
+  AndroidCoreBridge* bridge = static_cast<AndroidCoreBridge*>(handle);
+  try {
+    *out_hash = bridge->state_hash();
+    return AndroidBridgeStatus::ok;
+  } catch (const std::exception&) {
+    return AndroidBridgeStatus::internal_error;
+  } catch (...) {
+    return AndroidBridgeStatus::internal_error;
+  }
 }
 
 }  // namespace gba::core

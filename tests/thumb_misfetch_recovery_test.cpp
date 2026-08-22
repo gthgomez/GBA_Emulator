@@ -15,14 +15,9 @@
 #include <string_view>
 #include <vector>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void write_rom_halfword(std::vector<std::uint8_t>& rom, std::size_t offset,
                         std::uint16_t halfword) {

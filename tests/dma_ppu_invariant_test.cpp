@@ -7,26 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
-  return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
-}
-
-void put_rom_halfword(std::vector<std::uint8_t>& rom, std::size_t offset,
-                      std::uint16_t value) {
-  rom.at(offset) = static_cast<std::uint8_t>(value & 0xFFU);
-  rom.at(offset + 1) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::Arm7tdmi;
@@ -86,30 +67,30 @@ int main() {
     expect(result.triggered_dma.channels_executed == 1,
            "HBlank DMA fires");
 
-    // After DMA, PPU should have advanced through DMA bus_cycles
+    // Exact master-time accounting, wrap-aware via the same period-arithmetic
+    // family as Test 10's reload-aware timer check: this tick consumed exactly
+    // one cycle (the HBlank edge) plus every drained DMA bus cycle, so the
+    // PPU's absolute position (line * kCyclesPerLine + line_cycle) must land
+    // precisely on before + window. No inequality slack is required.
     const std::uint16_t ppu_line_after = session->ppu().vcount();
     const std::uint16_t ppu_cycle_after = session->ppu().line_cycle();
-
-    const std::uint32_t expected_dma_cycles = result.triggered_dma.bus_cycles;
-
-    // PPU cycle should reflect CPU cycles + DMA bus cycles
-    // (It won't be exactly pre_hblank + expected_total because PPU
-    // transitions at kVisibleCycles and kCyclesPerLine, but the PPU
-    // should have moved forward by the DMA time.)
+    const std::uint64_t window_cycles =
+        1U + static_cast<std::uint64_t>(result.triggered_dma.bus_cycles);
+    const std::uint64_t ppu_frame_before =
+        static_cast<std::uint64_t>(ppu_line_before) * PpuTiming::kCyclesPerLine +
+        static_cast<std::uint64_t>(ppu_cycle_before);
+    const std::uint64_t expected_ppu_frame_after =
+        ppu_frame_before + window_cycles;
+    const std::uint64_t ppu_frame_after =
+        static_cast<std::uint64_t>(ppu_line_after) * PpuTiming::kCyclesPerLine +
+        static_cast<std::uint64_t>(ppu_cycle_after);
     std::cout << "  PPU before: line=" << ppu_line_before
               << " cycle=" << ppu_cycle_before << '\n';
     std::cout << "  PPU after:  line=" << ppu_line_after
               << " cycle=" << ppu_cycle_after << '\n';
-    std::cout << "  DMA bus_cycles=" << expected_dma_cycles << '\n';
+    std::cout << "  DMA bus_cycles=" << result.triggered_dma.bus_cycles << '\n';
 
-    // The PPU should have advanced from its pre-HBlank position.
-    // Before: line 159, cycle 959 (kVisibleCycles - 1)
-    // After HBlank DMA: the PPU should have moved forward by at least 1 + DMA_cycles
-    // (the +1 is the HBlank entry cycle itself)
-    const std::uint32_t ppu_advance =
-        static_cast<std::uint32_t>(ppu_cycle_after) + 1U -
-        static_cast<std::uint32_t>(ppu_cycle_before);
-    expect(ppu_advance >= expected_dma_cycles + 1,
+    expect(ppu_frame_after == expected_ppu_frame_after,
            "PPU advances through DMA bus_cycles (master-time invariant for PPU)");
   }
 
@@ -406,13 +387,17 @@ int main() {
     expect(rollover_tick.triggered_dma.channels_executed == 1,
            "HBlank DMA fires at HBlank boundary");
 
-    // If DMA bus_cycles > (kCyclesPerLine - kVisibleCycles) = 272,
-    // PPU should have crossed the line boundary
-    const std::uint32_t hblank_duration = PpuTiming::kCyclesPerLine - PpuTiming::kVisibleCycles;
-    if (rollover_tick.triggered_dma.bus_cycles > hblank_duration) {
-      expect(line_after_dma > 0,
-             "PPU crossed line boundary when DMA > HBlank duration");
-    }
+    // Precondition made explicit: this DMA's transfer must outlast one HBlank
+    // window (kCyclesPerLine - kVisibleCycles = 272); otherwise the
+    // line-crossing scenario cannot occur at all. Gating the headline
+    // assertion behind a runtime `if` let it silently skip in that case;
+    // both checks are now unconditional so an undersized fixture fails loudly.
+    const std::uint32_t hblank_duration =
+        PpuTiming::kCyclesPerLine - PpuTiming::kVisibleCycles;
+    expect(rollover_tick.triggered_dma.bus_cycles > hblank_duration,
+           "Test 7 precondition: DMA bus_cycles exceed HBlank window");
+    expect(line_after_dma > 0,
+           "PPU crossed line boundary when DMA > HBlank duration");
   }
 
   // ==================================================================
@@ -749,6 +734,3 @@ int main() {
   std::cout << "dma_ppu_invariant_test: PASS\n";
   return 0;
 }
-
-
-

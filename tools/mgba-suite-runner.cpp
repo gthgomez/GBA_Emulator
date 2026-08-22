@@ -876,17 +876,19 @@ gba::core::CoreSchedulerRunResult run_with_last_step(gba::core::CoreSession& ses
                                                      std::vector<RunnerDiagnostic>& diagnostics,
                                                      VideoScanlineCapture& video_scanlines,
                                                      std::size_t recent_step_limit) {
-  gba::core::CoreSchedulerRunResult result{
-      max_steps,
-      0,
-      0,
-      0,
-      0,
-      0,
-      gba::core::CoreRunStopReason::max_steps,
-      session.cpu().register_value(gba::core::Arm7tdmi::kPc),
-      session.scheduler().scheduler_cycles(),
-  };
+  gba::core::CoreSchedulerRunResult result{};
+  // Field-named initialization (C++17 has no designated initializers): the
+  // previous fully positional aggregate was one field reorder away from
+  // silently corrupting every suite metric.
+  result.requested_steps = max_steps;
+  result.attempted_steps = 0;
+  result.executed_steps = 0;
+  result.skipped_steps = 0;
+  result.unsupported_steps = 0;
+  result.fetch_failures = 0;
+  result.stop_reason = gba::core::CoreRunStopReason::max_steps;
+  result.final_pc = session.cpu().register_value(gba::core::Arm7tdmi::kPc);
+  result.scheduler_cycles = session.scheduler().scheduler_cycles();
   runner_stop = {};
 
   std::size_t next_event = 0;
@@ -1384,22 +1386,38 @@ void print_diagnostics(const std::vector<RunnerDiagnostic>& diagnostics) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2 || argc > 7) {
-    std::cerr << "usage: mgba-suite-runner <suite.gba> [max_steps] [trace_steps]"
-                 " [input_script] [until_output] [recent_trace_limit]\n";
+  // Argument parsing lives inside try: std::stoul throws on malformed numeric
+  // input and parse_input_script throws on malformed event syntax; both must
+  // exit 2 (usage/argument error) instead of terminating the process.
+  std::filesystem::path rom_path;
+  std::uint32_t max_steps = 100000U;
+  std::uint32_t trace_steps = 0U;
+  std::vector<InputEvent> input_events;
+  std::string until_output;
+  std::size_t recent_trace_limit = 32U;
+
+  try {
+    if (argc < 2 || argc > 7) {
+      std::cerr << "usage: mgba-suite-runner <suite.gba> [max_steps] [trace_steps]"
+                   " [input_script] [until_output] [recent_trace_limit]\n";
+      return 2;
+    }
+
+    rom_path = std::filesystem::path(argv[1]);
+    max_steps =
+        argc >= 3 ? static_cast<std::uint32_t>(std::stoul(argv[2])) : max_steps;
+    trace_steps =
+        argc >= 4 ? static_cast<std::uint32_t>(std::stoul(argv[3])) : trace_steps;
+    input_events =
+        argc >= 5 ? parse_input_script(argv[4]) : std::vector<InputEvent>{};
+    until_output = argc >= 6 ? argv[5] : until_output;
+    recent_trace_limit =
+        argc >= 7 ? static_cast<std::size_t>(std::stoul(argv[6]))
+                  : recent_trace_limit;
+  } catch (const std::exception& error) {
+    std::cerr << "suite_runner: malformed arguments=" << error.what() << '\n';
     return 2;
   }
-
-  const std::filesystem::path rom_path(argv[1]);
-  const std::uint32_t max_steps =
-      argc >= 3 ? static_cast<std::uint32_t>(std::stoul(argv[2])) : 100000U;
-  const std::uint32_t trace_steps =
-      argc >= 4 ? static_cast<std::uint32_t>(std::stoul(argv[3])) : 0U;
-  const std::vector<InputEvent> input_events = argc >= 5 ? parse_input_script(argv[4])
-                                                         : std::vector<InputEvent>{};
-  const std::string until_output = argc >= 6 ? argv[5] : "";
-  const std::size_t recent_trace_limit =
-      argc >= 7 ? static_cast<std::size_t>(std::stoul(argv[6])) : 32U;
 
   try {
     const std::vector<std::uint8_t> rom = read_file(rom_path);

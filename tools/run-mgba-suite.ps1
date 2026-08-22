@@ -1,3 +1,9 @@
+# SINGLE-WRITER ASSUMPTION: this script overwrites the shared
+# build\test-results\mgba-suite-latest.json (and mgba-suite-all-latest.md for
+# -Suite all) on every run. Timestamped per-run artifacts are unique, the
+# "latest" copies are not: concurrent runs clobber each other's "latest"
+# files, and the -Suite all mode additionally reads mgba-suite-latest.json
+# after each child invocation. Serialize runs or isolate via separate checkouts.
 param(
   [uint32]$MaxSteps = 0,
   [uint32]$TraceSteps = 0,
@@ -12,6 +18,9 @@ param(
   [switch]$FailOnRed,
   [switch]$UpdateDocs
 )
+
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
@@ -262,6 +271,14 @@ New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
 
 if (-not (Test-Path -LiteralPath $suitePath -PathType Leaf)) {
   & (Join-Path $PSScriptRoot "build-mgba-suite.ps1")
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "suite_test: FAIL (build-mgba-suite.ps1 exited with $LASTEXITCODE)"
+    if ($null -eq $LASTEXITCODE) {
+      exit 1
+    }
+    exit $LASTEXITCODE
+  }
 }
 
 function Get-TextSha256 {
@@ -484,6 +501,17 @@ g++ -std=c++17 -Wall -Wextra -Werror `
   (Join-Path $repoRoot "src\core\wait_state_control.cpp") `
   (Join-Path $PSScriptRoot "mgba-suite-runner.cpp") `
   -o $runnerPath
+
+# The runner path is PID-scoped, but a failed compile must still never fall
+# through to a missing/partial executable.
+if ($LASTEXITCODE -ne 0) {
+  Write-Host ""
+  Write-Host "suite_test: FAIL (g++ mgba-suite-runner exited with $LASTEXITCODE)"
+  if ($null -eq $LASTEXITCODE) {
+    exit 1
+  }
+  exit $LASTEXITCODE
+}
 
 $suiteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $suitePath).Hash
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -748,6 +776,80 @@ function Invoke-VideoProbeCapture {
   }
   $probeLines = Get-Content -LiteralPath $TextResultPath
   return New-VideoProbeMetricSnapshot -Lines $probeLines -Probe $Probe -ProbeDefinition $probeDefinition -RunnerExitCode $probeExitCode -TextResultPath $TextResultPath
+}
+
+# Shared implementation for the seven paired actual/expected video-oracle
+# probes. Captures the requested view from the primary run, runs the paired
+# view once, compares frame hashes, and builds the diagnostic oracle record
+# plus (on mismatch) the parsed first-failure/category payload.
+# Reads script-scope state ($resultsDir, $artifactStem, $lines,
+# $runnerExitCode, $resultPath) like the other suite helpers above.
+function Invoke-PairedVideoOracleEvidence {
+  param(
+    [Parameter(Mandatory = $true)][string]$ActualProbe,
+    [Parameter(Mandatory = $true)][string]$ExpectedProbe,
+    [Parameter(Mandatory = $true)][string]$RequestedProbe,
+    [Parameter(Mandatory = $true)][object]$RequestedProbeDefinition,
+    [Parameter(Mandatory = $true)][string]$OracleName,
+    [Parameter(Mandatory = $true)][string]$FailureCategory,
+    [Parameter(Mandatory = $true)][ValidateSet("plain", "obj_pixels", "bg_pixel_pair")]
+    [string]$FailureMessageStyle
+  )
+
+  $pairedProbeName = if ($RequestedProbe -eq $ActualProbe) { $ExpectedProbe } else { $ActualProbe }
+  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
+  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $RequestedProbe -ProbeDefinition $RequestedProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
+  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
+  $actualSnapshot = if ($RequestedProbe -eq $ActualProbe) { $currentSnapshot } else { $pairedSnapshot }
+  $expectedSnapshot = if ($RequestedProbe -eq $ExpectedProbe) { $currentSnapshot } else { $pairedSnapshot }
+  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
+      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
+    "unavailable"
+  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
+    "match"
+  } else {
+    "mismatch"
+  }
+
+  $oracle = [ordered]@{
+    name = "$OracleName actual/expected video oracle"
+    primary_probe = $RequestedProbe
+    paired_probe = $pairedProbeName
+    actual = $actualSnapshot
+    expected = $expectedSnapshot
+    frame_hash_comparison = $hashComparison
+    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
+    note = "Diagnostic-only oracle evidence for the paired upstream $OracleName actual/expected views; it does not mark the interactive video suite green."
+  }
+
+  $firstFailure = $null
+  $category = $null
+  if ($hashComparison -ne "match") {
+    switch ($FailureMessageStyle) {
+      "plain" {
+        $firstFailure = "$OracleName video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash); frame_hash_comparison=$hashComparison"
+      }
+      "obj_pixels" {
+        $firstFailure = "$OracleName video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) obj_pixels=$($actualSnapshot.obj_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+      }
+      "bg_pixel_pair" {
+        $firstFailure = "$OracleName video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+      }
+    }
+    $category = [ordered]@{
+      name = $FailureCategory
+      count = 1
+      first_failure = $firstFailure
+      tests = @("$OracleName actual", "$OracleName expected")
+      examples = @($firstFailure)
+    }
+  }
+
+  return [ordered]@{
+    oracle = $oracle
+    first_failure = $firstFailure
+    category = $category
+  }
 }
 
 function Get-MemorySuiteTestName {
@@ -1221,7 +1323,9 @@ if ($combinedText -match "END:\s*(\d+)/(\d+)") {
 
 $firstFailure = $null
 foreach ($line in ($combinedText -split "`r?`n")) {
-  if ($line -match "FAIL") {
+  # Anchored like every other failure-line consumer (^FAIL:), so prose lines
+  # merely containing "FAIL" are not misread as the first failure.
+  if ($line -match "^FAIL:") {
     $firstFailure = $line.Trim()
     break
   }
@@ -1305,301 +1409,133 @@ if ($evidenceTarget.kind -eq "embedded_alias" -and $targetSuite -eq "timing") {
 
 if ($Suite -eq "video" -and
     ($VideoProbe -eq "basic-mode-3-actual" -or $VideoProbe -eq "basic-mode-3-expected")) {
-  $actualProbeName = "basic-mode-3-actual"
-  $expectedProbeName = "basic-mode-3-expected"
-  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
-  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
-  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
-  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
-  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
-      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
-    "unavailable"
-  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
-    "match"
-  } else {
-    "mismatch"
-  }
-  $basicMode3Oracle = [ordered]@{
-    name = "Basic Mode 3 actual/expected video oracle"
-    primary_probe = $VideoProbe
-    paired_probe = $pairedProbeName
-    actual = $actualSnapshot
-    expected = $expectedSnapshot
-    frame_hash_comparison = $hashComparison
-    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
-    note = "Diagnostic-only oracle evidence for the paired upstream Basic Mode 3 actual/expected views; it does not mark the interactive video suite green."
-  }
-
-  if ($hashComparison -ne "match") {
-    $parsedFirstFailure = "Basic Mode 3 video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash); frame_hash_comparison=$hashComparison"
+  $basicMode3Outcome = Invoke-PairedVideoOracleEvidence `
+    -ActualProbe "basic-mode-3-actual" `
+    -ExpectedProbe "basic-mode-3-expected" `
+    -RequestedProbe $VideoProbe `
+    -RequestedProbeDefinition $videoProbeDefinition `
+    -OracleName "Basic Mode 3" `
+    -FailureCategory "video_basic_mode_3_oracle" `
+    -FailureMessageStyle plain
+  $basicMode3Oracle = $basicMode3Outcome.oracle
+  if ($null -ne $basicMode3Outcome.first_failure) {
+    $parsedFirstFailure = $basicMode3Outcome.first_failure
     if (@($parsedFailureCategories).Count -eq 0) {
-      $parsedFailureCategories = @([ordered]@{
-        name = "video_basic_mode_3_oracle"
-        count = 1
-        first_failure = $parsedFirstFailure
-        tests = @("Basic Mode 3 actual", "Basic Mode 3 expected")
-        examples = @($parsedFirstFailure)
-      })
+      $parsedFailureCategories = @($basicMode3Outcome.category)
     }
   }
 }
 
 if ($Suite -eq "video" -and
     ($VideoProbe -eq "basic-mode-4-actual" -or $VideoProbe -eq "basic-mode-4-expected")) {
-  $actualProbeName = "basic-mode-4-actual"
-  $expectedProbeName = "basic-mode-4-expected"
-  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
-  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
-  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
-  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
-  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
-      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
-    "unavailable"
-  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
-    "match"
-  } else {
-    "mismatch"
-  }
-  $basicMode4Oracle = [ordered]@{
-    name = "Basic Mode 4 actual/expected video oracle"
-    primary_probe = $VideoProbe
-    paired_probe = $pairedProbeName
-    actual = $actualSnapshot
-    expected = $expectedSnapshot
-    frame_hash_comparison = $hashComparison
-    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
-    note = "Diagnostic-only oracle evidence for the paired upstream Basic Mode 4 actual/expected views; it does not mark the interactive video suite green."
-  }
-
-  if ($hashComparison -ne "match") {
-    $parsedFirstFailure = "Basic Mode 4 video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash); frame_hash_comparison=$hashComparison"
+  $basicMode4Outcome = Invoke-PairedVideoOracleEvidence `
+    -ActualProbe "basic-mode-4-actual" `
+    -ExpectedProbe "basic-mode-4-expected" `
+    -RequestedProbe $VideoProbe `
+    -RequestedProbeDefinition $videoProbeDefinition `
+    -OracleName "Basic Mode 4" `
+    -FailureCategory "video_basic_mode_4_oracle" `
+    -FailureMessageStyle plain
+  $basicMode4Oracle = $basicMode4Outcome.oracle
+  if ($null -ne $basicMode4Outcome.first_failure) {
+    $parsedFirstFailure = $basicMode4Outcome.first_failure
     if (@($parsedFailureCategories).Count -eq 0) {
-      $parsedFailureCategories = @([ordered]@{
-        name = "video_basic_mode_4_oracle"
-        count = 1
-        first_failure = $parsedFirstFailure
-        tests = @("Basic Mode 4 actual", "Basic Mode 4 expected")
-        examples = @($parsedFirstFailure)
-      })
+      $parsedFailureCategories = @($basicMode4Outcome.category)
     }
   }
 }
 
 if ($Suite -eq "video" -and
     ($VideoProbe -eq "degenerate-obj-actual" -or $VideoProbe -eq "degenerate-obj-expected")) {
-  $actualProbeName = "degenerate-obj-actual"
-  $expectedProbeName = "degenerate-obj-expected"
-  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
-  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
-  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
-  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
-  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
-      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
-    "unavailable"
-  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
-    "match"
-  } else {
-    "mismatch"
-  }
-  $degenerateObjOracle = [ordered]@{
-    name = "Degenerate OBJ transforms actual/expected video oracle"
-    primary_probe = $VideoProbe
-    paired_probe = $pairedProbeName
-    actual = $actualSnapshot
-    expected = $expectedSnapshot
-    frame_hash_comparison = $hashComparison
-    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
-    note = "Diagnostic-only oracle evidence for the paired upstream Degenerate OBJ transforms actual/expected views; it does not mark the interactive video suite green."
-  }
-
-  if ($hashComparison -ne "match") {
-    $parsedFirstFailure = "Degenerate OBJ transforms video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) obj_pixels=$($actualSnapshot.obj_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+  $degenerateObjOutcome = Invoke-PairedVideoOracleEvidence `
+    -ActualProbe "degenerate-obj-actual" `
+    -ExpectedProbe "degenerate-obj-expected" `
+    -RequestedProbe $VideoProbe `
+    -RequestedProbeDefinition $videoProbeDefinition `
+    -OracleName "Degenerate OBJ transforms" `
+    -FailureCategory "video_degenerate_obj_oracle" `
+    -FailureMessageStyle obj_pixels
+  $degenerateObjOracle = $degenerateObjOutcome.oracle
+  if ($null -ne $degenerateObjOutcome.first_failure) {
+    $parsedFirstFailure = $degenerateObjOutcome.first_failure
     if (@($parsedFailureCategories).Count -eq 0) {
-      $parsedFailureCategories = @([ordered]@{
-        name = "video_degenerate_obj_oracle"
-        count = 1
-        first_failure = $parsedFirstFailure
-        tests = @("Degenerate OBJ transforms actual", "Degenerate OBJ transforms expected")
-        examples = @($parsedFirstFailure)
-      })
+      $parsedFailureCategories = @($degenerateObjOutcome.category)
     }
   }
 }
 
 if ($Suite -eq "video" -and
     ($VideoProbe -eq "layer-toggle-actual" -or $VideoProbe -eq "layer-toggle-expected")) {
-  $actualProbeName = "layer-toggle-actual"
-  $expectedProbeName = "layer-toggle-expected"
-  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
-  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
-  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
-  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
-  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
-      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
-    "unavailable"
-  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
-    "match"
-  } else {
-    "mismatch"
-  }
-  $layerToggleOracle = [ordered]@{
-    name = "Layer toggle actual/expected video oracle"
-    primary_probe = $VideoProbe
-    paired_probe = $pairedProbeName
-    actual = $actualSnapshot
-    expected = $expectedSnapshot
-    frame_hash_comparison = $hashComparison
-    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
-    note = "Diagnostic-only oracle evidence for the paired upstream Layer toggle actual/expected views; it does not mark the interactive video suite green."
-  }
-
-  if ($hashComparison -ne "match") {
-    $parsedFirstFailure = "Layer toggle video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+  $layerToggleOutcome = Invoke-PairedVideoOracleEvidence `
+    -ActualProbe "layer-toggle-actual" `
+    -ExpectedProbe "layer-toggle-expected" `
+    -RequestedProbe $VideoProbe `
+    -RequestedProbeDefinition $videoProbeDefinition `
+    -OracleName "Layer toggle" `
+    -FailureCategory "video_layer_toggle_oracle" `
+    -FailureMessageStyle bg_pixel_pair
+  $layerToggleOracle = $layerToggleOutcome.oracle
+  if ($null -ne $layerToggleOutcome.first_failure) {
+    $parsedFirstFailure = $layerToggleOutcome.first_failure
     if (@($parsedFailureCategories).Count -eq 0) {
-      $parsedFailureCategories = @([ordered]@{
-        name = "video_layer_toggle_oracle"
-        count = 1
-        first_failure = $parsedFirstFailure
-        tests = @("Layer toggle actual", "Layer toggle expected")
-        examples = @($parsedFirstFailure)
-      })
+      $parsedFailureCategories = @($layerToggleOutcome.category)
     }
   }
 }
 
 if ($Suite -eq "video" -and
     ($VideoProbe -eq "layer-toggle-2-actual" -or $VideoProbe -eq "layer-toggle-2-expected")) {
-  $actualProbeName = "layer-toggle-2-actual"
-  $expectedProbeName = "layer-toggle-2-expected"
-  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
-  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
-  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
-  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
-  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
-      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
-    "unavailable"
-  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
-    "match"
-  } else {
-    "mismatch"
-  }
-  $layerToggle2Oracle = [ordered]@{
-    name = "Layer toggle 2 actual/expected video oracle"
-    primary_probe = $VideoProbe
-    paired_probe = $pairedProbeName
-    actual = $actualSnapshot
-    expected = $expectedSnapshot
-    frame_hash_comparison = $hashComparison
-    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
-    note = "Diagnostic-only oracle evidence for the paired upstream Layer toggle 2 actual/expected views; it does not mark the interactive video suite green."
-  }
-
-  if ($hashComparison -ne "match") {
-    $parsedFirstFailure = "Layer toggle 2 video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+  $layerToggle2Outcome = Invoke-PairedVideoOracleEvidence `
+    -ActualProbe "layer-toggle-2-actual" `
+    -ExpectedProbe "layer-toggle-2-expected" `
+    -RequestedProbe $VideoProbe `
+    -RequestedProbeDefinition $videoProbeDefinition `
+    -OracleName "Layer toggle 2" `
+    -FailureCategory "video_layer_toggle_2_oracle" `
+    -FailureMessageStyle bg_pixel_pair
+  $layerToggle2Oracle = $layerToggle2Outcome.oracle
+  if ($null -ne $layerToggle2Outcome.first_failure) {
+    $parsedFirstFailure = $layerToggle2Outcome.first_failure
     if (@($parsedFailureCategories).Count -eq 0) {
-      $parsedFailureCategories = @([ordered]@{
-        name = "video_layer_toggle_2_oracle"
-        count = 1
-        first_failure = $parsedFirstFailure
-        tests = @("Layer toggle 2 actual", "Layer toggle 2 expected")
-        examples = @($parsedFirstFailure)
-      })
+      $parsedFailureCategories = @($layerToggle2Outcome.category)
     }
   }
 }
 
 if ($Suite -eq "video" -and
     ($VideoProbe -eq "oam-update-delay-actual" -or $VideoProbe -eq "oam-update-delay-expected")) {
-  $actualProbeName = "oam-update-delay-actual"
-  $expectedProbeName = "oam-update-delay-expected"
-  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
-  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
-  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
-  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
-  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
-      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
-    "unavailable"
-  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
-    "match"
-  } else {
-    "mismatch"
-  }
-  $oamUpdateDelayOracle = [ordered]@{
-    name = "OAM Update Delay actual/expected video oracle"
-    primary_probe = $VideoProbe
-    paired_probe = $pairedProbeName
-    actual = $actualSnapshot
-    expected = $expectedSnapshot
-    frame_hash_comparison = $hashComparison
-    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
-    note = "Diagnostic-only oracle evidence for the paired upstream OAM Update Delay actual/expected views; it does not mark the interactive video suite green."
-  }
-
-  if ($hashComparison -ne "match") {
-    $parsedFirstFailure = "OAM Update Delay video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+  $oamUpdateDelayOutcome = Invoke-PairedVideoOracleEvidence `
+    -ActualProbe "oam-update-delay-actual" `
+    -ExpectedProbe "oam-update-delay-expected" `
+    -RequestedProbe $VideoProbe `
+    -RequestedProbeDefinition $videoProbeDefinition `
+    -OracleName "OAM Update Delay" `
+    -FailureCategory "video_oam_update_delay_oracle" `
+    -FailureMessageStyle bg_pixel_pair
+  $oamUpdateDelayOracle = $oamUpdateDelayOutcome.oracle
+  if ($null -ne $oamUpdateDelayOutcome.first_failure) {
+    $parsedFirstFailure = $oamUpdateDelayOutcome.first_failure
     if (@($parsedFailureCategories).Count -eq 0) {
-      $parsedFailureCategories = @([ordered]@{
-        name = "video_oam_update_delay_oracle"
-        count = 1
-        first_failure = $parsedFirstFailure
-        tests = @("OAM Update Delay actual", "OAM Update Delay expected")
-        examples = @($parsedFirstFailure)
-      })
+      $parsedFailureCategories = @($oamUpdateDelayOutcome.category)
     }
   }
 }
 
 if ($Suite -eq "video" -and
     ($VideoProbe -eq "window-offscreen-reset-actual" -or $VideoProbe -eq "window-offscreen-reset-expected")) {
-  $actualProbeName = "window-offscreen-reset-actual"
-  $expectedProbeName = "window-offscreen-reset-expected"
-  $pairedProbeName = if ($VideoProbe -eq $actualProbeName) { $expectedProbeName } else { $actualProbeName }
-  $pairedProbePath = Join-Path $resultsDir "$artifactStem-$pairedProbeName.txt"
-  $currentSnapshot = New-VideoProbeMetricSnapshot -Lines $lines -Probe $VideoProbe -ProbeDefinition $videoProbeDefinition -RunnerExitCode $runnerExitCode -TextResultPath $resultPath
-  $pairedSnapshot = Invoke-VideoProbeCapture -Probe $pairedProbeName -TextResultPath $pairedProbePath
-  $actualSnapshot = if ($VideoProbe -eq $actualProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $expectedSnapshot = if ($VideoProbe -eq $expectedProbeName) { $currentSnapshot } else { $pairedSnapshot }
-  $hashComparison = if ([string]::IsNullOrWhiteSpace($actualSnapshot.frame_hash) -or
-      [string]::IsNullOrWhiteSpace($expectedSnapshot.frame_hash)) {
-    "unavailable"
-  } elseif ($actualSnapshot.frame_hash -eq $expectedSnapshot.frame_hash) {
-    "match"
-  } else {
-    "mismatch"
-  }
-  $windowOffscreenResetOracle = [ordered]@{
-    name = "Window offscreen reset actual/expected video oracle"
-    primary_probe = $VideoProbe
-    paired_probe = $pairedProbeName
-    actual = $actualSnapshot
-    expected = $expectedSnapshot
-    frame_hash_comparison = $hashComparison
-    scanline_frame_hash_comparison = Compare-VideoHash -Actual $actualSnapshot.scanline_frame_hash -Expected $expectedSnapshot.scanline_frame_hash
-    note = "Diagnostic-only oracle evidence for the paired upstream Window offscreen reset actual/expected views; it does not mark the interactive video suite green."
-  }
-
-  if ($hashComparison -ne "match") {
-    $parsedFirstFailure = "Window offscreen reset video oracle: actual status=$($actualSnapshot.status) frame_hash=$($actualSnapshot.frame_hash) bg_pixels=$($actualSnapshot.bg_pixels); expected status=$($expectedSnapshot.status) frame_hash=$($expectedSnapshot.frame_hash) bg_pixels=$($expectedSnapshot.bg_pixels); frame_hash_comparison=$hashComparison"
+  $windowOffscreenResetOutcome = Invoke-PairedVideoOracleEvidence `
+    -ActualProbe "window-offscreen-reset-actual" `
+    -ExpectedProbe "window-offscreen-reset-expected" `
+    -RequestedProbe $VideoProbe `
+    -RequestedProbeDefinition $videoProbeDefinition `
+    -OracleName "Window offscreen reset" `
+    -FailureCategory "video_window_offscreen_reset_oracle" `
+    -FailureMessageStyle bg_pixel_pair
+  $windowOffscreenResetOracle = $windowOffscreenResetOutcome.oracle
+  if ($null -ne $windowOffscreenResetOutcome.first_failure) {
+    $parsedFirstFailure = $windowOffscreenResetOutcome.first_failure
     if (@($parsedFailureCategories).Count -eq 0) {
-      $parsedFailureCategories = @([ordered]@{
-        name = "video_window_offscreen_reset_oracle"
-        count = 1
-        first_failure = $parsedFirstFailure
-        tests = @("Window offscreen reset actual", "Window offscreen reset expected")
-        examples = @($parsedFirstFailure)
-      })
+      $parsedFailureCategories = @($windowOffscreenResetOutcome.category)
     }
   }
 }

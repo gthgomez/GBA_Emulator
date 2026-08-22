@@ -162,6 +162,24 @@ CoreSchedulerRunResult CoreSession::run(std::uint32_t max_steps) {
   return scheduler_.run_from_pc(max_steps);
 }
 
+void CoreSession::press_button(KeypadButton button) {
+  keypad_.press(button);
+  keypad_.poll_interrupt(interrupts_);
+}
+
+void CoreSession::release_button(KeypadButton button) {
+  keypad_.release(button);
+  keypad_.poll_interrupt(interrupts_);
+}
+
+bool CoreSession::set_input_mask(std::uint16_t pressed_mask) {
+  if (!keypad_.set_pressed_mask(pressed_mask)) {
+    return false;
+  }
+  keypad_.poll_interrupt(interrupts_);
+  return true;
+}
+
 CoreSessionState CoreSession::save_state() const {
   MemoryBus memory_state = memory_;
   memory_state.clear_io_callbacks();

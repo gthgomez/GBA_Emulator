@@ -5,23 +5,7 @@
 #include <string_view>
 #include <vector>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-void write_word(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value) {
-  bytes.at(offset + 0U) = static_cast<std::uint8_t>(value & 0xFFU);
-  bytes.at(offset + 1U) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-  bytes.at(offset + 2U) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
-  bytes.at(offset + 3U) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::Arm7tdmi;

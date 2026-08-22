@@ -6,6 +6,20 @@
 
 namespace gba::core {
 
+double nearest_rank_percentile(const std::vector<double>& sorted_samples,
+                               const std::uint32_t percentile) {
+  if (sorted_samples.empty()) {
+    return 0.0;
+  }
+  // Nearest-rank: ceil(n * p / 100) as a 1-based rank. The +99 rounding is
+  // what keeps e.g. n=20/p=95 from collapsing onto the maximum sample.
+  const std::size_t rank =
+      (sorted_samples.size() * static_cast<std::size_t>(percentile) + 99U) / 100U;
+  const std::size_t index =
+      std::min(rank, sorted_samples.size()) - 1U;
+  return sorted_samples.at(index);
+}
+
 AndroidFramePacingSummary run_android_performance_gate(
     AndroidRuntime& runtime, const AndroidPerformanceGateConfig& config) {
   AndroidFramePacingSummary summary{};
@@ -37,10 +51,8 @@ AndroidFramePacingSummary run_android_performance_gate(
   }
   summary.average_frame_ms = total / static_cast<double>(frame_ms.size());
   std::sort(frame_ms.begin(), frame_ms.end());
-  const std::size_t p95_index =
-      std::min<std::size_t>(frame_ms.size() - 1U,
-                            static_cast<std::size_t>((frame_ms.size() * 95U) / 100U));
-  summary.p95_frame_ms = frame_ms.at(p95_index);
+  summary.p95_frame_ms =
+      nearest_rank_percentile(frame_ms, 95U);
   summary.thermal = summary.p95_frame_ms >= config.elevated_thermal_frame_ms
                         ? ThermalObservation::elevated
                         : ThermalObservation::nominal;

@@ -41,14 +41,39 @@ $allowedGenerated = @(
   "build"
 )
 
+# Scan the git INDEX (tracked files), not the working tree: out-of-tree
+# external ROMs on disk must not spuriously fail the gate, while force-added
+# tracked assets (git add foo.gba) are still caught because they appear in
+# the index before commit.
+$trackedFiles = @(git -C $repoRoot.Path ls-files --cached)
+if ($LASTEXITCODE -ne 0) {
+  throw "release_readiness: git ls-files failed with exit code $LASTEXITCODE"
+}
+if ($trackedFiles.Count -eq 0) {
+  throw "release_readiness: git index is empty; cannot scan tracked assets"
+}
+
 foreach ($pattern in $forbiddenAssetExtensions) {
-  $matches = Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Filter $pattern |
-    Where-Object {
-      $relative = Resolve-Path -LiteralPath $_.FullName -Relative
-      -not ($allowedGenerated | ForEach-Object { $relative -like ".\$_\*" })
-    }
-  if ($matches) {
-    $paths = ($matches | Select-Object -ExpandProperty FullName) -join ", "
+  $extension = [System.IO.Path]::GetExtension($pattern)
+  $offending = @($trackedFiles | Where-Object {
+      $gitPath = $_
+      $isForbiddenType =
+          [System.IO.Path]::GetExtension($gitPath).Equals(
+              $extension, [System.StringComparison]::OrdinalIgnoreCase)
+      if (-not $isForbiddenType) {
+        return $false
+      }
+      $inAllowedGenerated = $false
+      foreach ($allowed in $allowedGenerated) {
+        if ($gitPath -like "$allowed/*" -or $gitPath -eq $allowed) {
+          $inAllowedGenerated = $true
+          break
+        }
+      }
+      -not $inAllowedGenerated
+    })
+  if ($offending.Count -gt 0) {
+    $paths = $offending -join ", "
     throw "release_readiness: forbidden or review-required asset present: $paths"
   }
 }

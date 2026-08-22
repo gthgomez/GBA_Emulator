@@ -4,14 +4,9 @@
 #include <iostream>
 #include <string_view>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void expect_timing(const gba::core::GamePakWaitStates& timing,
                    std::uint8_t nonsequential, std::uint8_t sequential,

@@ -1,3 +1,6 @@
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
@@ -25,11 +28,29 @@ if ($robocopyExitCode -gt 7) {
   exit $robocopyExitCode
 }
 
+function Assert-NativeExitCode {
+  param(
+    [string]$Step,
+    [int]$Expected = 0
+  )
+
+  if ($LASTEXITCODE -ne $Expected) {
+    Write-Host ""
+    Write-Host "mgba_suite_build: FAIL ($Step exited with $LASTEXITCODE)"
+    if ($null -eq $LASTEXITCODE) {
+      exit 1
+    }
+    exit $LASTEXITCODE
+  }
+}
+
 docker run --rm `
   -v "${buildDir}:/work" `
   -w /work `
   $image `
   make
+
+Assert-NativeExitCode -Step "docker devkitARM make"
 
 $suitePath = Join-Path $buildDir "suite.gba"
 if (-not (Test-Path -LiteralPath $suitePath -PathType Leaf)) {

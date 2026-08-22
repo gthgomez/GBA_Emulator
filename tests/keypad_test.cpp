@@ -5,16 +5,7 @@
 #include <iostream>
 #include <string_view>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::InterruptController;

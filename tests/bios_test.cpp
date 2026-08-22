@@ -4,16 +4,7 @@
 #include <iostream>
 #include <string_view>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::BiosController;
@@ -39,8 +30,22 @@ int main() {
   expect(thumb_div.source == BiosSwiSource::thumb, "Thumb SWI source decodes");
   expect(thumb_div.raw_comment == 0x06, "Thumb SWI raw comment preserves imm8");
   expect(thumb_div.service == 0x06, "Thumb SWI service decodes from imm8");
-  expect(BiosController::known_gba_service(0x00), "SoftReset service is known");
-  expect(BiosController::known_gba_service(0x2A), "highest documented GBA service is known");
+
+  // known_gba_service is derived mechanically from the implemented HLE
+  // handler table (see kHleHandledGbaServices in bios.cpp): every emulated
+  // service is accepted; real-hardware services without an HLE handler here
+  // are rejected into the unknown/unimplemented path.
+  for (std::uint8_t service : {0x01U, 0x02U, 0x04U, 0x05U, 0x06U, 0x07U, 0x08U,
+                               0x09U, 0x0AU, 0x0BU, 0x0CU, 0x0EU, 0x0FU, 0x10U,
+                               0x11U, 0x12U, 0x13U, 0x14U, 0x15U, 0x16U, 0x17U}) {
+    expect(BiosController::known_gba_service(service), "implemented HLE service is known");
+  }
+  for (std::uint8_t service : {0x00U, 0x03U, 0x0DU, 0x18U, 0x19U, 0x1AU, 0x1FU,
+                               0x20U, 0x21U, 0x22U, 0x23U, 0x24U, 0x25U, 0x26U,
+                               0x27U, 0x28U, 0x29U, 0x2AU}) {
+    expect(!BiosController::known_gba_service(service),
+           "reserved or unimplemented GBA service is unknown");
+  }
   expect(!BiosController::known_gba_service(0x80), "out-of-range GBA service is unknown");
 
   BiosController bios;
@@ -69,6 +74,10 @@ int main() {
   expect(hle_unknown.status == BiosSwiStatus::unimplemented_service,
          "HLE policy fails unknown service cleanly");
   expect(hle_unknown.call.service == 0x80, "unknown service is reported to caller");
+  const auto hle_reserved =
+      bios.handle_swi(BiosController::decode_thumb_swi(0xDF2A));
+  expect(!hle_reserved.handled && hle_reserved.status == BiosSwiStatus::unimplemented_service,
+         "reserved SWI 0x2A is no longer swallowed by the HLE policy");
 
   expect(BiosHleConstants::kIrqVectorAddress == 0x00000018U,
          "BIOS IRQ vector address matches hardware");
@@ -99,6 +108,20 @@ int main() {
   std::int32_t arc2_scratch_r1 = 0;
   expect(BiosController::hle_arc_tan2(1, 1, &arc2_scratch_r1) == 0x2000,
          "SWI ArcTan2 HLE 1,1 returns eighth-turn angle");
+
+  // Golden values for negative-operand arithmetic shifts (C17): the
+  // unsigned-safe ASR reformulation must reproduce the reference BIOS
+  // polynomial evaluation bit-for-bit, including negative inputs.
+  std::int32_t neg_scratch_r1 = 0;
+  std::int32_t neg_scratch_r3 = 0;
+  expect(BiosController::hle_arc_tan(-1, &neg_scratch_r1, &neg_scratch_r3) == -1,
+         "SWI ArcTan HLE -1 returns reference result");
+  expect(neg_scratch_r1 == 0 && neg_scratch_r3 == 0xA2F9,
+         "SWI ArcTan HLE -1 writes reference polynomial scratch");
+  expect(BiosController::hle_arc_tan(-1000, &neg_scratch_r1, &neg_scratch_r3) == -636,
+         "SWI ArcTan HLE -1000 matches reference ASR semantics");
+  expect(BiosController::hle_arc_tan(1000, &neg_scratch_r1, &neg_scratch_r3) == 635,
+         "SWI ArcTan HLE +1000 matches reference ASR semantics");
 
   std::cout << "bios_test: PASS\n";
   return 0;

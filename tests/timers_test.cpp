@@ -6,20 +6,7 @@
 #include <iostream>
 #include <string_view>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
-  return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::Arm7tdmi;
@@ -232,6 +219,37 @@ int main() {
   expect(timers.counter(1) == 0xFFFE, "timer1 cascade overflow reloads");
   expect(interrupts.requested(InterruptSource::timer1), "timer1 cascade overflow requests IRQ");
   expect(timers.overflow_count(1) == 1, "timer1 cascaded overflow is counted");
+
+  // M10/M11: the cascade enable-delay window must be anchored to absolute
+  // cycles so suppression stays exact once cycle_counter_ passes 2^32.
+  timers.reset();
+  interrupts.reset();
+  for (int batch = 0; batch < 5; ++batch) {
+    timers.tick(0x40000000U, interrupts);
+  }
+  timers.write_reload(0, 0xFFFF);
+  timers.write_control(0, 0x0080);
+  timers.tick(1, interrupts);
+  interrupts.reset();
+  timers.write_reload(1, 0xFFFE);
+  timers.write_control(1, 0x00C4);
+  timers.defer_newly_enabled_ticks();
+  const Timers::TickResult late_deferred_cascade = timers.tick(3, interrupts);
+  expect(timers.counter(1) == 0xFFFE,
+         "64-bit deferred count-up timer ignores the first source overflow");
+  expect(timers.overflow_count(1) == 1,
+         "64-bit deferred count-up timer records the later cascaded overflow");
+  expect(late_deferred_cascade.first_irq_cycle.has_value() &&
+             late_deferred_cascade.first_irq_cycle.value() == 3,
+         "64-bit deferred cascade reports the relative IRQ cycle past 2^32");
+
+  const Timers::State late_state = timers.save_state();
+  const std::uint64_t late_hash = timers.state_hash();
+  timers.tick(97, interrupts);
+  expect(timers.load_state(late_state),
+         "timer state restore accepts post-2^32 snapshot");
+  expect(timers.state_hash() == late_hash,
+         "timer state hash is symmetric across save/load");
 
   Arm7tdmi cpu;
   cpu.set_register(Arm7tdmi::kPc, 0x08000000);

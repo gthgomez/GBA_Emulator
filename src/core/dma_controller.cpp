@@ -14,6 +14,9 @@ constexpr std::uint16_t kDestinationControlMask = 0x0060;
 constexpr std::uint16_t kSourceControlMask = 0x0180;
 constexpr std::uint16_t kRepeatFlag = 0x0200;
 constexpr std::uint16_t kTransfer32Flag = 0x0400;
+// DMA3CNT_H bit 11: Game Pak DRQ. Only channel 3 exposes it (channels 0-2
+// hardwire it low), so it is merged into the writable mask per-channel.
+constexpr std::uint16_t kGamePakDrqFlag = 0x0800;
 constexpr std::uint16_t kStartTimingMask = 0x3000;
 constexpr std::uint16_t kIrqFlag = 0x4000;
 constexpr std::uint16_t kEnableFlag = 0x8000;
@@ -72,6 +75,11 @@ constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
   return MemoryBus::describe(address).region == Region::bios;
 }
 
+// Channels 1-3 whose source sits in Game Pak ROM step linearly through the
+// address space regardless of the programmed source direction. This models
+// bit-stream/EEPROM-style sources (e.g. serial save reads via DMA3) where the
+// hardware advances the ROM address once per 16-bit bus read and the
+// programmed source control only governs the latch/fifo side of the stream.
 [[nodiscard]] bool dma_source_steps_as_game_pak_stream(std::size_t channel,
                                                        std::uint32_t address) {
   return channel != 0 && MemoryBus::describe(address & 0x0FFFFFFFU).region ==
@@ -217,7 +225,10 @@ void DmaController::write_control(std::size_t channel, std::uint16_t value) {
   const bool was_enabled = (state.control & kEnableFlag) != 0;
   const bool was_immediate =
       was_enabled && start_timing(channel) == DmaStartTiming::immediate;
-  state.control = static_cast<std::uint16_t>(value & kControlMask);
+  const std::uint16_t control_mask =
+      channel == 3 ? static_cast<std::uint16_t>(kControlMask | kGamePakDrqFlag)
+                   : kControlMask;
+  state.control = static_cast<std::uint16_t>(value & control_mask);
   const bool is_enabled = (state.control & kEnableFlag) != 0;
   if (!was_enabled && is_enabled) {
     state.current_source = state.source;
@@ -300,7 +311,46 @@ std::uint64_t DmaController::state_hash() const {
     hasher.add_u32(channel.current_count);
     hasher.add_u32(channel.data_latch);
   }
+  hasher.add_bool(immediate_pending_);
   return hasher.value();
+}
+
+DmaController::State DmaController::save_state() const {
+  State state{};
+  for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
+    state.channels.at(channel) = channels_.at(channel);
+  }
+  state.immediate_pending = immediate_pending_;
+  return state;
+}
+
+bool DmaController::load_state(const State& state) {
+  for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
+    const DmaChannelState& channel_state = state.channels.at(channel);
+    // Control bits outside the per-channel writable mask are rejected the
+    // same way write_control would have stripped them.
+    const std::uint16_t control_mask =
+        channel == 3 ? static_cast<std::uint16_t>(kControlMask | kGamePakDrqFlag)
+                     : kControlMask;
+    if ((channel_state.control & ~control_mask) != 0) {
+      return false;
+    }
+    if ((channel_state.control & kEnableFlag) == 0 &&
+        channel_state.current_count != 0) {
+      return false;
+    }
+    if (channel_state.current_count > normalized_word_count(channel)) {
+      return false;
+    }
+  }
+
+  for (std::size_t channel = 0; channel < kChannelCount; ++channel) {
+    channels_.at(channel) = state.channels.at(channel);
+  }
+  // immediate_pending is a pure function of channel state; recompute it so a
+  // hand-edited or stale snapshot cannot wedge the immediate queue.
+  refresh_immediate_pending();
+  return true;
 }
 
 DmaRunResult DmaController::run_immediate(MemoryBus& memory,
@@ -486,7 +536,13 @@ bool DmaController::execute_channel(std::size_t channel, MemoryBus& memory,
     interrupts.request(dma_interrupt_source(channel));
   }
 
-  if (repeat(channel)) {
+  // GBATEK: Repeat re-arms the channel only for recurring triggers
+  // (VBlank/HBlank/special). An immediate-start transfer fires exactly once
+  // per enable, so the repeat bit is ignored there and completion clears the
+  // enable flag exactly like the non-repeat path. This keeps
+  // DmaController::immediate_pending consistent: run_trigger's
+  // immediate_still_pending scan sees a disabled channel and does not loop.
+  if (repeat(channel) && start_timing(channel) != DmaStartTiming::immediate) {
     state.current_count = normalized_word_count(channel);
     if (destination_control(channel) == DmaAddressControl::increment_reload) {
       state.current_destination = state.destination;
@@ -531,14 +587,29 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
   units_transferred += kSoundFifoWordsPerRequest;
   state.current_source = source_address;
   state.current_destination = destination(channel);
-  state.current_count = repeat(channel) ? normalized_word_count(channel) : 0;
+
+  // Each FIFO request consumes one 4-word burst from the programmed block.
+  // The completion IRQ fires exactly when the internal counter reaches zero
+  // (once per full block), not on every burst; repeat then reloads the
+  // counter for the next block, otherwise the channel disables itself.
+  const std::uint32_t remaining =
+      state.current_count >= kSoundFifoWordsPerRequest
+          ? state.current_count - kSoundFifoWordsPerRequest
+          : 0U;
+  if (remaining != 0) {
+    state.current_count = remaining;
+    return true;
+  }
 
   if (irq_on_completion(channel)) {
     interrupts.request(dma_interrupt_source(channel));
   }
-  if (!repeat(channel)) {
-    state.control = static_cast<std::uint16_t>(state.control & ~kEnableFlag);
+  if (repeat(channel)) {
+    state.current_count = normalized_word_count(channel);
+    return true;
   }
+  state.current_count = 0;
+  state.control = static_cast<std::uint16_t>(state.control & ~kEnableFlag);
   return true;
 }
 

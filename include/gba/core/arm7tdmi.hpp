@@ -329,6 +329,50 @@ class Arm7tdmi {
   static constexpr std::uint8_t kLinkRegister = 14;
   static constexpr std::uint8_t kPc = 15;
 
+  // Complete serializable snapshot of all mutable Arm7tdmi state, following
+  // the Timers::State save/load pattern. Field inventory:
+  //   registers            visible r0-r15 (r15 holds the instruction address)
+  //   elapsed_cycles       cumulative step cycle count
+  //   flags                N/Z/C/V plus I/F masks and T state
+  //   mode                 current CPU mode
+  //   shared_r8_r12        user/system bank storage for R8-R12
+  //   fiq_r8_r12           FIQ bank storage for R8-R12
+  //   {bank}_sp/{bank}_lr  banked SP/LR for user and each exception mode
+  //   {bank}_spsr          banked SPSR for each exception mode
+  // There are no other mutable members: the IRQ line input lives in
+  // InterruptController, and no derived memoization state survives reset().
+  struct State {
+    std::array<std::uint32_t, kRegisterCount> registers{};
+    std::uint64_t elapsed_cycles = 0;
+    bool negative = false;
+    bool zero = false;
+    bool carry = false;
+    bool overflow = false;
+    bool irq_disabled = false;
+    bool fiq_disabled = false;
+    bool thumb_state = false;
+    CpuMode mode = CpuMode::supervisor;
+    std::array<std::uint32_t, 5> shared_r8_r12{};
+    std::array<std::uint32_t, 5> fiq_r8_r12{};
+    std::uint32_t user_sp = 0;
+    std::uint32_t user_lr = 0;
+    std::uint32_t fiq_sp = 0;
+    std::uint32_t fiq_lr = 0;
+    std::uint32_t irq_sp = 0;
+    std::uint32_t irq_lr = 0;
+    std::uint32_t supervisor_sp = 0;
+    std::uint32_t supervisor_lr = 0;
+    std::uint32_t abort_sp = 0;
+    std::uint32_t abort_lr = 0;
+    std::uint32_t undefined_sp = 0;
+    std::uint32_t undefined_lr = 0;
+    std::uint32_t fiq_spsr = 0;
+    std::uint32_t supervisor_spsr = 0;
+    std::uint32_t abort_spsr = 0;
+    std::uint32_t irq_spsr = 0;
+    std::uint32_t undefined_spsr = 0;
+  };
+
   Arm7tdmi();
 
   [[nodiscard]] static bool can_decode_data_processing_immediate(std::uint32_t instruction);
@@ -456,11 +500,20 @@ class Arm7tdmi {
   [[nodiscard]] bool set_spsr(std::uint32_t value);
   [[nodiscard]] std::uint64_t elapsed_cycles() const;
   [[nodiscard]] std::uint64_t state_hash() const;
+  [[nodiscard]] State save_state() const;
+  [[nodiscard]] bool load_state(const State& state);
 
   [[nodiscard]] ExecuteStatus execute_arm(std::uint32_t instruction);
   [[nodiscard]] ExecuteStatus execute_arm(std::uint32_t instruction, MemoryBus& memory);
   [[nodiscard]] ExecuteStatus execute_thumb(std::uint16_t instruction);
   [[nodiscard]] ExecuteStatus execute_thumb(std::uint16_t instruction, MemoryBus& memory);
+  // Exception link convention (deliberate closed-loop convention — paired
+  // with CoreScheduler::dispatch_hle_irq_return's -4 ARM / -2 Thumb return
+  // adjustment; do not change one side alone): callers pre-bump
+  // registers_[15] to the next-unexecuted instruction (+4 ARM / +2 Thumb)
+  // before IRQ entry, and enter_exception links LR = saved_pc +
+  // link_offset, i.e. X+4 in ARM state and X+2 for exceptions taken from
+  // Thumb state (link_offset 2). The timing corpus validates this pairing.
   [[nodiscard]] ExecuteStatus enter_exception(ExceptionKind kind);
   [[nodiscard]] ExecuteStatus return_from_exception(std::uint32_t link_adjustment);
   [[nodiscard]] ArmStepResult step_arm(std::uint32_t instruction);

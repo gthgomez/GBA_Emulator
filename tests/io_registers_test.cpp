@@ -12,14 +12,9 @@
 #include <optional>
 #include <string_view>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void expect_read16(const gba::core::IoRegisters& io, std::uint32_t address,
                    std::uint16_t expected, std::string_view message) {
@@ -45,10 +40,6 @@ void expect_memory_read32(const gba::core::MemoryBus& memory, std::uint32_t addr
   const std::optional<std::uint32_t> value = memory.read32(address);
   expect(value.has_value(), message);
   expect(value.value() == expected, message);
-}
-
-constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
-  return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
 }
 
 }  // namespace
@@ -96,11 +87,13 @@ int main() {
   expect_read16(io, 0x04000052, 0x1F1F, "BLDALPHA masks coefficient fields");
   expect(!io.write16(IoRegisters::kVcount, 12), "VCOUNT write is rejected as read-only");
   expect(!io.write32(IoRegisters::kDispstat + 2U, 0x12345678),
-         "unaligned word IO write is rejected");
-  expect(!io.write32(IoRegisters::kDispstat, 0x12345678),
-         "word IO write with read-only high half is rejected");
-  expect_read16(io, IoRegisters::kDispstat, 0x0004,
-                "rejected word IO write does not partially mutate DISPSTAT");
+         "misaligned word IO write is rejected");
+  expect(io.write32(IoRegisters::kDispstat, 0x12345678),
+         "half-open word IO write commits the writable DISPSTAT half");
+  expect_read16(io, IoRegisters::kDispstat, 0x5638,
+                "DISPSTAT low halfword committed through half-open word write");
+  expect_read16(io, IoRegisters::kVcount, 0,
+                "read-only VCOUNT half is ignored during half-open word write");
   expect(io.write32(IoRegisters::kWaitcnt, 0x12344317),
          "WAITCNT word write routes low halfword and ignores high halfword");
   expect_read16(io, IoRegisters::kWaitcnt, 0x4317,
@@ -154,6 +147,20 @@ int main() {
   expect(io.write16(IoRegisters::kDmaBase + 10U, 0xC400), "DMA0CNT_H write routes");
   expect(dma.enabled(0), "DMA0 enable bit routes through IO");
   expect(dma.transfer_32bit(0), "DMA0 32-bit mode routes through IO");
+
+  constexpr std::uint32_t kDma3CntH = IoRegisters::kDmaBase + 3U * 12U + 10U;
+  constexpr std::uint32_t kDma1CntH = IoRegisters::kDmaBase + 1U * 12U + 10U;
+  expect(io.write16(kDma3CntH, 0xF800), "DMA3CNT_H gamepak DRQ write routes");
+  expect(dma.control(3) == 0xF800, "DMA3 gamepak DRQ bit is storable through IO");
+  expect_read16(io, kDma3CntH, 0xF800,
+                "DMA3CNT_H readback round-trips the gamepak DRQ bit");
+  dma.write_control(3, 0);
+  expect(io.write16(kDma1CntH, 0x8800), "DMA1CNT_H gamepak DRQ probe write routes");
+  expect(dma.control(1) == 0x8000,
+         "gamepak DRQ bit is stripped for channels other than DMA3");
+  expect_read16(io, kDma1CntH, 0x8000,
+                "DMA1CNT_H readback does not fabricate the gamepak DRQ bit");
+  dma.write_control(1, 0);
 
   MemoryBus memory;
   interrupts.write_interrupt_flags(InterruptController::kSupportedMask);

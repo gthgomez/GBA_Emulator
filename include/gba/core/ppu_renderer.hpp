@@ -23,6 +23,13 @@ struct PpuRenderControl {
   std::uint16_t bldcnt = 0;
   std::uint16_t bldalpha = 0;
   std::uint16_t bldy = 0;
+  std::array<std::uint16_t, 4> bg_affine_pa{};
+  std::array<std::uint16_t, 4> bg_affine_pb{};
+  std::array<std::uint16_t, 4> bg_affine_pc{};
+  std::array<std::uint16_t, 4> bg_affine_pd{};
+  std::array<std::uint32_t, 4> bg_reference_x{};
+  std::array<std::uint32_t, 4> bg_reference_y{};
+  std::uint16_t mosaic = 0;
 };
 
 struct PpuRenderStats {

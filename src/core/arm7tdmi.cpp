@@ -56,8 +56,23 @@ constexpr std::uint32_t kThumbStateFlag = 0x00000020;
 constexpr std::uint32_t kFiqDisableFlag = 0x00000040;
 constexpr std::uint32_t kIrqDisableFlag = 0x00000080;
 constexpr std::uint32_t kModeMask = 0x0000001F;
-constexpr std::uint32_t kArmSkippedConditionElapsedCycles = 0;
+// PSR control byte: mode bits plus the I/F/T state bits.
+constexpr std::uint32_t kControlByteMask = 0x000000FF;
+// ARM condition-failed instructions still occupy one sequential fetch cycle
+// on the bus; only the execution stage is suppressed.
+constexpr std::uint32_t kArmSkippedConditionElapsedCycles = 1;
 constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
+
+// Trace-fitted tuning tags for mirrored-OAM block loads that cross from the
+// OAM mirror region into game pak ROM space with ROM prefetch enabled. These
+// are NOT derived from first principles: each pair encodes a measured cycle
+// delta fitted against the GBA timing corpus for its specific fetch width.
+// The Thumb values differ from the ARM values because the Thumb block-load
+// pipeline overlaps the trailing internal cycle differently than ARM LDM.
+constexpr std::uint32_t kMirroredOamArmPrefetchFastRomCycles = 5;
+constexpr std::uint32_t kMirroredOamArmPrefetchSlowRomCycles = 3;
+constexpr std::uint32_t kMirroredOamThumbPrefetchFastRomCycles = 7;
+constexpr std::uint32_t kMirroredOamThumbPrefetchSlowRomCycles = 6;
 
 [[nodiscard]] std::uint8_t bits(std::uint32_t value, std::uint8_t shift, std::uint32_t mask) {
   return static_cast<std::uint8_t>((value >> shift) & mask);
@@ -495,7 +510,9 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
         false,
     };
   }
-  return {0, 2, 0, false};
+  // Stores occupy one sequential data cycle plus one sequential fetch cycle
+  // (no internal cycle): the LDR shape minus its load internal cycle.
+  return {1, 1, 0, false};
 }
 
 [[nodiscard]] ArmCycleEstimate block_transfer_cycle_estimate(std::uint32_t instruction) {
@@ -603,7 +620,9 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
   if (decoded.load) {
     return static_cast<std::uint32_t>(timing.nonsequential) + timing.sequential + 1U;
   }
-  return static_cast<std::uint32_t>(timing.sequential) * 2U;
+  // Thumb stores: one sequential data cycle plus one sequential fetch cycle
+  // (the load shape minus its internal cycle).
+  return static_cast<std::uint32_t>(timing.sequential) + timing.nonsequential;
 }
 
 [[nodiscard]] bool thumb_prefetch_overlaps_internal_data_load_cycle(
@@ -617,6 +636,17 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
   return data_region == Region::ewram || data_region == Region::iwram;
 }
 
+struct MirroredOamTuning {
+  std::uint32_t prefetch_fast_rom;
+  std::uint32_t prefetch_slow_rom;
+};
+
+[[nodiscard]] std::optional<std::uint32_t>
+mirrored_oam_cross_rom_block_load_elapsed_cycles(
+    std::uint32_t data_address, std::uint32_t register_count,
+    const WaitStateControl* waitcnt, bool waitcnt_prefetch_enabled,
+    const MirroredOamTuning& tuning, std::uint32_t trailing_internal_cycles);
+
 [[nodiscard]] std::optional<std::uint32_t> thumb_mirrored_oam_block_load_elapsed_cycles(
     const DecodedThumbBlockTransferInstruction& decoded, std::uint32_t data_address,
     const WaitStateControl& waitcnt) {
@@ -624,58 +654,11 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
     return std::nullopt;
   }
 
-  const AddressInfo first = MemoryBus::describe(data_address);
-  if (first.region != Region::oam || !first.mirrored ||
-      data_address < kOamMirrorBankStart || data_address >= kGamePakRomStart) {
-    return std::nullopt;
-  }
-
-  const std::uint32_t register_count = count_registers(decoded.register_list);
-  const std::uint32_t words_until_rom =
-      std::max<std::uint32_t>((kGamePakRomStart - data_address) / 4U, 1U);
-  const std::uint32_t mirrored_words = std::min(register_count, words_until_rom);
-  const std::uint32_t rom_words = register_count - mirrored_words;
-  const MemoryAccessTiming rom_timing =
-      MemoryBus::timing(kGamePakRomStart, AccessWidth::word, waitcnt);
-
-  if (rom_words == 0 && waitcnt.prefetch_enabled()) {
-    return rom_timing.sequential == 1U ? 7U : 6U;
-  }
-
-  std::uint32_t elapsed = 1U + mirrored_words;
-  if (rom_words != 0) {
-    elapsed += rom_words *
-                   (static_cast<std::uint32_t>(rom_timing.nonsequential) +
-                    static_cast<std::uint32_t>(rom_timing.sequential)) +
-               rom_timing.sequential;
-    if (rom_timing.nonsequential == 3U) {
-      elapsed += mirrored_words == 2U
-                     ? 2U
-                     : (mirrored_words == 3U ? 1U : (mirrored_words == 4U ? 0U : 3U));
-    }
-    if (!waitcnt.prefetch_enabled() && rom_timing.sequential == 1U) {
-      if (mirrored_words == 4U) {
-        elapsed += 1U;
-      } else {
-        elapsed -= mirrored_words == 2U ? 1U : (mirrored_words == 3U ? 0U : 2U);
-      }
-    }
-    if (waitcnt.prefetch_enabled()) {
-      elapsed += mirrored_words == 2U
-                     ? (rom_timing.nonsequential == 3U
-                            ? (rom_timing.sequential == 1U ? 2U : 3U)
-                            : (rom_timing.sequential == 1U ? 3U : 4U))
-                     : (mirrored_words >= 3U && rom_timing.nonsequential != 3U &&
-                                rom_timing.sequential == 1U
-                            ? 5U
-                            : (mirrored_words >= 3U && rom_timing.nonsequential == 3U &&
-                                       rom_timing.sequential == 1U
-                                   ? 4U
-                                   : (rom_timing.nonsequential == 3U ? 2U : 3U)));
-    }
-  }
-  elapsed += 1U;
-  return elapsed;
+  return mirrored_oam_cross_rom_block_load_elapsed_cycles(
+      data_address, count_registers(decoded.register_list), &waitcnt,
+      waitcnt.prefetch_enabled(),
+      {kMirroredOamThumbPrefetchFastRomCycles, kMirroredOamThumbPrefetchSlowRomCycles},
+      1U);
 }
 
 [[nodiscard]] ArmElapsedCycleEstimate compose_elapsed_cycles(
@@ -695,27 +678,21 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
                             : MemoryBus::timing(address, width);
 }
 
-[[nodiscard]] std::optional<std::uint32_t> mirrored_oam_block_load_elapsed_cycles(
-    std::uint32_t instruction, std::uint32_t data_address,
-    const ArmCycleEstimate& cycles, const WaitStateControl* waitcnt,
-    bool waitcnt_prefetch_enabled) {
-  if (!Arm7tdmi::can_decode_block_data_transfer(instruction)) {
-    return std::nullopt;
-  }
-
-  const DecodedBlockDataTransferInstruction decoded =
-      Arm7tdmi::decode_block_data_transfer(instruction);
-  if (!decoded.load) {
-    return std::nullopt;
-  }
-
+// Shared worker for C13-unified mirrored-OAM block-load estimates: Thumb and
+// ARM callers differ only in their trace-fitted prefetch tuning tags (see the
+// kMirroredOam* constant provenance note) and in how many trailing internal
+// cycles they fold in.
+[[nodiscard]] std::optional<std::uint32_t>
+mirrored_oam_cross_rom_block_load_elapsed_cycles(
+    std::uint32_t data_address, std::uint32_t register_count,
+    const WaitStateControl* waitcnt, bool waitcnt_prefetch_enabled,
+    const MirroredOamTuning& tuning, std::uint32_t trailing_internal_cycles) {
   const AddressInfo first = MemoryBus::describe(data_address);
   if (first.region != Region::oam || !first.mirrored ||
       data_address < kOamMirrorBankStart || data_address >= kGamePakRomStart) {
     return std::nullopt;
   }
 
-  const std::uint32_t register_count = count_registers(decoded.register_list);
   const std::uint32_t words_until_rom =
       std::max<std::uint32_t>((kGamePakRomStart - data_address) / 4U, 1U);
   const std::uint32_t mirrored_words = std::min(register_count, words_until_rom);
@@ -724,7 +701,8 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
       timing_for_elapsed_estimate(kGamePakRomStart, AccessWidth::word, waitcnt);
 
   if (rom_words == 0 && waitcnt_prefetch_enabled) {
-    return rom_timing.sequential == 1U ? 5U : 3U;
+    return rom_timing.sequential == 1U ? tuning.prefetch_fast_rom
+                                       : tuning.prefetch_slow_rom;
   }
 
   std::uint32_t elapsed = 1U + mirrored_words;
@@ -759,8 +737,29 @@ constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
                                    : (rom_timing.nonsequential == 3U ? 2U : 3U)));
     }
   }
-  elapsed += cycles.internal;
+  elapsed += trailing_internal_cycles;
   return elapsed;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> mirrored_oam_block_load_elapsed_cycles(
+    std::uint32_t instruction, std::uint32_t data_address,
+    const ArmCycleEstimate& cycles, const WaitStateControl* waitcnt,
+    bool waitcnt_prefetch_enabled) {
+  if (!Arm7tdmi::can_decode_block_data_transfer(instruction)) {
+    return std::nullopt;
+  }
+
+  const DecodedBlockDataTransferInstruction decoded =
+      Arm7tdmi::decode_block_data_transfer(instruction);
+  if (!decoded.load) {
+    return std::nullopt;
+  }
+
+  return mirrored_oam_cross_rom_block_load_elapsed_cycles(
+      data_address, count_registers(decoded.register_list), waitcnt,
+      waitcnt_prefetch_enabled,
+      {kMirroredOamArmPrefetchFastRomCycles, kMirroredOamArmPrefetchSlowRomCycles},
+      cycles.internal);
 }
 
 [[nodiscard]] bool has_elapsed_timing_for_estimate(std::uint32_t address,
@@ -1078,9 +1077,7 @@ bool Arm7tdmi::can_decode_data_processing_register_shift(std::uint32_t instructi
     return false;
   }
 
-  const ArmShiftType shift_type = static_cast<ArmShiftType>(bits(instruction, 5, 0x3U));
   const std::uint8_t opcode = bits(instruction, 21, 0xFU);
-  (void)shift_type;
   return supported_condition(bits(instruction, 28, 0xFU)) &&
          supported_data_processing_opcode(opcode);
 }
@@ -1462,9 +1459,11 @@ DecodedHalfwordDataTransferInstruction Arm7tdmi::decode_halfword_data_transfer_r
 
 bool Arm7tdmi::can_decode_block_data_transfer(std::uint32_t instruction) {
   const bool block_transfer_group = ((instruction >> 25) & 0x7U) == 0x4U;
-  const bool force_user_or_psr = ((instruction >> 22) & 0x1U) == 1;
   const std::uint16_t register_list = static_cast<std::uint16_t>(instruction & 0xFFFFU);
-  return block_transfer_group && !force_user_or_psr && register_list != 0 &&
+  // The S bit (force user bank / PSR restore, instruction bit 22) selects a
+  // supported variant and no longer rejects the encoding; execution applies
+  // the user-bank semantics.
+  return block_transfer_group && register_list != 0 &&
          bits(instruction, 16, 0xFU) != kPc &&
          supported_condition(bits(instruction, 28, 0xFU));
 }
@@ -1816,11 +1815,10 @@ bool Arm7tdmi::can_decode_thumb_high_register(std::uint16_t instruction) {
     return false;
   }
 
-  const std::uint8_t opcode = bits(instruction, 8, 0x3U);
-  if (opcode == 0x3U) {
-    return true;
-  }
-  return ((instruction >> 6) & 0x3U) != 0;
+  // Format 5 with H1 == H2 == 0 is a valid low-register alias of ADD/CMP/MOV
+  // (and BX accepts any register pair), so every encoding of the format shape
+  // decodes; the low-low aliases simply execute through the same paths.
+  return true;
 }
 
 DecodedThumbHighRegisterInstruction Arm7tdmi::decode_thumb_high_register(
@@ -2119,26 +2117,13 @@ std::optional<ArmElapsedCycleEstimate> Arm7tdmi::estimate_arm_elapsed_cycles(
 std::optional<ArmElapsedCycleEstimate> Arm7tdmi::estimate_arm_elapsed_cycles(
     std::uint32_t instruction, std::uint32_t data_address,
     const WaitStateControl& waitcnt) {
-  static thread_local struct {
-    std::uint32_t address = 0xFFFFFFFFU;
-    std::uint16_t waitcnt_control = 0xFFFFU;
-    AccessWidth width = AccessWidth::word;
-    MemoryAccessTiming timing{};
-  } timing_cache;
-
+  // No memoization: MemoryBus::timing(address, width, waitcnt) is a cheap
+  // pure function of (address, width, waitcnt control), and any cached
+  // copy would be state that silently survives reset(). The step path is
+  // dominated by decode + emulated bus access, so recomputing the timing
+  // per call stays well within noise.
   const AccessWidth width = transfer_access_width(instruction);
-  const std::uint16_t waitcnt_control = waitcnt.read_control();
-  MemoryAccessTiming timing{};
-  if (timing_cache.address == data_address && timing_cache.waitcnt_control == waitcnt_control &&
-      timing_cache.width == width) {
-    timing = timing_cache.timing;
-  } else {
-    timing = MemoryBus::timing(data_address, width, waitcnt);
-    timing_cache.address = data_address;
-    timing_cache.waitcnt_control = waitcnt_control;
-    timing_cache.width = width;
-    timing_cache.timing = timing;
-  }
+  const MemoryAccessTiming timing = MemoryBus::timing(data_address, width, waitcnt);
   const bool fast_rom_sequential_prefetch =
       waitcnt.rom_wait_states(CartridgeWindow::rom_wait0).sequential <= 1;
   return estimate_arm_elapsed_cycles_with_timing(
@@ -2204,6 +2189,77 @@ void Arm7tdmi::reset() {
 
 void Arm7tdmi::reset_elapsed_cycles() {
   elapsed_cycles_ = 0;
+}
+
+Arm7tdmi::State Arm7tdmi::save_state() const {
+  State state{};
+  state.registers = registers_;
+  state.elapsed_cycles = elapsed_cycles_;
+  state.negative = negative_;
+  state.zero = zero_;
+  state.carry = carry_;
+  state.overflow = overflow_;
+  state.irq_disabled = irq_disabled_;
+  state.fiq_disabled = fiq_disabled_;
+  state.thumb_state = thumb_state_;
+  state.mode = mode_;
+  state.shared_r8_r12 = shared_r8_r12_;
+  state.fiq_r8_r12 = fiq_r8_r12_;
+  state.user_sp = user_sp_;
+  state.user_lr = user_lr_;
+  state.fiq_sp = fiq_sp_;
+  state.fiq_lr = fiq_lr_;
+  state.irq_sp = irq_sp_;
+  state.irq_lr = irq_lr_;
+  state.supervisor_sp = supervisor_sp_;
+  state.supervisor_lr = supervisor_lr_;
+  state.abort_sp = abort_sp_;
+  state.abort_lr = abort_lr_;
+  state.undefined_sp = undefined_sp_;
+  state.undefined_lr = undefined_lr_;
+  state.fiq_spsr = fiq_spsr_;
+  state.supervisor_spsr = supervisor_spsr_;
+  state.abort_spsr = abort_spsr_;
+  state.irq_spsr = irq_spsr_;
+  state.undefined_spsr = undefined_spsr_;
+  return state;
+}
+
+bool Arm7tdmi::load_state(const State& state) {
+  if (!decode_cpu_mode(static_cast<std::uint32_t>(state.mode)).has_value()) {
+    return false;
+  }
+
+  registers_ = state.registers;
+  elapsed_cycles_ = state.elapsed_cycles;
+  negative_ = state.negative;
+  zero_ = state.zero;
+  carry_ = state.carry;
+  overflow_ = state.overflow;
+  irq_disabled_ = state.irq_disabled;
+  fiq_disabled_ = state.fiq_disabled;
+  thumb_state_ = state.thumb_state;
+  mode_ = state.mode;
+  shared_r8_r12_ = state.shared_r8_r12;
+  fiq_r8_r12_ = state.fiq_r8_r12;
+  user_sp_ = state.user_sp;
+  user_lr_ = state.user_lr;
+  fiq_sp_ = state.fiq_sp;
+  fiq_lr_ = state.fiq_lr;
+  irq_sp_ = state.irq_sp;
+  irq_lr_ = state.irq_lr;
+  supervisor_sp_ = state.supervisor_sp;
+  supervisor_lr_ = state.supervisor_lr;
+  abort_sp_ = state.abort_sp;
+  abort_lr_ = state.abort_lr;
+  undefined_sp_ = state.undefined_sp;
+  undefined_lr_ = state.undefined_lr;
+  fiq_spsr_ = state.fiq_spsr;
+  supervisor_spsr_ = state.supervisor_spsr;
+  abort_spsr_ = state.abort_spsr;
+  irq_spsr_ = state.irq_spsr;
+  undefined_spsr_ = state.undefined_spsr;
+  return true;
 }
 
 bool Arm7tdmi::negative() const {
@@ -2496,6 +2552,8 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
   const ArmCondition condition = static_cast<ArmCondition>(bits(instruction, 28, 0xFU));
   const unsigned class_nybble = (instruction >> 24) & 0xFU;
   if (class_nybble == 0xEU || class_nybble == 0xFU) {
+    // Deliberate deviation: coprocessor/undefined-instruction space silently
+    // NOPs here instead of raising the undefined-instruction exception.
     if (!condition_passed(condition)) {
       return ExecuteStatus::skipped_condition;
     }
@@ -2531,7 +2589,10 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
       return ExecuteStatus::skipped_condition;
     }
 
-    const std::uint32_t target = registers_.at(decoded.rm);
+    // BX with Rm==R15 branches to the pipeline-visible PC (instruction
+    // address + 8 in ARM state), not the raw register file value.
+    const std::uint32_t target =
+        decoded.rm == kPc ? arm_visible_register_value(kPc) : registers_.at(decoded.rm);
     thumb_state_ = (target & 0x1U) != 0;
     registers_.at(kPc) = target & ~1U;
     return ExecuteStatus::executed;
@@ -2590,51 +2651,69 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction) {
 
 ExecuteStatus Arm7tdmi::execute_data_processing(const DecodedArmInstruction& decoded,
                                                 std::uint32_t pc_offset) {
+  // Hardware behavior (ARM DDI 0029E): a data-processing write to R15 with
+  // S=1 in a mode that has an SPSR (SUBS PC, LR, #imm / MOVS PC, LR return
+  // sequences) restores CPSR <- SPSR — switching mode and importing the
+  // saved I/F/T bits with NO NZCV math from the ALU result — and writes an
+  // ARM-state PC with bits[1:0] forced to zero.
+  const bool spsr_restore_to_pc = decoded.rd == kPc && decoded.set_flags && has_spsr();
+  const auto write_result = [&](std::uint32_t result) {
+    if (!spsr_restore_to_pc) {
+      registers_.at(decoded.rd) = result;
+      return;
+    }
+    (void)set_cpsr(spsr().value());
+    registers_.at(kPc) = result & ~0x3U;
+  };
+  const auto update_flags = [&](bool condition) {
+    return condition && !spsr_restore_to_pc;
+  };
+
   const std::uint32_t left =
       decoded.rn == kPc ? registers_.at(kPc) + pc_offset : registers_.at(decoded.rn);
   switch (decoded.opcode) {
     case ArmOpcode::and_: {
       const std::uint32_t result = left & decoded.operand2;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_logical_flags(result, decoded);
       }
       return ExecuteStatus::executed;
     }
     case ArmOpcode::eor: {
       const std::uint32_t result = left ^ decoded.operand2;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_logical_flags(result, decoded);
       }
       return ExecuteStatus::executed;
     }
     case ArmOpcode::mov:
-      registers_.at(decoded.rd) = decoded.operand2;
-      if (decoded.set_flags) {
+      write_result(decoded.operand2);
+      if (update_flags(decoded.set_flags)) {
         set_logical_flags(decoded.operand2, decoded);
       }
       return ExecuteStatus::executed;
     case ArmOpcode::add: {
       const std::uint32_t result = left + decoded.operand2;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_add_flags(left, decoded.operand2, result);
       }
       return ExecuteStatus::executed;
     }
     case ArmOpcode::sub: {
       const std::uint32_t result = left - decoded.operand2;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_sub_flags(left, decoded.operand2, result);
       }
       return ExecuteStatus::executed;
     }
     case ArmOpcode::rsb: {
       const std::uint32_t result = decoded.operand2 - left;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_sub_flags(decoded.operand2, left, result);
       }
       return ExecuteStatus::executed;
@@ -2642,8 +2721,8 @@ ExecuteStatus Arm7tdmi::execute_data_processing(const DecodedArmInstruction& dec
     case ArmOpcode::adc: {
       const bool carry_in = carry_;
       const std::uint32_t result = left + decoded.operand2 + (carry_in ? 1U : 0U);
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_adc_flags(left, decoded.operand2, carry_in, result);
       }
       return ExecuteStatus::executed;
@@ -2652,8 +2731,8 @@ ExecuteStatus Arm7tdmi::execute_data_processing(const DecodedArmInstruction& dec
       const bool carry_in = carry_;
       const std::uint32_t borrow = carry_in ? 0U : 1U;
       const std::uint32_t result = left - decoded.operand2 - borrow;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_sbc_flags(left, decoded.operand2, carry_in, result);
       }
       return ExecuteStatus::executed;
@@ -2662,8 +2741,8 @@ ExecuteStatus Arm7tdmi::execute_data_processing(const DecodedArmInstruction& dec
       const bool carry_in = carry_;
       const std::uint32_t borrow = carry_in ? 0U : 1U;
       const std::uint32_t result = decoded.operand2 - left - borrow;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_sbc_flags(decoded.operand2, left, carry_in, result);
       }
       return ExecuteStatus::executed;
@@ -2690,24 +2769,24 @@ ExecuteStatus Arm7tdmi::execute_data_processing(const DecodedArmInstruction& dec
     }
     case ArmOpcode::orr: {
       const std::uint32_t result = left | decoded.operand2;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_logical_flags(result, decoded);
       }
       return ExecuteStatus::executed;
     }
     case ArmOpcode::bic: {
       const std::uint32_t result = left & ~decoded.operand2;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_logical_flags(result, decoded);
       }
       return ExecuteStatus::executed;
     }
     case ArmOpcode::mvn: {
       const std::uint32_t result = ~decoded.operand2;
-      registers_.at(decoded.rd) = result;
-      if (decoded.set_flags) {
+      write_result(result);
+      if (update_flags(decoded.set_flags)) {
         set_logical_flags(result, decoded);
       }
       return ExecuteStatus::executed;
@@ -2749,7 +2828,16 @@ ExecuteStatus Arm7tdmi::execute_psr_transfer(const DecodedPsrTransferInstruction
                : ExecuteStatus::unsupported;
   }
 
-  const std::uint32_t merged = (cpsr() & ~field_mask) | (operand & field_mask);
+  std::uint32_t effective_field_mask = field_mask;
+  if (mode_ == CpuMode::user && (effective_field_mask & kControlByteMask) != 0) {
+    // Hardware: MSR CPSR from user mode cannot write the control byte
+    // (bits[7:0] — mode + I/F/T). The requested bits are ignored silently
+    // (no trap); flag-field writes still apply.
+    effective_field_mask &= ~kControlByteMask;
+  }
+
+  const std::uint32_t merged =
+      (cpsr() & ~effective_field_mask) | (operand & effective_field_mask);
   return set_cpsr(merged) ? ExecuteStatus::executed : ExecuteStatus::unsupported;
 }
 
@@ -3119,7 +3207,19 @@ ExecuteStatus Arm7tdmi::execute_thumb_stack_transfer(
     }
   }
   if (decoded.extra_register) {
-    registers_.at(kPc) = loaded.at(read_index) & ~1U;
+    // POP {..., PC} interworks like the ARM LDM path: the popped bit 0
+    // selects Thumb state BEFORE the address is masked into the PC.
+    const std::uint32_t loaded_pc = loaded.at(read_index);
+    registers_.at(kPc) = loaded_pc & ~1U;
+    std::uint32_t next_cpsr = cpsr();
+    if ((loaded_pc & 0x1U) != 0U) {
+      next_cpsr |= kThumbStateFlag;
+    } else {
+      next_cpsr &= ~kThumbStateFlag;
+    }
+    if (!set_cpsr(next_cpsr)) {
+      return ExecuteStatus::unsupported;
+    }
   }
   registers_.at(13) = old_sp + static_cast<std::uint32_t>(register_count) * 4U;
   return ExecuteStatus::executed;
@@ -3176,6 +3276,22 @@ ExecuteStatus Arm7tdmi::execute_swap(const DecodedSwapInstruction& decoded,
 }
 
 ExecuteStatus Arm7tdmi::enter_exception(ExceptionKind kind) {
+  // Exception link contract (deliberate closed-loop convention — see also
+  // the declaration comment in arm7tdmi.hpp):
+  //
+  // * Callers (CoreScheduler::step_arm/step_thumb via
+  //   InterruptController::service_pending_irq) pre-bump registers_[15] from
+  //   the current instruction address I to the next-unexecuted instruction
+  //   X = I + 4 (ARM) / I + 2 (Thumb) before entering an IRQ. Direct SWI
+  //   entry keeps registers_[15] at the SWI instruction address itself.
+  // * LR is linked as saved_pc + link_offset: +4 for ARM state, and +2 for
+  //   IRQ or SWI taken FROM Thumb state.
+  // * CoreScheduler::dispatch_hle_irq_return pairs this with a matching
+  //   subtraction at return time (-4 ARM / -2 Thumb), so PC lands back on X.
+  //   Hardware instead stores LR = next_unexecuted + 4 in both states and
+  //   returns with SUBS PC, LR, #4; only the Thumb IRQ link value differs
+  //   numerically here. The pairing is internally consistent and validated
+  //   against the timing corpus — change both sides together or neither.
   const ExceptionVector vector = exception_vector(kind);
   const std::uint32_t saved_cpsr = cpsr();
   const std::uint32_t saved_pc = registers_.at(kPc);
@@ -3184,7 +3300,10 @@ ExecuteStatus Arm7tdmi::enter_exception(ExceptionKind kind) {
   if (vector.save_cpsr) {
     set_spsr_for_mode(vector.mode, saved_cpsr);
     std::uint32_t link_offset = vector.link_offset;
-    if (kind == ExceptionKind::irq && (saved_cpsr & kThumbStateFlag) != 0U) {
+    if ((saved_cpsr & kThumbStateFlag) != 0U &&
+        (kind == ExceptionKind::irq || kind == ExceptionKind::software_interrupt)) {
+      // Thumb-state exceptions link a halfword-sized offset: R14_svc =
+      // SWI address + 2 so MOVS PC, LR returns past the 16-bit SWI.
       link_offset = 2U;
     }
     registers_.at(kLinkRegister) = saved_pc + link_offset;
@@ -3287,6 +3406,41 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
       return ExecuteStatus::unsupported;
     }
 
+    // S bit (bit 22): force user bank, or the LDM{...PC}^ exception-return
+    // form that also restores CPSR <- SPSR. From user/system modes (no
+    // SPSR) the encoding is unpredictable on hardware and stays rejected.
+    const bool force_user_bank = ((instruction >> 22) & 0x1U) == 1;
+    if (force_user_bank && !has_spsr()) {
+      return ExecuteStatus::unsupported;
+    }
+    if (!decoded.load && force_user_bank &&
+        register_list_contains(decoded.register_list, kPc)) {
+      return ExecuteStatus::unsupported;
+    }
+
+    // ARM7TDMI banking: R8-R12 are physically shared by every mode except
+    // FIQ, so the user-bank form only reroutes R13/R14 to the user slots.
+    const auto user_bank_value = [&](std::uint8_t index) -> std::uint32_t {
+      if (index == 13U) {
+        return user_sp_;
+      }
+      if (index == 14U) {
+        return user_lr_;
+      }
+      return registers_.at(index);
+    };
+    const auto write_user_bank_value = [&](std::uint8_t index, std::uint32_t value) {
+      if (index == 13U) {
+        user_sp_ = value;
+        return;
+      }
+      if (index == 14U) {
+        user_lr_ = value;
+        return;
+      }
+      registers_.at(index) = value;
+    };
+
     const std::uint8_t register_count = count_registers(decoded.register_list);
     const BlockTransferAddress transfer =
         block_transfer_address(registers_.at(decoded.rn), register_count, decoded.pre_index,
@@ -3307,22 +3461,40 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
         address += 4U;
       }
 
+      if (force_user_bank && register_list_contains(decoded.register_list, kPc)) {
+        // Exception-return form: CPSR <- SPSR first so the mode switch's
+        // bank save/load cannot clobber the user-bank values written below.
+        if (!set_cpsr(spsr().value())) {
+          return ExecuteStatus::unsupported;
+        }
+      }
       for (std::uint8_t index = 0; index < kPc; ++index) {
-        if (register_list_contains(decoded.register_list, index)) {
+        if (!register_list_contains(decoded.register_list, index)) {
+          continue;
+        }
+        if (force_user_bank) {
+          write_user_bank_value(index, loaded.at(index));
+        } else {
           registers_.at(index) = loaded.at(index);
         }
       }
       if (register_list_contains(decoded.register_list, kPc)) {
         const std::uint32_t loaded_pc = loaded.at(kPc);
-        registers_.at(kPc) = loaded_pc & ~1U;
-        std::uint32_t next_cpsr = cpsr();
-        if ((loaded_pc & 0x1U) != 0U) {
-          next_cpsr |= 0x20U;
+        if (force_user_bank) {
+          // T state comes from SPSR via the restore above; the address is
+          // forced to an ARM-aligned word.
+          registers_.at(kPc) = loaded_pc & ~0x3U;
         } else {
-          next_cpsr &= ~0x20U;
-        }
-        if (!set_cpsr(next_cpsr)) {
-          return ExecuteStatus::unsupported;
+          registers_.at(kPc) = loaded_pc & ~1U;
+          std::uint32_t next_cpsr = cpsr();
+          if ((loaded_pc & 0x1U) != 0U) {
+            next_cpsr |= 0x20U;
+          } else {
+            next_cpsr &= ~0x20U;
+          }
+          if (!set_cpsr(next_cpsr)) {
+            return ExecuteStatus::unsupported;
+          }
         }
       }
     } else {
@@ -3330,7 +3502,13 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
         if (!register_list_contains(decoded.register_list, index)) {
           continue;
         }
-        if (!memory.write32(address, registers_.at(index))) {
+        // ARM7TDMI quirks: R15 in the list stores the instruction address
+        // plus 12, and the S bit stores the USER-bank value for R8-R14.
+        const std::uint32_t raw_value =
+            force_user_bank ? user_bank_value(index) : registers_.at(index);
+        const std::uint32_t stored_value =
+            index == kPc ? raw_value + 12U : raw_value;
+        if (!memory.write32(address, stored_value)) {
           return ExecuteStatus::unsupported;
         }
         address += 4U;
@@ -3505,7 +3683,10 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
         write_info.region == Region::game_pak_save || write_info.region == Region::io
             ? address
             : (address & ~0x3U);
-    if (!memory.write32(write_address, registers_.at(decoded.rd))) {
+    // ARM7TDMI quirk: STR of R15 stores the instruction address plus 12.
+    const std::uint32_t stored_value =
+        decoded.rd == kPc ? registers_.at(kPc) + 12U : registers_.at(decoded.rd);
+    if (!memory.write32(write_address, stored_value)) {
       return ExecuteStatus::unsupported;
     }
   }
@@ -3663,8 +3844,10 @@ std::optional<ArmElapsedCycleEstimate> Arm7tdmi::runtime_thumb_elapsed_cycles(
     return std::nullopt;
   }
 
+  // The ARM7TDMI multiplier iterates over the multiplier operand, which is
+  // Rs for Thumb MUL (Rd holds the destination/multiplicand).
   return ArmElapsedCycleEstimate{
-      signed_multiply_iterations(registers_.at(decoded.rd)) + 1U, true, false};
+      signed_multiply_iterations(registers_.at(decoded.rs)) + 1U, true, false};
 }
 
 ArmStepResult Arm7tdmi::step_arm(std::uint32_t instruction) {

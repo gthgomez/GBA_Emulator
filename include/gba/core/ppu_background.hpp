@@ -32,6 +32,13 @@ struct BgPixel {
   bool vflip;
 };
 
+struct AffinePixel {
+  std::uint8_t tile_index;
+  std::uint8_t color_index;
+  std::uint16_t color;
+  bool transparent;
+};
+
 class PpuBackgroundFetcher {
  public:
   static constexpr std::uint32_t kVramBase = 0x06000000;
@@ -43,9 +50,15 @@ class PpuBackgroundFetcher {
   [[nodiscard]] static BgControl decode_control(std::uint16_t control);
   [[nodiscard]] static std::uint16_t width_pixels(const BgControl& control);
   [[nodiscard]] static std::uint16_t height_pixels(const BgControl& control);
+  [[nodiscard]] static std::uint16_t text_width_pixels(const BgControl& control);
+  [[nodiscard]] static std::uint16_t text_height_pixels(const BgControl& control);
+  [[nodiscard]] static std::uint32_t affine_map_pixels(const BgControl& control);
   [[nodiscard]] static std::optional<BgPixel> fetch_text_pixel(
       const MemoryBus& memory, const BgControl& control, std::uint16_t x,
       std::uint16_t y);
+  [[nodiscard]] static std::optional<AffinePixel> fetch_affine_pixel(
+      const MemoryBus& memory, const BgControl& control, std::int32_t tex_x,
+      std::int32_t tex_y);
 };
 
 }  // namespace gba::core

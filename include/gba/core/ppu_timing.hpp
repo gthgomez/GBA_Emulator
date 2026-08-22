@@ -37,15 +37,26 @@ class PpuTiming {
   static constexpr std::uint32_t kCyclesPerFrame =
       static_cast<std::uint32_t>(kCyclesPerLine) * kTotalLines;
 
+  struct State {
+    std::uint16_t line = 0;
+    std::uint16_t line_cycle = 0;
+    std::uint16_t dispstat_control = 0;
+    std::array<std::uint16_t, 0x2BU> lcd_control{};
+  };
+
   PpuTiming();
 
   void reset();
   void write_dispstat(std::uint16_t value);
+  [[nodiscard]] bool recheck_vcount_match(std::uint16_t new_dispstat);
   [[nodiscard]] std::optional<std::uint16_t> read_lcd_control(
       std::uint32_t address) const;
   [[nodiscard]] bool write_lcd_control(std::uint32_t address, std::uint16_t value);
   [[nodiscard]] PpuRenderControl render_control() const;
   PpuTickEvents tick(std::uint32_t cycles, InterruptController& interrupts);
+
+  [[nodiscard]] State save_state() const;
+  [[nodiscard]] bool load_state(const State& state);
 
   [[nodiscard]] std::uint16_t dispstat() const;
   [[nodiscard]] std::uint16_t vcount() const;
