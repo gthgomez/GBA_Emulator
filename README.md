@@ -3,16 +3,18 @@
 Portable Game Boy Advance emulator core (C++17) with public mGBA test-suite evidence and a
 sibling Android dev shell. Controlled external beta remains blocked without device evidence.
 
-## Current Status (Jun 2026)
+## Current Status (updated 2026-08-22)
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Local core verifiers | PASS | `.\tools\run-core-tests.ps1` |
-| mGBA public suites (13) | GREEN | `memory`, `io-read`, `bios-math`, `dma`, `shifter`, `carry`, `multiply-long`, `timer-irq`, `timers`, `timing`, `sio-read`, `sio-timing`, `misc-edge` — regression baseline in `tools/mgba-suite-green-baseline.json` |
-| Video oracle aliases (7) | GREEN | Deterministic `video_probe` with matching actual/expected frame hashes; upstream interactive `video` suite is **not** green |
-| Credibility matrix | GREEN | `.\tools\run-credibility-matrix.ps1` (latest: `build/test-results/credibility-matrix-latest.json`) |
+| Local core verifiers | PASS (28/28) | `.\tools\run-core-tests.ps1` — clean `g++ -Werror` rebuild, all binaries pass |
+| mGBA public suites (13) | 11 GREEN / 2 REGRESSED | `io-read` (51/130) and `misc-edge` (6/12) regressed 2026-08-14 — see `docs/open-issues-status.md`. Remaining 11 GREEN; regression baseline in `tools/mgba-suite-green-baseline.json` |
+| Video oracle aliases (7) | GREEN | Deterministic `video_probe` via `.\tools\run-video-suite-all.ps1`; upstream interactive `video` suite is intentionally **not** in the credibility matrix baseline |
+| Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` is RED due to the `io-read`/`misc-edge` regressions above (latest: `build/test-results/credibility-matrix-latest.json`) |
 | Android shell | Scaffold only | [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) — JNI bridge self-test; see `docs/android-integration-plan.md` |
 | Controlled beta | BLOCKED | No target-device soak row yet — `docs/controlled-beta-readiness.md` |
+
+> **Note:** Sanitized builds (`run-core-tests.ps1 -Sanitize`) cannot run in this environment — the bundled MinGW `g++` (Rev1, 12.2.0) ships no `libasan`/`libubsan`, so ASan/UBSan link fails. This is a toolchain limitation, not an engine defect.
 
 **Claims policy:** Legal mGBA Game Boy Advance Test Suite ROM only (locally built). No
 commercial ROM, BIOS bundle, or retail-game compatibility claims. Open/closed issue

@@ -1,7 +1,7 @@
 # Open Issues Status
 
-Status: 2026-08-15 update — device soak audio/pacing FAILs + credibility matrix regression recorded  
-Date: 2026-06-03 (updated 2026-08-15)
+Status: 2026-08-22 update — engine audit + doc reconciliation (video "missing" reclassified as expected behavior); 2026-08-14 credibility matrix regression (io-read, misc-edge) recorded  
+Date: 2026-06-03 (updated 2026-08-22)
 
 This document summarizes what is **closed** (verified with reproducible evidence) versus
 what **remains** for production and controlled beta. It does not replace per-suite logs in
@@ -28,11 +28,18 @@ what **remains** for production and controlled beta. It does not replace per-sui
 
 ### mGBA public suite regression baseline
 
-**⚠️ 2026-08-14 REGRESSION.** The 2026-06-01 matrix (below) was GREEN, but the 2026-08-14
-run (`build/test-results/credibility-matrix-20260814-210843-10140.json`, first valid pwsh-7
-run since June) is RED: `io-read` and `misc-edge` regressed and the `video` target is
-**missing** from the current matrix. The remaining 14 targets stay GREEN. Needs triage
-(PPU/IO-timing-adjacent cluster) before any beta candidate.
+**⚠️ 2026-08-14 REGRESSION (genuine).** The 2026-06-01 matrix (below) was GREEN, but the
+2026-08-14 run (`build/test-results/credibility-matrix-20260814-210843-10140.json`, first
+valid pwsh-7 run since June) is RED: `io-read` (51/130) and `misc-edge` (6/12) regressed.
+The remaining 14 targets stay GREEN. Needs triage (PPU/IO-timing-adjacent cluster) before
+any beta candidate.
+
+> **Doc correction (2026-08-22):** the `video` target is **absent** from the credibility
+> matrix by design — `tools/mgba-suite-green-baseline.json` explicitly excludes video
+> ("Upstream video suite and video_oracle_alias matrix rows stay outside this baseline").
+> The 7 oracle probes are verified by the **separate** `tools/run-video-suite-all.ps1`
+> runner, not the matrix. The earlier "video MISSING → regression" framing was incorrect
+> and has been reclassified as EXPECTED (see the Accuracy/engine table below).
 
 | Target | Pass/total (2026-06-01 baseline) | 2026-08-14 |
 | --- | --- | --- |
@@ -111,7 +118,9 @@ artifacts exist — not merely synthetic self-test PASS.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Upstream `video` suite | **MISSING (2026-08-14)** | baseline expects the `video` alias group but the current matrix produces no `video` row — re-verify `run-video-suite-all.ps1` and the matrix config; seven oracle aliases were green as of 2026-06-01 |
+| Upstream `video` suite | **EXPECTED (absent from matrix by design)** | Baseline explicitly excludes video; the 7 oracle probes are GREEN via `tools/run-video-suite-all.ps1`. Earlier "MISSING → regression" framing was incorrect (reclassified 2026-08-22). |
+| `io-read` regression (51/130) | **OPEN — root cause identified** | Write-only/INVALID registers (BG0HOFS, affine, WINxH/V, MOSAIC, BLDY, holes) are correctly unreadable per gbatek, but `IoRegisters::read16` returns `std::nullopt` and `MemoryBus::read16` → `read16_or_thumb_pipeline_open_bus` substitutes the **pipeline instruction word** instead of the expected open-bus value `0xDEAD`. 79/130 mismatch. Readable-register masks (BGxCNT, WININ/OUT, BLDCNT, BLDALPHA, sound regs) are verified correct against `io-read.c`. Fix: model a per-region open-bus latch. |
+| `misc-edge` regression (6/12, "H-blank bit start") | **OPEN** | Timing-sensitive HBlank-flag ↔ Timer0 phase. Plausibly related to commit `81beba2` ("unify HBlank event+flag at hardware-calibrated cycle 1004"). Needs re-validation. |
 | Additional video tests | Open | Beyond the seven oracle aliases |
 | CPU pipeline / Thumb coverage | Partial | See `docs/production-engine-roadmap.md` |
 | PPU/APU hardware completeness | Seed-level | Renderer/mixer seeds, not full hardware |
