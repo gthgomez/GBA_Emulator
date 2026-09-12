@@ -45,3 +45,14 @@ The script compiles and runs all local core verifier binaries with C++17 using `
 
 - [Current Core Scope](docs/CORE_SCOPE.md) — architecture and CPU core scope
 - [Performance & Measurement](docs/PERFORMANCE.md) — benchmark commands, regression gates, and performance notes
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Jonathan Gomez Aguilar.
+See [NOTICE](NOTICE) for attribution.
+
+This repository distributes no ROMs, BIOS images, or copyrighted game assets. The core
+operates only on caller-provided, legally obtained ROM data. See
+[docs/fixture-license-registry.md](docs/fixture-license-registry.md) and
+[docs/release-governance-legal-review.md](docs/release-governance-legal-review.md) for the
+fixture and release-governance rules.
