@@ -28,16 +28,30 @@ what **remains** for production and controlled beta. It does not replace per-sui
 
 ### mGBA public suite regression baseline
 
-**⚠️ 2026-08-14 REGRESSION.** The 2026-06-01 matrix (below) was GREEN, but the 2026-08-14
-run (`build/test-results/credibility-matrix-20260814-210843-10140.json`, first valid pwsh-7
-run since June) is RED: `io-read` and `misc-edge` regressed and the `video` target is
-**missing** from the current matrix. The remaining 14 targets stay GREEN. Needs triage
-(PPU/IO-timing-adjacent cluster) before any beta candidate.
+**2026-08-14 REGRESSION — `misc-edge` only.** The 2026-06-01 matrix (below) was GREEN, but
+the 2026-08-14 run (`build/test-results/credibility-matrix-20260814-210843-10140.json`,
+first valid pwsh-7 run since June) reported `io-read` and `misc-edge` as RED and the
+`video` target as **missing**.
 
-| Target | Pass/total (2026-06-01 baseline) | 2026-08-14 |
+> **Doc corrections (2026-09-12):**
+> - `io-read` is **GREEN 130/130**. Re-running the pinned suite (`aac98dca`) gives
+>   130/130 on both `main` and the HBlank branch, and a direct CPU probe confirms the
+>   values (write-only/INVALID registers → open bus `0xDEAD`; BG0CNT→`0xDFFF`,
+>   WININ/OUT→`0x3F3F`, BLDCNT→`0x3FFF`, BLDALPHA→`0x1F1F`). The previously recorded
+>   root cause was self-contradictory (the pipeline-open-bus fallback *is* what yields
+>   `0xDEAD`). The contract is now locked natively by
+>   `tests/io_read_open_bus_test.cpp` (130/130). The 2026-08-14 `io-read` figure is
+>   treated as a stale/mis-built artifact.
+> - The `video` target is **absent from the matrix by design**
+>   (`tools/mgba-suite-green-baseline.json` explicitly excludes it); the 7 oracle probes
+>   are verified separately via `tools/run-video-suite-all.ps1` and are GREEN.
+>
+> `misc-edge` remains the only genuine regression. Needs triage before any beta candidate.
+
+| Target | Pass/total (2026-06-01 baseline) | Last measured |
 | --- | --- | --- |
 | `memory` | 1552/1552 | GREEN |
-| `io-read` | 130/130 | **RED 51/130** (BG0HOFS + 79 other) |
+| `io-read` | 130/130 | **GREEN 130/130** (re-verified 2026-09-12; 2026-08-14 "RED 51/130" disproven) |
 | `bios-math` | 615/615 | GREEN |
 | `dma` | 1256/1256 | GREEN |
 | `shifter` | 140/140 | GREEN |
