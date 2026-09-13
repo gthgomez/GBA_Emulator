@@ -564,8 +564,11 @@ ApuMixedSample Apu::mix_sample() const {
   std::int32_t right = 0;
 
   const std::array<std::int32_t, 4> psg_outputs = psg_channel_outputs();
-  const std::uint16_t nr51 = static_cast<std::uint16_t>(soundcnt_l_ & 0x00FFU);
-  const std::uint16_t nr50 = static_cast<std::uint16_t>((soundcnt_l_ >> 8) & 0x00FFU);
+  // SOUNDCNT_L is a 16-bit register: the low byte is NR50 (master volume,
+  // bits 0-2 right / 4-6 left) and the high byte is NR51 (channel routing,
+  // bits 0-3 right ch1-4 / 4-7 left ch1-4).
+  const std::uint16_t nr50 = static_cast<std::uint16_t>(soundcnt_l_ & 0x00FFU);
+  const std::uint16_t nr51 = static_cast<std::uint16_t>((soundcnt_l_ >> 8) & 0x00FFU);
   const std::int32_t left_volume =
       static_cast<std::int32_t>(((nr50 >> 4) & 0x7U) + 1U);
   const std::int32_t right_volume =

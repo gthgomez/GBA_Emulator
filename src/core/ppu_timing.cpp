@@ -289,10 +289,11 @@ bool PpuTiming::load_state(const State& state) {
 }
 
 void PpuTiming::enter_hblank(InterruptController& interrupts, PpuTickEvents& events) {
-  if (line_ < kTotalLines - 1) {
-    // HBlank events count on every line except the final line 227; whether
-    // hardware suppresses the event on that line is UNVERIFIED, so it keeps
-    // the pre-existing behavior exactly.
+  // HBlank DMA is only triggered by the 160 visible scanlines. VBlank lines
+  // have no HBlank transfer window on hardware, so the event counter must stay
+  // visible-only even though the DISPSTAT HBlank flag/IRQ assert at
+  // kHblankFlagCycles on every line (PpuTiming::hblank()).
+  if (line_ < kVisibleLines) {
     ++events.hblank_entries;
   }
   if (hblank_irq_enabled()) {

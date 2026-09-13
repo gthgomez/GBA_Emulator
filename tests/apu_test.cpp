@@ -220,19 +220,20 @@ int main() {
 
   Apu pan;
   pan.write_soundcnt_x(0x0080);
-  pan.write_soundcnt_l(0x7701);
+  // SOUNDCNT_L bytes: low = NR50 master volume, high = NR51 channel routing.
+  pan.write_soundcnt_l(0x0177);
   pan.configure_square_channel(0, 3, 15, 4);
   [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> pan_tick_right =
       pan.tick(Apu::kCpuCyclesPerAudioSample);
   expect(pan.last_mixed_sample().left == 0, "NR51 keeps unrouted channel off the left mix");
   expect(pan.last_mixed_sample().right == 15360,
          "NR50 full right volume scales the routed channel");
-  pan.write_soundcnt_l(0x7301);
+  pan.write_soundcnt_l(0x0173);
   [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> pan_tick_quiet =
       pan.tick(Apu::kCpuCyclesPerAudioSample);
   expect(pan.last_mixed_sample().right == 7680,
          "NR50 lower right volume halves the routed channel");
-  pan.write_soundcnt_l(0x7311);
+  pan.write_soundcnt_l(0x1173);
   [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> pan_tick_both =
       pan.tick(Apu::kCpuCyclesPerAudioSample);
   expect(pan.last_mixed_sample().left == 15360, "NR51 routes channel to the left mix");
@@ -254,7 +255,7 @@ int main() {
 
   Apu bank;
   bank.write_soundcnt_x(0x0080);
-  bank.write_soundcnt_l(0x7744);
+  bank.write_soundcnt_l(0x4477);
   bank.set_wave_bank_select(false);
   bank.write_wave_ram(0, 0xAAAA);
   expect(bank.wave_ram(0) == 0xAAAA, "CPU wave RAM write is visible in the accessed bank");

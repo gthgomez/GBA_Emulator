@@ -157,8 +157,8 @@ int main() {
   expect(ppu.frame_cycle() == 0, "PPU frame cycle wraps to zero");
 
   gba::core::PpuTickEvents frame_events = ppu.tick(PpuTiming::kCyclesPerFrame, interrupts);
-  expect(frame_events.hblank_entries == PpuTiming::kTotalLines - 1,
-         "HBlank events count on every line except line 227");
+  expect(frame_events.hblank_entries == PpuTiming::kVisibleLines,
+         "HBlank DMA events count once per visible scanline");
   expect(frame_events.vblank_entries == 1, "VBlank event counts once per frame");
   expect(frame_events.vcount_matches == 1,
          "default VCount setting matches once per frame");
@@ -170,10 +170,10 @@ int main() {
                interrupts);
   const gba::core::PpuTickEvents line161_entry =
       ppu.tick(1, interrupts);
-  expect(pre_line161.hblank_entries == 161,
-         "HBlank entries accumulate through line 160 during VBlank");
-  expect(line161_entry.hblank_entries == 1,
-         "HDMA HBlank entry counted on line 161");
+  expect(pre_line161.hblank_entries == PpuTiming::kVisibleLines,
+         "HBlank entries accumulate only through the visible lines");
+  expect(line161_entry.hblank_entries == 0,
+         "HBlank DMA event is suppressed on VBlank line 161");
 
   ppu.reset();
   expect(!ppu.recheck_vcount_match(static_cast<std::uint16_t>(5U << 8)),
