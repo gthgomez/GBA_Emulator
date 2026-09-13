@@ -5,6 +5,12 @@ param(
   [string]$ReportPath = ""
 )
 
+# Single-writer assumption: the default report path (build\core_benchmark_regression_latest.json)
+# is a shared "latest" artifact. Concurrent runs of this script overwrite each
+# other's report; serialize runs or pass a distinct -ReportPath per process.
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
@@ -14,6 +20,22 @@ if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
 }
 if ([string]::IsNullOrWhiteSpace($ReportPath)) {
   $ReportPath = Join-Path $repoRoot "build\core_benchmark_regression_latest.json"
+}
+
+function Assert-NativeExitCode {
+  param(
+    [string]$Step,
+    [int]$Expected = 0
+  )
+
+  if ($LASTEXITCODE -ne $Expected) {
+    Write-Host ""
+    Write-Host "core_performance_regression: FAIL ($Step exited with $LASTEXITCODE)"
+    if ($null -eq $LASTEXITCODE) {
+      exit 1
+    }
+    exit $LASTEXITCODE
+  }
 }
 
 function Read-BenchmarkRows {
@@ -67,6 +89,7 @@ if (![string]::IsNullOrWhiteSpace($BenchmarkOutputPath)) {
   for ($run = 1; $run -le $Runs; ++$run) {
     "core_performance_regression: run $run/$Runs"
     $output = & $benchmarkScript
+    Assert-NativeExitCode -Step "run-core-benchmarks.ps1 (run $run/$Runs)"
     $output | ForEach-Object { $_ }
     $allRuns += ,(Read-BenchmarkRows -Lines @($output))
   }
@@ -148,3 +171,6 @@ if ($failures.Count -gt 0) {
 }
 
 "core_performance_regression: PASS"
+# Explicit terminal exit code so orchestrators can assert on $LASTEXITCODE
+# even when this fixture mode never invokes a native command.
+exit 0

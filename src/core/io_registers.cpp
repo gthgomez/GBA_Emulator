@@ -434,8 +434,9 @@ std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
       case 8:
         return 0;
       case 10:
-        return static_cast<std::uint16_t>(dma_.control(channel) |
-                                          (channel == 3 ? 0x0800U : 0U));
+        // DMA3CNT_H bit 11 (Game Pak DRQ) is storable on channel 3, so the
+        // stored control value round-trips as-is; no forced bits.
+        return dma_.control(channel);
       default:
         return std::nullopt;
     }
@@ -466,7 +467,9 @@ bool IoRegisters::write16(std::uint32_t address, std::uint16_t value) {
 
   switch (address) {
     case kDispstat:
-      ppu_.write_dispstat(value);
+      if (ppu_.recheck_vcount_match(value) && ppu_.vcount_irq_enabled()) {
+        interrupts_.request(InterruptSource::vcount);
+      }
       return true;
     case kVcount:
       return false;
@@ -602,11 +605,19 @@ bool IoRegisters::write32(std::uint32_t address, std::uint32_t value) {
     return true;
   }
 
-  if (!can_write16_address(address) || !can_write16_address(address + 2U)) {
-    return false;
+  // Half-open 32-bit IO writes apply each halfword independently: a
+  // read-only (or unmodeled) half is dropped, but writable halves still
+  // commit. E.g. STR to 0x04000004 writes DISPSTAT and silently ignores the
+  // VCOUNT half instead of discarding the whole word.
+  bool handled_any_half = false;
+  if (can_write16_address(address)) {
+    handled_any_half = write16(address, low16(value));
   }
-
-  return write16(address, low16(value)) && write16(address + 2U, high16(value));
+  if (can_write16_address(address + 2U)) {
+    handled_any_half =
+        write16(address + 2U, high16(value)) || handled_any_half;
+  }
+  return handled_any_half;
 }
 
 }  // namespace gba::core

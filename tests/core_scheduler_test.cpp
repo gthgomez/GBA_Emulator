@@ -16,24 +16,15 @@
 #include <string_view>
 #include <vector>
 
-namespace {
+#include "test_helpers.hpp"
 
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
+namespace {
 
 void expect_read32(const gba::core::MemoryBus& memory, std::uint32_t address,
                    std::uint32_t expected, std::string_view message) {
   const std::optional<std::uint32_t> value = memory.read32(address);
   expect(value.has_value(), message);
   expect(value.value() == expected, message);
-}
-
-constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
-  return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
 }
 
 std::vector<std::uint8_t> rom_with_word(std::uint32_t word) {
@@ -187,17 +178,17 @@ int main() {
   const gba::core::CoreSchedulerStepResult skipped = scheduler.step_arm(kAddEqR0R0Imm1);
   expect(skipped.cpu_step.status == ExecuteStatus::skipped_condition,
          "condition-failed instruction is reported");
-  expect(skipped.devices.cycles == 0, "skipped ARM instruction reports no device cycles");
-  expect(scheduler.scheduler_cycles() == 1,
+  expect(skipped.devices.cycles == 1, "skipped ARM instruction reports no device cycles");
+  expect(scheduler.scheduler_cycles() == 2,
          "skipped ARM instruction leaves global cycles unchanged");
-  expect(timers.counter(0) == 0xFFF1,
+  expect(timers.counter(0) == 0xFFF2,
          "skipped ARM instruction leaves timer counter unchanged");
 
   const gba::core::CoreDeviceTickResult apu_tick =
       scheduler.advance_devices(Apu::kCpuCyclesPerFrameSequencerStep);
   expect(apu_tick.cycles == Apu::kCpuCyclesPerFrameSequencerStep,
          "manual device advance reports cycles");
-  expect(scheduler.scheduler_cycles() == 1U + Apu::kCpuCyclesPerFrameSequencerStep,
+  expect(scheduler.scheduler_cycles() == 2U + Apu::kCpuCyclesPerFrameSequencerStep,
          "manual device advance accumulates cycles");
   expect(!apu_tick.apu_frame_step.has_value(),
          "disabled APU reports no frame step during device advance");
@@ -527,7 +518,7 @@ int main() {
   expect(fetched_skip.pc_advanced, "skipped fetched instruction still advances PC");
   expect(cpu.register_value(Arm7tdmi::kPc) == kSyntheticProgramBase + 8U,
          "skipped fetched instruction advances PC by one ARM word");
-  expect(scheduler.scheduler_cycles() == 1,
+  expect(scheduler.scheduler_cycles() == 2,
          "skipped fetched ARM instruction leaves scheduler cycles unchanged");
 
   cpu.reset();
@@ -2434,6 +2425,328 @@ int main() {
   expect(cpu.register_value(Arm7tdmi::kPc) !=
              gba::core::BiosHleConstants::kIrqReturnSentinelPc,
          "Thumb sentinel HLE return advances PC away from sentinel");
+
+  // ------------------------------------------------------------------
+  // S1: WAITCNT-change snapshot roundtrip must reproduce the identical
+  // fetch sequence. last_waitcnt_control_ is persisted in
+  // CoreSchedulerState so apply_fetch_timing/refill_prefetch_after_step see
+  // the same control value before and after a rollback.
+  {
+    cpu.reset();
+    memory.reset();
+    timers.reset();
+    ppu.reset();
+    apu.reset();
+    dma.reset();
+    interrupts.reset();
+    timed_scheduler.reset_scheduler_cycles();
+    timed_scheduler.load_state(gba::core::CoreSchedulerState{});
+    waitcnt.write_control(WaitStateControl::kStandardGamePakSetting);
+    std::vector<std::uint8_t> waitcnt_rom(64);
+    write_rom_word(waitcnt_rom, 0, kAddR0R0Imm1);
+    write_rom_word(waitcnt_rom, 4, kAddR0R0Imm1);
+    write_rom_word(waitcnt_rom, 8, kAddR0R0Imm1);
+    expect(memory.load_game_pak_rom(waitcnt_rom), "WAITCNT snapshot ROM loads");
+    cpu.set_register(Arm7tdmi::kPc, kGamePakProgramBase);
+
+    const gba::core::CoreSchedulerFetchStepResult s1_first =
+        timed_scheduler.step_from_pc();
+    expect(s1_first.fetch_timing_applied && !s1_first.fetch_sequential,
+           "WAITCNT snapshot fixture takes a non-sequential first fetch");
+    const gba::core::CoreSchedulerFetchStepResult s1_second =
+        timed_scheduler.step_from_pc();
+    expect(s1_second.fetch_sequential,
+           "WAITCNT snapshot fixture establishes a sequential fetch chain");
+    const std::uint64_t s1_hash_at_save = timed_scheduler.state_hash();
+    const std::uint32_t s1_saved_pc = cpu.register_value(Arm7tdmi::kPc);
+    const std::uint64_t s1_cycles_at_save = timed_scheduler.scheduler_cycles();
+    const gba::core::CoreSchedulerState s1_snapshot = timed_scheduler.save_state();
+    expect(s1_snapshot.last_waitcnt_control.has_value() &&
+               s1_snapshot.last_waitcnt_control.value() ==
+                   WaitStateControl::kStandardGamePakSetting,
+           "snapshot persists last WAITCNT control for fetch-timing parity");
+
+    // Change WAITCNT and take one post-change fetch (reference outcome).
+    constexpr std::uint16_t kChangedWaitCnt = 0x0000U;
+    waitcnt.write_control(kChangedWaitCnt);
+    const gba::core::CoreSchedulerFetchStepResult s1_changed =
+        timed_scheduler.step_from_pc();
+    expect(!s1_changed.fetch_sequential,
+           "WAITCNT change resets the sequential fetch chain");
+    const std::uint64_t s1_cycles_after_change = timed_scheduler.scheduler_cycles();
+
+    // Roll back to the pre-change snapshot (CPU PC rewound to the save
+    // point) and refetch. The restored last_waitcnt_control_ must re-detect
+    // the control change and reproduce the reference non-sequential fetch.
+    timed_scheduler.load_state(s1_snapshot);
+    expect(timed_scheduler.state_hash() == s1_hash_at_save,
+           "WAITCNT snapshot rollback restores the exact scheduler hash");
+    cpu.set_register(Arm7tdmi::kPc, s1_saved_pc);
+    const gba::core::CoreSchedulerFetchStepResult s1_refetched =
+        timed_scheduler.step_from_pc();
+    expect(!s1_refetched.fetch_sequential,
+           "post-rollback fetch re-detects the WAITCNT change as non-sequential");
+    expect(s1_refetched.fetch_cycles == s1_changed.fetch_cycles &&
+               s1_refetched.fetch_timing_applied == s1_changed.fetch_timing_applied &&
+               s1_refetched.prefetch_hit == s1_changed.prefetch_hit,
+           "post-rollback WAITCNT change reproduces the reference fetch cycles");
+    expect(timed_scheduler.scheduler_cycles() - s1_cycles_at_save ==
+               s1_cycles_after_change - s1_cycles_at_save,
+           "post-rollback WAITCNT change reproduces the reference cycle total");
+
+    cpu.reset();
+    memory.reset();
+    timers.reset();
+    ppu.reset();
+    apu.reset();
+    dma.reset();
+    interrupts.reset();
+    timed_scheduler.reset_scheduler_cycles();
+    timed_scheduler.load_state(gba::core::CoreSchedulerState{});
+    waitcnt.write_control(WaitStateControl::kStandardGamePakSetting);
+  }
+
+  // ------------------------------------------------------------------
+  // S2: the Thumb step path must mirror ARM's slow-timer chained IRQ
+  // mechanisms — the spaced-load PC-replay service block and the chained
+  // post-return deferral gate — with width-appropriate PC offsets.
+  {
+    auto seed_replay_load = [&](bool thumb_state) {
+      cpu.reset();
+      memory.reset();
+      timers.reset();
+      ppu.reset();
+      apu.reset();
+      dma.reset();
+      interrupts.reset();
+      scheduler.reset_scheduler_cycles();
+      scheduler.load_state(gba::core::CoreSchedulerState{});
+      TimerIoCallbackContext replay_context{&timers};
+      memory.set_io_callbacks({&replay_context, read_timer_io16,
+                               read_timer_io32, nullptr, nullptr});
+      timers.tick(179, interrupts);
+      timers.write_reload(0, 0xFFED);
+      timers.write_control(0, 0x00C3);
+      timers.tick(845, interrupts);
+      timers.tick(16U * 1024U, interrupts);
+      timers.tick(1019, interrupts);
+      if (thumb_state) {
+        (void)cpu.set_cpsr(kThumbStateSupervisor);
+      }
+      interrupts.write_interrupt_enable(irq_bit(InterruptSource::timer0));
+      interrupts.write_ime(1);
+      // Timer0 IRQ already pending from an earlier overflow; the scheduler
+      // state arms the auto-IRQ line so the pre-access service branch fires
+      // deterministically for the spaced 0xFFED load.
+      interrupts.request(InterruptSource::timer0);
+      gba::core::CoreSchedulerState replay_state = scheduler.save_state();
+      replay_state.hle_irq_return_latency_pending = true;
+      replay_state.hle_irq_post_return_chain_active = true;
+      replay_state.timer_io_access_gap_cycles = 20;
+      replay_state.auto_irq_line_high = true;
+      replay_state.auto_irq_latency_cycles = 0;
+      scheduler.load_state(replay_state);
+      cpu.set_register(Arm7tdmi::kPc, 0x030007BCU);
+      cpu.set_register(2, 0x0BADF00DU);
+      cpu.set_register(4, 0x04000100U);
+    };
+
+    seed_replay_load(false);
+    const gba::core::CoreSchedulerStepResult arm_replay_step =
+        scheduler.step_arm(0xE5942000U);
+    expect(arm_replay_step.cpu_step.status == ExecuteStatus::executed,
+           "ARM spaced slow-timer load executes");
+    expect(arm_replay_step.data_access.has_value() &&
+               arm_replay_step.data_access->load &&
+               arm_replay_step.data_access->timer_io,
+           "ARM spaced slow-timer load reports a timer I/O load");
+    expect(arm_replay_step.irq_serviced,
+           "ARM spaced slow-timer load services the matured timer IRQ");
+    expect(cpu.current_mode() == gba::core::CpuMode::irq &&
+               cpu.register_value(Arm7tdmi::kPc) == 0x18,
+           "ARM spaced slow-timer load vectors to the IRQ handler");
+    const std::uint32_t arm_replay_r2 = cpu.register_value(2);
+
+    seed_replay_load(true);
+    const gba::core::CoreSchedulerStepResult thumb_replay_step =
+        scheduler.step_thumb(kThumbLdrR2R4Imm0);
+    expect(thumb_replay_step.cpu_step.status == ExecuteStatus::executed,
+           "Thumb spaced slow-timer load executes");
+    expect(thumb_replay_step.data_access.has_value() &&
+               thumb_replay_step.data_access->load &&
+               thumb_replay_step.data_access->timer_io,
+           "Thumb spaced slow-timer load reports a timer I/O load");
+    expect(thumb_replay_step.irq_serviced,
+           "Thumb spaced slow-timer load services the matured timer IRQ");
+    expect(cpu.current_mode() == gba::core::CpuMode::irq &&
+               cpu.register_value(Arm7tdmi::kPc) == 0x18,
+           "Thumb spaced slow-timer load vectors to the IRQ handler");
+    expect(cpu.register_value(2) == arm_replay_r2,
+           "Thumb slow-timer load samples the same timer value as ARM (S2 parity)");
+    memory.clear_io_callbacks();
+
+    // Chained post-return deferral: with an armed chained IRQ that only
+    // becomes ready during a one-cycle ALU instruction, both widths must
+    // defer service to the next instruction.
+    auto seed_defer_gate = [&]() {
+      cpu.reset();
+      memory.reset();
+      timers.reset();
+      ppu.reset();
+      apu.reset();
+      dma.reset();
+      interrupts.reset();
+      scheduler.reset_scheduler_cycles();
+      gba::core::CoreSchedulerState defer_state{};
+      defer_state.hle_irq_post_return_latency_armed = true;
+      defer_state.hle_irq_post_return_chain_active = true;
+      defer_state.auto_irq_line_high = true;
+      defer_state.auto_irq_latency_cycles = 1;
+      scheduler.load_state(defer_state);
+      interrupts.write_interrupt_enable(irq_bit(InterruptSource::timer0));
+      interrupts.write_ime(1);
+      interrupts.request(InterruptSource::timer0);
+      timers.write_reload(0, 0xFFED);
+      timers.write_control(0, 0x00C3);
+      cpu.set_register(Arm7tdmi::kPc, kSyntheticProgramBase);
+    };
+
+    seed_defer_gate();
+    const gba::core::CoreSchedulerStepResult arm_defer_step =
+        scheduler.step_arm(kAddR0R0Imm1);
+    expect(arm_defer_step.cpu_step.status == ExecuteStatus::executed,
+           "ARM chained post-return defer fixture executes its instruction");
+    expect(!arm_defer_step.irq_serviced,
+           "ARM defers an armed chained post-return IRQ after a 1-cycle ALU step");
+    expect(cpu.current_mode() != gba::core::CpuMode::irq,
+           "ARM deferred chained IRQ does not enter IRQ mode yet");
+    const gba::core::CoreSchedulerStepResult arm_service_next =
+        scheduler.step_arm(kAddR0R0Imm1);
+    expect(arm_service_next.irq_serviced,
+           "ARM services the deferred chained IRQ on the next instruction");
+
+    seed_defer_gate();
+    const gba::core::CoreSchedulerStepResult thumb_defer_step =
+        scheduler.step_thumb(kThumbMovR2Imm3);
+    expect(thumb_defer_step.cpu_step.status == ExecuteStatus::executed,
+           "Thumb chained post-return defer fixture executes its instruction");
+    expect(!thumb_defer_step.irq_serviced,
+           "Thumb defers an armed chained post-return IRQ like ARM (S2 parity)");
+    expect(cpu.current_mode() != gba::core::CpuMode::irq,
+           "Thumb deferred chained IRQ does not enter IRQ mode yet");
+    const gba::core::CoreSchedulerStepResult thumb_service_next =
+        scheduler.step_thumb(kThumbMovR2Imm3);
+    expect(thumb_service_next.irq_serviced,
+           "Thumb services the deferred chained IRQ on the next instruction");
+    scheduler.load_state(gba::core::CoreSchedulerState{});
+  }
+
+  // ------------------------------------------------------------------
+  // S4 guards: IntrWait (SWI 4) wake phases must stay cycle-exact now that
+  // the busy-spin batches device advancement into deterministic chunks.
+  {
+    gba::core::BiosController intr_wait_bios;
+    intr_wait_bios.set_mode(gba::core::BiosExecutionMode::hle);
+    gba::core::CoreScheduler intr_wait_scheduler(cpu, memory, interrupts, timers,
+                                                 dma, ppu, apu, waitcnt,
+                                                 intr_wait_bios);
+    constexpr std::uint16_t kVblankIrqEnableDispstat = 0x0008U;
+    constexpr std::uint32_t kVblankEdge =
+        static_cast<std::uint32_t>(PpuTiming::kVisibleLines) * PpuTiming::kCyclesPerLine;
+
+    auto seed_intr_wait = [&](bool preset_flag) {
+      cpu.reset();
+      memory.reset();
+      timers.reset();
+      ppu.reset();
+      apu.reset();
+      dma.reset();
+      interrupts.reset();
+      intr_wait_scheduler.reset_scheduler_cycles();
+      intr_wait_scheduler.load_state(gba::core::CoreSchedulerState{});
+      std::vector<std::uint8_t> intr_wait_rom(256);
+      write_rom_halfword(intr_wait_rom, 0x20U, 0xDF04U);
+      expect(memory.load_game_pak_rom(intr_wait_rom), "IntrWait guard ROM loads");
+      expect(cpu.set_cpsr(0x0000001FU | 0x20U),
+             "IntrWait guard enters Thumb system mode");
+      cpu.set_register(Arm7tdmi::kPc, kGamePakProgramBase + 0x20U);
+      cpu.set_register(0, 0);  // r0: do not discard old flags
+      cpu.set_register(1, irq_bit(gba::core::InterruptSource::vblank));  // r1: mask
+      interrupts.write_interrupt_enable(
+          irq_bit(gba::core::InterruptSource::vblank));
+      interrupts.write_ime(1);
+      ppu.write_dispstat(kVblankIrqEnableDispstat);
+      ppu.tick(kVblankEdge - 30U, interrupts);
+      expect(!ppu.vblank(), "IntrWait guard starts before the VBlank edge");
+      if (preset_flag) {
+        interrupts.request(gba::core::InterruptSource::vblank);
+      }
+    };
+
+    // Control: IF pre-set so the wait exits without spinning.
+    seed_intr_wait(true);
+    const gba::core::CoreSchedulerFetchStepResult intr_wait_control =
+        intr_wait_scheduler.step_from_pc();
+    expect(intr_wait_control.step.has_value() &&
+               intr_wait_control.step->cpu_step.status == ExecuteStatus::executed,
+           "pre-flagged IntrWait executes");
+    // IME is enabled and IF was pre-set, so the scheduler correctly services
+    // the pending IRQ right after the SWI body returns (vectors to 0x18).
+    expect(intr_wait_control.step->irq_serviced,
+           "pre-flagged IntrWait services its already-pending IRQ");
+    const std::uint64_t intr_wait_control_cycles =
+        intr_wait_scheduler.scheduler_cycles();
+    const std::uint32_t intr_wait_control_frame_after = ppu.frame_cycle();
+
+    // Timed run A: the VBlank flag fires naturally mid-wait; batched
+    // advancement must land the wake exactly on the edge 30 cycles ahead.
+    seed_intr_wait(false);
+    const gba::core::CoreSchedulerFetchStepResult intr_wait_timed_a =
+        intr_wait_scheduler.step_from_pc();
+    expect(intr_wait_timed_a.step.has_value() &&
+               intr_wait_timed_a.step->cpu_step.status == ExecuteStatus::executed,
+           "edge-crossing IntrWait executes");
+    const std::uint64_t intr_wait_timed_a_cycles =
+        intr_wait_scheduler.scheduler_cycles();
+    const std::uint32_t intr_wait_timed_a_frame_cycle = ppu.frame_cycle();
+    expect(intr_wait_timed_a_cycles > intr_wait_control_cycles,
+           "edge-crossing IntrWait spins device cycles until the VBlank edge");
+    expect(interrupts.requested(gba::core::InterruptSource::vblank) && ppu.vblank(),
+           "edge-crossing IntrWait wakes on the raised VBlank flag");
+
+    // Timed run B: identical reseed must reproduce run A bit-for-bit.
+    seed_intr_wait(false);
+    [[maybe_unused]] const gba::core::CoreSchedulerFetchStepResult
+        intr_wait_timed_b = intr_wait_scheduler.step_from_pc();
+    expect(intr_wait_scheduler.scheduler_cycles() == intr_wait_timed_a_cycles &&
+               ppu.frame_cycle() == intr_wait_timed_a_frame_cycle,
+           "edge-crossing IntrWait is deterministic across reseeds");
+
+    // Exactness (self-calibrating): the control run charges fetch+return
+    // device cycles, ending its frame clock at edge-30+F+R; the timed run
+    // ends at edge+R. That exposes F, and the total-cycle difference must
+    // equal exactly the 30-F spin to the edge — any batching overshoot
+    // would inflate it beyond 30-F.
+    const std::uint32_t return_device_cycles =
+        intr_wait_timed_a_frame_cycle - kVblankEdge;
+    const std::uint32_t fetch_device_cycles =
+        intr_wait_control_frame_after - (kVblankEdge - 30U) - return_device_cycles;
+    expect(intr_wait_timed_a_cycles - intr_wait_control_cycles ==
+               static_cast<std::uint64_t>(fetch_device_cycles <= 30U
+                                              ? 30U - fetch_device_cycles
+                                              : 0U),
+           "edge-crossing IntrWait wake is cycle-exact under batched "
+           "device advancement");
+
+    cpu.reset();
+    memory.reset();
+    timers.reset();
+    ppu.reset();
+    apu.reset();
+    dma.reset();
+    interrupts.reset();
+    intr_wait_scheduler.load_state(gba::core::CoreSchedulerState{});
+  }
 
   std::cout << "core_scheduler_test: PASS\n";
   return 0;

@@ -25,3 +25,18 @@ jobs:
           $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
           g++ --version
           .\tools\run-core-tests.ps1
+
+      # Wall-clock thresholds are noisy on shared windows-latest runners, so
+      # this gate is informational: it still surfaces checksum/operations drift
+      # in the logs without blocking the build on benchmark-runner jitter.
+      - name: Benchmark regression gate (check-core-performance-regression.ps1)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          g++ --version
+          .\tools\check-core-performance-regression.ps1
+
+      - name: Release readiness gate (check-release-readiness.ps1)
+        shell: pwsh
+        run: .\tools\check-release-readiness.ps1

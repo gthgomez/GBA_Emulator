@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -96,6 +97,7 @@ struct CoreSchedulerState {
   bool recover_next_game_pak_data_fetch = false;
   bool suppress_next_thumb_prefetch_execute_bubble = false;
   bool previous_thumb_internal_load = false;
+  std::optional<std::uint16_t> last_waitcnt_control;
   std::optional<std::uint32_t> hle_irq_return_lr;
   std::optional<std::array<std::uint32_t, 13>> hle_irq_saved_registers;
   bool hle_irq_reentry_dispatch_pending = false;
@@ -136,6 +138,9 @@ class CoreScheduler {
   void halt_until_interrupt();
   [[nodiscard]] bool wake_from_halt_if_irq_pending();
   void set_io_registers(IoRegisters& io);
+  // Injectable diagnostics sink for deterministic-core tracing (SWI Halt
+  // entry, etc.). Null by default; the core never reads environment state.
+  void set_debug_trace_sink(std::function<void(const char*)> sink);
 
   [[nodiscard]] CoreDeviceTickResult advance_devices(std::uint32_t cycles);
   [[nodiscard]] DmaRunResult run_immediate_dma();
@@ -150,6 +155,9 @@ class CoreScheduler {
       std::optional<ArmElapsedCycleEstimate> elapsed_override = std::nullopt);
   [[nodiscard]] CoreSchedulerFetchStepResult step_arm_from_pc();
   [[nodiscard]] CoreSchedulerFetchStepResult step_from_pc();
+  [[nodiscard]] CoreSchedulerRunResult run_steps_from_pc(
+      std::uint32_t max_steps,
+      CoreSchedulerFetchStepResult (CoreScheduler::*step_fn)());
   [[nodiscard]] CoreSchedulerRunResult run_arm_from_pc(std::uint32_t max_steps);
   [[nodiscard]] CoreSchedulerRunResult run_from_pc(std::uint32_t max_steps);
 
@@ -192,6 +200,7 @@ class CoreScheduler {
   std::uint8_t auto_irq_latency_cycles_;
   std::uint32_t timer_io_access_gap_cycles_;
   std::uint32_t thumb_misfetch_recovery_count_;
+  std::function<void(const char*)> debug_trace_sink_;
 
   [[nodiscard]] std::uint32_t apply_fetch_timing(std::uint32_t fetch_address,
                                                  std::uint8_t width_bytes,
@@ -204,6 +213,17 @@ class CoreScheduler {
                                   const CoreSchedulerStepResult& step,
                                   std::uint32_t extra_refill_cycles = 0);
   void reset_fetch_timing_sequence();
+  // Fast path shared by the duplicate simple-instruction blocks inside
+  // step_arm_from_pc: executes the instruction, advances devices, and
+  // services an auto-IRQ when the PC stayed sequential.
+  [[nodiscard]] CoreSchedulerStepResult step_simple_arm_fast_path(
+      std::uint32_t instruction, std::uint32_t fetch_address);
+  // Distance in cycles until the next interrupt source covered by `mask`
+  // could newly assert, so IntrWait can advance devices in coarse batches
+  // without overshooting a wake edge. Always >= 1.
+  [[nodiscard]] std::uint32_t intr_wait_batch_cycles(std::uint16_t mask) const;
+  [[nodiscard]] std::uint32_t intr_wait_timer_horizon_cycles(std::uint16_t mask) const;
+  [[nodiscard]] std::uint32_t intr_wait_ppu_horizon_cycles(std::uint16_t mask) const;
   void update_auto_irq_latency(std::uint32_t elapsed_cycles);
   [[nodiscard]] bool auto_irq_ready() const;
   void reset_auto_irq_latency();
@@ -219,7 +239,10 @@ class CoreScheduler {
   [[nodiscard]] ArmStepResult execute_hle_swi(BiosSwiCall call,
                                               std::uint32_t fetch_address);
   [[nodiscard]] bool wait_for_interrupt_mask(std::uint16_t mask, bool discard_old_flags);
-  [[nodiscard]] bool hle_cpu_set(bool fast);
+  // Returns nullopt on failure, otherwise the device cycles already consumed
+  // by chunked advancement during the copy (deducted from the SWI's charged
+  // cycles to preserve final-cycle totals).
+  [[nodiscard]] std::optional<std::uint32_t> hle_cpu_set(bool fast);
   [[nodiscard]] bool hle_lz77_decompress_from_source(std::uint32_t source,
                                                      std::vector<std::uint8_t>& output);
   [[nodiscard]] bool hle_rle_decompress_from_source(std::uint8_t expected_type,

@@ -3,11 +3,11 @@
 namespace gba::core {
 namespace {
 
-[[nodiscard]] std::uint16_t map_width_tiles(const BgControl& control) {
+[[nodiscard]] std::uint16_t text_map_width_tiles(const BgControl& control) {
   return (control.screen_size & 0x1U) != 0 ? 64 : 32;
 }
 
-[[nodiscard]] std::uint16_t map_height_tiles(const BgControl& control) {
+[[nodiscard]] std::uint16_t text_map_height_tiles(const BgControl& control) {
   return (control.screen_size & 0x2U) != 0 ? 64 : 32;
 }
 
@@ -29,7 +29,7 @@ namespace {
   const std::uint8_t block_x = static_cast<std::uint8_t>(tile_x / 32U);
   const std::uint8_t block_y = static_cast<std::uint8_t>(tile_y / 32U);
   const std::uint8_t block_offset =
-      map_width_tiles(control) == 64
+      text_map_width_tiles(control) == 64
           ? static_cast<std::uint8_t>(block_x + (block_y * 2U))
           : block_y;
   return static_cast<std::uint8_t>((control.screenblock + block_offset) & 0x1FU);
@@ -48,19 +48,32 @@ BgControl PpuBackgroundFetcher::decode_control(std::uint16_t control) {
   };
 }
 
+std::uint16_t PpuBackgroundFetcher::text_width_pixels(const BgControl& control) {
+  return static_cast<std::uint16_t>(text_map_width_tiles(control) * kTilePixels);
+}
+
+std::uint16_t PpuBackgroundFetcher::text_height_pixels(const BgControl& control) {
+  return static_cast<std::uint16_t>(text_map_height_tiles(control) * kTilePixels);
+}
+
 std::uint16_t PpuBackgroundFetcher::width_pixels(const BgControl& control) {
-  return static_cast<std::uint16_t>(map_width_tiles(control) * kTilePixels);
+  return text_width_pixels(control);
 }
 
 std::uint16_t PpuBackgroundFetcher::height_pixels(const BgControl& control) {
-  return static_cast<std::uint16_t>(map_height_tiles(control) * kTilePixels);
+  return text_height_pixels(control);
+}
+
+// GBATEK affine BG screen sizes: entries 128/256/512/1024 px for size 0-3.
+std::uint32_t PpuBackgroundFetcher::affine_map_pixels(const BgControl& control) {
+  return 128U << (control.screen_size & 0x3U);
 }
 
 std::optional<BgPixel> PpuBackgroundFetcher::fetch_text_pixel(
     const MemoryBus& memory, const BgControl& control, std::uint16_t x,
     std::uint16_t y) {
-  const std::uint16_t wrapped_x = x % width_pixels(control);
-  const std::uint16_t wrapped_y = y % height_pixels(control);
+  const std::uint16_t wrapped_x = x % text_width_pixels(control);
+  const std::uint16_t wrapped_y = y % text_height_pixels(control);
   const std::uint16_t tile_x = wrapped_x / kTilePixels;
   const std::uint16_t tile_y = wrapped_y / kTilePixels;
   const std::uint8_t local_x = static_cast<std::uint8_t>(wrapped_x % kTilePixels);
@@ -108,6 +121,54 @@ std::optional<BgPixel> PpuBackgroundFetcher::fetch_text_pixel(
 
   return BgPixel{entry, tile_id, palette_bank, color_index, color.value(),
                  color_index == 0, hflip, vflip};
+}
+
+// GBATEK affine fetch: 1-byte map entries hold 8-bit tile indices, tiles are
+// 64-byte 8bpp cells, and the whole map lives in one screenblock region.
+std::optional<AffinePixel> PpuBackgroundFetcher::fetch_affine_pixel(
+    const MemoryBus& memory, const BgControl& control, std::int32_t tex_x,
+    std::int32_t tex_y) {
+  const std::uint32_t map_pixels = affine_map_pixels(control);
+  const std::uint32_t map_tiles = map_pixels / kTilePixels;
+  const bool wraparound = (control.raw & 0x2000U) != 0;
+  const bool outside = tex_x < 0 || tex_y < 0 ||
+                       tex_x >= static_cast<std::int32_t>(map_pixels) ||
+                       tex_y >= static_cast<std::int32_t>(map_pixels);
+  if (outside && !wraparound) {
+    return AffinePixel{0, 0, 0, true};
+  }
+  // Power-of-two masks keep negative wrapped coordinates positive.
+  const std::uint32_t masked_x =
+      static_cast<std::uint32_t>(tex_x) & (map_pixels - 1U);
+  const std::uint32_t masked_y =
+      static_cast<std::uint32_t>(tex_y) & (map_pixels - 1U);
+  const std::uint32_t tile_index_address = screenblock_base(control.screenblock) +
+                                           (masked_y / kTilePixels) * map_tiles +
+                                           masked_x / kTilePixels;
+  const std::optional<std::uint8_t> tile_index = memory.read8(tile_index_address);
+  if (!tile_index.has_value()) {
+    return std::nullopt;
+  }
+  const std::uint8_t in_tile_x =
+      static_cast<std::uint8_t>(masked_x % kTilePixels);
+  const std::uint8_t in_tile_y =
+      static_cast<std::uint8_t>(masked_y % kTilePixels);
+  const std::uint32_t pixel_address =
+      charblock_base(control.charblock) +
+      static_cast<std::uint32_t>(tile_index.value()) * 64U + in_tile_y * 8U +
+      in_tile_x;
+  const std::optional<std::uint8_t> packed_pixel = memory.read8(pixel_address);
+  if (!packed_pixel.has_value()) {
+    return std::nullopt;
+  }
+  const std::uint8_t color_index = packed_pixel.value();
+  const std::optional<std::uint16_t> color =
+      memory.read16(kPaletteBase + static_cast<std::uint32_t>(color_index) * 2U);
+  if (!color.has_value()) {
+    return std::nullopt;
+  }
+  return AffinePixel{tile_index.value(), color_index, color.value(),
+                     color_index == 0};
 }
 
 }  // namespace gba::core

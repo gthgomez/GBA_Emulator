@@ -1,5 +1,11 @@
 # Default -Suites matches tools/mgba-suite-green-baseline.json (not video_oracle_alias rows).
 # Video-only runs with -FailOnRegression falsely report REGRESSION: baseline targets are MISSING.
+#
+# SINGLE-WRITER ASSUMPTION: this script overwrites the shared
+# build\test-results\credibility-matrix-latest.json / .md artifacts on every
+# run (timestamped per-run files are unique, "latest" copies are not).
+# Concurrent runs clobber each other's "latest" artifacts; serialize runs or
+# pass a distinct -OutputDir per process.
 param(
   [string[]]$Suites = @(
     "memory", "loadstore", "io-read", "bios-math", "dma", "shifter", "carry",
@@ -15,6 +21,9 @@ param(
   [string]$BaselinePath = "",
   [string]$OutputDir = ""
 )
+
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true

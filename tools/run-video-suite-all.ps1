@@ -1,7 +1,14 @@
+# SINGLE-WRITER ASSUMPTION: this script overwrites the shared
+# build\test-results\video-suite-all-latest.json artifact on every run.
+# Concurrent runs (same machine or shared checkout) clobber each other's
+# summary; serialize runs or archive per-run copies externally.
 param(
     [uint32]$MaxSteps = 20000000,
     [switch]$FailOnRed
 )
+
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true

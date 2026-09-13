@@ -7,26 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
-  return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
-}
-
-void put_rom_halfword(std::vector<std::uint8_t>& rom, std::size_t offset,
-                      std::uint16_t value) {
-  rom.at(offset) = static_cast<std::uint8_t>(value & 0xFFU);
-  rom.at(offset + 1) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::Arm7tdmi;
@@ -78,7 +59,7 @@ int main() {
     session->dma().write_control(0, 0xA000U);
     expect(session->dma().enabled(0), "DMA0 enabled for HBlank");
 
-    const std::uint32_t pre_hblank = PpuTiming::kVisibleCycles - 1;
+    const std::uint32_t pre_hblank = PpuTiming::kHblankFlagCycles - 1;
     [[maybe_unused]] const CoreDeviceTickResult pre =
         session->scheduler().advance_devices(pre_hblank);
     expect(session->timers().counter(0) == static_cast<std::uint16_t>(pre_hblank),
@@ -221,7 +202,7 @@ int main() {
     session->dma().write_word_count(0, 1);
     session->dma().write_control(0, 0xA000U);
 
-    const std::uint32_t pre_hblank = PpuTiming::kVisibleCycles - 1;
+    const std::uint32_t pre_hblank = PpuTiming::kHblankFlagCycles - 1;
     [[maybe_unused]] const CoreDeviceTickResult pre =
         session->scheduler().advance_devices(pre_hblank);
 

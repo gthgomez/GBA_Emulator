@@ -4,6 +4,13 @@ param(
   [string]$OutputDir = ""
 )
 
+# SINGLE-WRITER ASSUMPTION: the default output dir receives
+# core-performance-latest.json / .csv copies that every run overwrites.
+# Concurrent runs clobber each other's "latest" artifacts; serialize runs or
+# pass a distinct -OutputDir per process.
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 

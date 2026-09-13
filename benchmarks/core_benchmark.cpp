@@ -256,7 +256,8 @@ std::uint64_t benchmark_ppu_fetchers() {
     const std::optional<gba::core::SpritePixel> obj_pixel =
         gba::core::PpuSpriteFetcher::fetch_sprite_pixel(
             memory, sprite.value(), static_cast<std::uint8_t>(i & 0x7U),
-            static_cast<std::uint8_t>((i >> 3U) & 0x7U));
+            static_cast<std::uint8_t>((i >> 3U) & 0x7U),
+            /*character_mapping_1d=*/true);
     require(bg_pixel.has_value() && obj_pixel.has_value(), "PPU fetch failed");
     checksum += bg_pixel->color + obj_pixel->color + bg_pixel->color_index +
                 obj_pixel->color_index;

@@ -14,16 +14,25 @@ class Timers {
   static constexpr std::size_t kTimerCount = 4;
 
   struct TickResult {
-    std::optional<std::uint32_t> first_irq_cycle;
+    // Cycle of the first timer IRQ, RELATIVE to the start of this tick()
+    // call. Callers offset it by their own window base. Stored as u64 so
+    // ordering survives scheduler cycle counters beyond 2^32.
+    std::optional<std::uint64_t> first_irq_cycle;
   };
 
   struct TimerState {
     std::uint16_t counter = 0;
     std::uint16_t reload = 0;
     std::uint16_t control = 0;
+    // DEPRECATED (dead field): always zero; prescaler phase is derived from
+    // cycle_counter. Kept only because SaveStateCodec's wire format
+    // serializes it field-by-field; removal needs a codec format bump.
     std::uint64_t prescaler_remainder = 0;
     std::uint64_t overflow_count = 0;
     std::uint32_t enable_delay_cycles = 0;
+    // DEPRECATED (legacy diagnostic): core_scheduler phase heuristics still
+    // read this via Timers::last_enable_phase(); removal requires updating
+    // those consumers first.
     std::uint16_t last_enable_phase = 0;
     bool just_enabled = false;
   };
@@ -62,10 +71,15 @@ class Timers {
     std::uint16_t counter;
     std::uint16_t reload;
     std::uint16_t control;
-    std::uint64_t prescaler_remainder;
     std::uint64_t overflow_count;
     std::uint32_t enable_delay_cycles;
+    // DEPRECATED (legacy diagnostic): core_scheduler phase heuristics still
+    // read this via Timers::last_enable_phase(); removal requires updating
+    // those consumers first.
     std::uint16_t last_enable_phase;
+    // Absolute cycle at which the timer was enabled; anchors the cascade
+    // enable-delay suppression window (see handle_overflow).
+    std::uint64_t enabled_at_cycle;
     bool just_enabled;
   };
 
@@ -76,10 +90,10 @@ class Timers {
   [[nodiscard]] const Timer& checked_timer(std::size_t index) const;
   void increment_timer(std::size_t index, std::uint64_t ticks,
                        InterruptController& interrupts, TickResult& result,
-                       std::uint32_t first_tick_cycle,
+                       std::uint64_t first_tick_cycle,
                        std::uint32_t tick_stride);
   void handle_overflow(std::size_t index, InterruptController& interrupts,
-                       TickResult& result, std::uint32_t cycle);
+                       TickResult& result, std::uint64_t cycle);
 };
 
 }  // namespace gba::core

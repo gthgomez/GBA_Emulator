@@ -51,7 +51,7 @@ GbaEmulatorAndroid/
 | `nativeReset` | `gba_android_core_reset` |
 | `nativeLoadRom` | `gba_android_core_load_rom` |
 | `nativeRun` → `LongArray[4]` | `gba_android_core_run` |
-| `nativeStateHash` | `gba_android_core_state_hash` |
+| `nativeStateHash` → writes `LongArray[1]` | `gba_android_core_state_hash(void*, uint64_t*)` — returns `AndroidBridgeStatus`, so the JNI shim must check the status instead of treating `0` as failure |
 
 ### Runtime (`GbaRuntimeBridge`)
 

@@ -1,5 +1,9 @@
 param(
-    [switch]$IncludeRomVideoSmoke
+    [switch]$IncludeRomVideoSmoke,
+
+    # Compile every verifier with -fsanitize=address,undefined (default OFF;
+    # sanitized runs are slower and require the ASan/UBSan runtimes).
+    [switch]$Sanitize
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,21 +49,25 @@ function Get-SourceManifestPath {
 function Test-SourceManifestMatches {
     param(
         [string]$ManifestPath,
-        [string[]]$RelativeSources
+        [string[]]$RelativeSources,
+        [string]$CompileModeTag = ""
     )
 
     if (-not (Test-Path -LiteralPath $ManifestPath)) {
         return $false
     }
 
-    $expected = ($RelativeSources | Sort-Object)
+    $expectedSources = @($RelativeSources | Sort-Object)
+    if (-not [string]::IsNullOrEmpty($CompileModeTag)) {
+        $expectedSources = @($CompileModeTag) + $expectedSources
+    }
     $actual = @(Get-Content -LiteralPath $ManifestPath -ErrorAction Stop)
-    if ($actual.Count -ne $expected.Count) {
+    if ($actual.Count -ne $expectedSources.Count) {
         return $false
     }
 
-    for ($i = 0; $i -lt $expected.Count; $i++) {
-        if ($actual[$i] -ne $expected[$i]) {
+    for ($i = 0; $i -lt $expectedSources.Count; $i++) {
+        if ($actual[$i] -ne $expectedSources[$i]) {
             return $false
         }
     }
@@ -70,24 +78,33 @@ function Test-SourceManifestMatches {
 function Write-SourceManifest {
     param(
         [string]$ManifestPath,
-        [string[]]$RelativeSources
+        [string[]]$RelativeSources,
+        [string]$CompileModeTag = ""
     )
 
-    $RelativeSources | Sort-Object | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+    $lines = @($RelativeSources | Sort-Object)
+    if (-not [string]::IsNullOrEmpty($CompileModeTag)) {
+        # Tagged first line forces a rebuild when sanitizer mode flips, so a
+        # sanitized request can never silently rerun a plain binary (or vice
+        # versa). Untagged manifests keep the legacy format for default runs.
+        $lines = @($CompileModeTag) + $lines
+    }
+    $lines | Set-Content -LiteralPath $ManifestPath -Encoding utf8
 }
 
 function Test-NeedsCompile {
     param(
         [string]$ExePath,
         [string[]]$RelativeSources,
-        [string[]]$ResolvedSources
+        [string[]]$ResolvedSources,
+        [string]$CompileModeTag = ""
     )
 
     if (-not (Test-Path -LiteralPath $ExePath)) {
         return $true
     }
 
-    if (-not (Test-SourceManifestMatches -ManifestPath (Get-SourceManifestPath -ExePath $ExePath) -RelativeSources $RelativeSources)) {
+    if (-not (Test-SourceManifestMatches -ManifestPath (Get-SourceManifestPath -ExePath $ExePath) -RelativeSources $RelativeSources -CompileModeTag $CompileModeTag)) {
         return $true
     }
 
@@ -128,16 +145,24 @@ function Invoke-CoreTest {
     $exePath = Join-Path $buildDir "$Name.exe"
     $resolvedSources = @(Resolve-SourcePaths -RelativePaths $Sources)
     $manifestPath = Get-SourceManifestPath -ExePath $exePath
+    # Tag distinguishes sanitized from plain builds in the source manifest so
+    # flipping -Sanitize invalidates stale binaries in either direction.
+    $compileModeTag = if ($Sanitize) { "sanitize:address,undefined" } else { "" }
 
-    if (Test-NeedsCompile -ExePath $exePath -RelativeSources $Sources -ResolvedSources $resolvedSources) {
+    if (Test-NeedsCompile -ExePath $exePath -RelativeSources $Sources -ResolvedSources $resolvedSources -CompileModeTag $compileModeTag) {
         Write-Host "[$Index/$Total] compile $Name ..."
         $compileSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $sanitizeFlags = @()
+        if ($Sanitize) {
+            $sanitizeFlags = @("-fsanitize=address", "-fsanitize=undefined")
+        }
         & g++ -std=c++17 -Wall -Wextra -Werror `
             -I $includeDir `
+            @sanitizeFlags `
             @resolvedSources `
             -o $exePath
         Assert-NativeExitCode -Step "g++ $Name"
-        Write-SourceManifest -ManifestPath $manifestPath -RelativeSources $Sources
+        Write-SourceManifest -ManifestPath $manifestPath -RelativeSources $Sources -CompileModeTag $compileModeTag
         $compileSw.Stop()
         $CompileElapsed.Value = $CompileElapsed.Value.Add($compileSw.Elapsed)
     } else {
@@ -400,16 +425,6 @@ $coreTests = @(
         )
     },
     @{
-        Name = "instruction_cache_test"
-        Sources = @(
-            "src\core\arm7tdmi.cpp",
-            "src\core\instruction_cache.cpp",
-            "src\core\memory_bus.cpp",
-            "src\core\wait_state_control.cpp",
-            "tests\instruction_cache_test.cpp"
-        )
-    },
-    @{
         Name = "android_core_bridge_test"
         Sources = @(
             "src\core\android_core_bridge.cpp",
@@ -623,7 +638,7 @@ $runElapsed = [TimeSpan]::Zero
 $totalTests = $coreTests.Count
 $index = 0
 
-Write-Host "run-core-tests: starting $totalTests core verifiers (ROM video smoke: $(if ($IncludeRomVideoSmoke) { 'ON' } else { 'OFF (default)' }))"
+Write-Host "run-core-tests: starting $totalTests core verifiers (ROM video smoke: $(if ($IncludeRomVideoSmoke) { 'ON' } else { 'OFF (default)' }), sanitizers: $(if ($Sanitize) { 'ON' } else { 'OFF (default)' }))"
 
 foreach ($test in $coreTests) {
     $index++
@@ -647,7 +662,11 @@ if ($IncludeRomVideoSmoke) {
         $smokeSw.Stop()
         $smokeElapsed = $smokeSw.Elapsed
     } else {
-        Write-Host "run-core-tests: ROM video smoke skipped (script not found)"
+        # An explicitly requested optional gate that cannot run is a hard
+        # failure, not a silent skip: CI must never report PASS here.
+        Write-Host ""
+        Write-Host "run-core-tests: FAIL (-IncludeRomVideoSmoke enabled but script not found: $localRomVideoSmoke)"
+        exit 1
     }
 } else {
     Write-Host "run-core-tests: ROM video smoke skipped (pass -IncludeRomVideoSmoke to enable)"

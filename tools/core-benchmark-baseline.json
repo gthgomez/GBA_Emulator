@@ -23,7 +23,8 @@
     "Timing/timers stabilization updates core_session_state_hash checksum after scheduler state began tracking the paced HLE IRQ spaced-data service count used by the mGBA timer and timing suites.",
     "SIO timing stabilization updates core_session_state_hash checksum because serial transfer active state and remaining cycles are now part of modeled deterministic core-session state.",
     "Misc-edge closure updates core_session_state_hash checksum after DMA/open-bus, PPU HBlank, and BIOS HLE timing corrections changed deterministic modeled state; scheduler_dispatch_thumb_add ceiling is widened slightly after hot-path cleanup kept the local post-fix median around 125-131 ns/op.",
-    "Jun 2026 milestone pass: widened scheduler_fetch_loop_arm_add_branch (230 ns/op) and cpu_waitcnt_elapsed_estimate (75 ns/op) after timing-cache optimization and workstation median calibration; checksums unchanged."
+    "Jun 2026 milestone pass: widened scheduler_fetch_loop_arm_add_branch (230 ns/op) and cpu_waitcnt_elapsed_estimate (75 ns/op) after timing-cache optimization and workstation median calibration; checksums unchanged.",
+    "Review-fix wave (P0-P2 implementation): core_session_state_hash checksum updated because scheduler state now hashes last_waitcnt_control and thumb_misfetch_recovery_count, and CPU/PPU/APU/DMA/memory hash coverage expanded with banked-register, affine-render, wave-bank, DMA-latch, and flash-FSM state from the code-review remediation."
   ],
   "rows": [
     {
@@ -113,7 +114,7 @@
     {
       "benchmark": "core_session_state_hash",
       "expected_operations": 10000,
-      "expected_checksum": "17136",
+      "expected_checksum": "27136",
       "baseline_ns_per_operation": 419608.05,
       "max_ns_per_operation": 950000.0
     }

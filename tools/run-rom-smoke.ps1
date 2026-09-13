@@ -15,6 +15,9 @@ param(
     [string]$ArtifactPath = ""
 )
 
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
@@ -50,7 +53,26 @@ $compileArgs = @(
     "-o", $exePath
 )
 
+function Assert-NativeExitCode {
+    param(
+        [string]$Step,
+        [int]$Expected = 0
+    )
+
+    if ($LASTEXITCODE -ne $Expected) {
+        Write-Host ""
+        Write-Host "rom_smoke: FAIL ($Step exited with $LASTEXITCODE)"
+        if ($null -eq $LASTEXITCODE) {
+            exit 1
+        }
+        exit $LASTEXITCODE
+    }
+}
+
 & g++ @compileArgs
+
+# A failed compile must never fall through to rerun a stale smoke binary.
+Assert-NativeExitCode -Step "g++ rom_smoke"
 
 $runArgs = @(
     "--rom", $resolvedRom.Path,

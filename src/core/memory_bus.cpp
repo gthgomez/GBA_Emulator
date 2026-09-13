@@ -30,7 +30,13 @@ constexpr std::uint32_t kGamePakRomWait1Start = 0x0A000000;
 constexpr std::uint32_t kGamePakRomWait1End = 0x0BFFFFFF;
 constexpr std::uint32_t kGamePakRomWait2Start = 0x0C000000;
 constexpr std::uint32_t kGamePakRomWait2End = 0x0DFFFFFF;
-constexpr std::uint32_t kGamePakEepromLargeRomStart = 0x0DFFFF00;
+// Widened EEPROM candidacy window: every ROM-bus access at or above
+// 0x0D000000 is treated as a potential 1-bit serial EEPROM transfer. Real
+// cartridges place the EEPROM anywhere in the upper ROM mirror; games pick
+// addresses in this range so candidacy must not depend on a narrow tail
+// window. Purely metadata: ordinary ROM data reads/writes below and inside
+// the window keep using the parallel ROM path.
+constexpr std::uint32_t kGamePakEepromLargeRomStart = 0x0D000000;
 constexpr std::uint32_t kGamePakSaveStart = 0x0E000000;
 constexpr std::uint32_t kGamePakSaveEnd = 0x0FFFFFFF;
 constexpr std::uint32_t kMgbaDebugEnable = 0x04FFF780;
@@ -670,6 +676,7 @@ bool MemoryBus::configure_game_pak_save(GamePakSaveType type) {
 
   game_pak_save_type_ = type;
   game_pak_save_.assign(size, 0xFF);
+  flash_bank_ = 0;
   reset_flash_protocol();
   return true;
 }
@@ -677,6 +684,7 @@ bool MemoryBus::configure_game_pak_save(GamePakSaveType type) {
 void MemoryBus::clear_game_pak_save() {
   game_pak_save_.clear();
   game_pak_save_type_ = GamePakSaveType::none;
+  flash_bank_ = 0;
   reset_flash_protocol();
 }
 
@@ -736,6 +744,7 @@ bool MemoryBus::import_game_pak_save(GamePakSaveType type,
 
   game_pak_save_type_ = type;
   game_pak_save_ = data;
+  flash_bank_ = 0;
   reset_flash_protocol();
   return true;
 }
@@ -789,6 +798,70 @@ std::uint64_t MemoryBus::state_hash() const {
   return hasher.value();
 }
 
+MemoryBus::State MemoryBus::save_state() const {
+  State state;
+  state.ewram = ewram_;
+  state.iwram = iwram_;
+  state.palette = palette_;
+  state.vram = vram_;
+  state.oam = oam_;
+  state.game_pak_rom = game_pak_rom_;
+  state.game_pak_save = game_pak_save_;
+  state.game_pak_save_type = game_pak_save_type_;
+  state.flash_command_state = flash_command_state_;
+  state.flash_id_mode = flash_id_mode_;
+  state.flash_bank = flash_bank_;
+  state.open_bus_latch = open_bus_latch_;
+  state.open_bus_latch_valid = open_bus_latch_valid_;
+  state.mgba_debug_string = mgba_debug_string_;
+  state.debug_output = debug_output_;
+  return state;
+}
+
+bool MemoryBus::load_state(const State& state) {
+  const std::size_t expected_save_size =
+      state.game_pak_save_type == GamePakSaveType::none
+          ? 0U
+          : save_size_for_type(state.game_pak_save_type);
+  if (expected_save_size != 0 && state.game_pak_save.size() != expected_save_size) {
+    return false;
+  }
+  if (state.game_pak_save_type == GamePakSaveType::none &&
+      !state.game_pak_save.empty()) {
+    return false;
+  }
+  if (static_cast<std::uint8_t>(state.flash_command_state) >
+      static_cast<std::uint8_t>(FlashCommandState::bank_select)) {
+    return false;
+  }
+  if (state.flash_bank > 1U ||
+      (state.flash_bank != 0U &&
+       state.game_pak_save_type != GamePakSaveType::flash128k)) {
+    return false;
+  }
+  if (!state.game_pak_rom.empty() &&
+      state.game_pak_rom.size() > kGamePakRomWindowSize) {
+    return false;
+  }
+
+  ewram_ = state.ewram;
+  iwram_ = state.iwram;
+  palette_ = state.palette;
+  vram_ = state.vram;
+  oam_ = state.oam;
+  game_pak_rom_ = state.game_pak_rom;
+  game_pak_save_ = state.game_pak_save;
+  game_pak_save_type_ = state.game_pak_save_type;
+  flash_command_state_ = state.flash_command_state;
+  flash_id_mode_ = state.flash_id_mode;
+  flash_bank_ = state.flash_bank;
+  open_bus_latch_ = state.open_bus_latch;
+  open_bus_latch_valid_ = state.open_bus_latch_valid;
+  mgba_debug_string_ = state.mgba_debug_string;
+  debug_output_ = state.debug_output;
+  return true;
+}
+
 bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
   if (write_debug8(address, value)) {
     return true;
@@ -805,12 +878,25 @@ bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
     return has_game_pak_rom();
   }
   if (info.region == Region::io && io_callbacks_.write16 != nullptr) {
+    // Byte stores to IO must preserve the sibling byte of the addressed
+    // halfword register. Read the current halfword back through the IO
+    // facade and merge the stored value into the addressed lane (low byte
+    // for even addresses, high lane for odd addresses). Read-only or
+    // unmodeled registers reject the resulting write16, so they stay
+    // untouched.
     const std::uint32_t aligned = address & ~0x1U;
-    const std::uint16_t lane =
-        (address & 0x1U) != 0 ? static_cast<std::uint16_t>(static_cast<std::uint16_t>(value) << 8U)
-                               : static_cast<std::uint16_t>(value);
+    std::uint16_t merged = 0;
+    if (io_callbacks_.read16 != nullptr) {
+      merged = io_callbacks_.read16(io_callbacks_.context, aligned).value_or(0);
+    }
+    if ((address & 0x1U) != 0) {
+      merged = static_cast<std::uint16_t>(
+          (merged & 0x00FFU) | (static_cast<std::uint16_t>(value) << 8U));
+    } else {
+      merged = static_cast<std::uint16_t>((merged & 0xFF00U) | value);
+    }
     [[maybe_unused]] const bool handled =
-        io_callbacks_.write16(io_callbacks_.context, aligned, lane);
+        io_callbacks_.write16(io_callbacks_.context, aligned, merged);
     return true;
   }
 
@@ -872,17 +958,18 @@ bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
         io_callbacks_.write16(io_callbacks_.context, aligned, rotated);
     return true;
   }
+  // Chosen unaligned-halfword semantics (deterministic): an odd-address
+  // halfword store splits into two byte stores at the addressed lanes. This
+  // mirrors the byte-lane symmetry of reads and inherits each region's
+  // byte-store rules (palette/VRAM halfword duplication, OAM/BIOS
+  // rejection, ROM/SRAM ignored or protocol writes). IO addresses never
+  // reach here: they are handled above via the facade for any alignment.
   if ((address % 2) != 0) {
-    return false;
+    return write8(address, static_cast<std::uint8_t>(value & 0xFFU)) &&
+           write8(address + 1U, static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
   }
   if (info.region == Region::unknown) {
     return true;
-  }
-  if (info.region == Region::game_pak_save) {
-    return write_game_pak_save_byte(info.offset, static_cast<std::uint8_t>(value & 0xFFU));
-  }
-  if (info.region == Region::game_pak_rom) {
-    return has_game_pak_rom() && describe(address + 1).region == Region::game_pak_rom;
   }
 
   const AddressInfo b0 = describe(address);
@@ -934,19 +1021,22 @@ bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
         io_callbacks_.write32(io_callbacks_.context, aligned, rotated);
     return true;
   }
+  // Chosen unaligned-word semantics (deterministic): a word store whose
+  // address is not 4-byte aligned splits into four byte stores at the
+  // addressed lanes, so each stored byte lands in the lane a byte/halfword/
+  // word read of the same address would fetch it back from. Region-specific
+  // byte-store rules apply unchanged (palette/VRAM duplication, OAM/BIOS
+  // rejection). ROM and SRAM save writes are handled above as accepted
+  // ignored/protocol writes for any alignment; IO addresses are handled
+  // above via the facade rotation path.
   if ((address % 4) != 0) {
-    return false;
+    return write8(address, static_cast<std::uint8_t>(value & 0xFFU)) &&
+           write8(address + 1U, static_cast<std::uint8_t>((value >> 8U) & 0xFFU)) &&
+           write8(address + 2U, static_cast<std::uint8_t>((value >> 16U) & 0xFFU)) &&
+           write8(address + 3U, static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
   }
   if (info.region == Region::unknown) {
     return true;
-  }
-  if (info.region == Region::game_pak_save) {
-    return write_game_pak_save_byte(info.offset, static_cast<std::uint8_t>(value & 0xFFU));
-  }
-  if (info.region == Region::game_pak_rom) {
-    return has_game_pak_rom() && describe(address + 1).region == Region::game_pak_rom &&
-           describe(address + 2).region == Region::game_pak_rom &&
-           describe(address + 3).region == Region::game_pak_rom;
   }
 
   const AddressInfo b0 = describe(address);
@@ -1115,8 +1205,11 @@ bool MemoryBus::write_flash_byte(std::uint32_t aperture_offset, std::uint8_t val
 
   const std::uint32_t command_offset = aperture_offset % kFlashBankSize;
   if (flash_command_state_ == FlashCommandState::idle && value == 0xF0) {
+    // Terminate self-timing command sequences / leave product-ID mode. Real
+    // flash chips sample 0xF0 without address decoding, so any offset in the
+    // save aperture is accepted while idle.
     reset_flash_protocol();
-    return command_offset == kFlashUnlockAddress1 || command_offset == kFlashBankSelectAddress;
+    return true;
   }
 
   switch (flash_command_state_) {
@@ -1206,10 +1299,6 @@ bool MemoryBus::write_flash_byte(std::uint32_t aperture_offset, std::uint8_t val
       }
       reset_flash_protocol();
       return false;
-    case FlashCommandState::erase_confirm_unlock1:
-    case FlashCommandState::erase_confirm_unlock2:
-      reset_flash_protocol();
-      return false;
   }
   reset_flash_protocol();
   return false;
@@ -1290,9 +1379,12 @@ void MemoryBus::flush_mgba_debug_string(std::uint16_t flags) {
 }
 
 void MemoryBus::reset_flash_protocol() {
+  // Clears command/ID protocol state only. Bank selection survives: exiting
+  // ID mode or aborting a sequence must not collapse a flash128k back to
+  // bank 0 (the bank register is only reset when the save backing itself is
+  // replaced or cleared).
   flash_command_state_ = FlashCommandState::idle;
   flash_id_mode_ = false;
-  flash_bank_ = 0;
 }
 
 }  // namespace gba::core

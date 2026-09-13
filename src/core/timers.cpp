@@ -45,10 +45,10 @@ void Timers::reset() {
     timer.counter = 0;
     timer.reload = 0;
     timer.control = 0;
-    timer.prescaler_remainder = 0;
     timer.overflow_count = 0;
     timer.enable_delay_cycles = 0;
     timer.last_enable_phase = 0;
+    timer.enabled_at_cycle = 0;
     timer.just_enabled = false;
   }
 }
@@ -69,17 +69,17 @@ void Timers::write_control(std::size_t index, std::uint16_t value) {
   const bool is_enabled = (timer.control & kEnableFlag) != 0;
   if (!was_enabled && is_enabled) {
     timer.counter = timer.reload;
-    timer.prescaler_remainder = 0;
     timer.enable_delay_cycles = 0;
     const std::uint16_t divisor = divisor_for_control(timer.control);
     timer.last_enable_phase =
         static_cast<std::uint16_t>(cycle_counter_ % divisor);
+    timer.enabled_at_cycle = cycle_counter_;
     timer.just_enabled = true;
   }
   if (!is_enabled) {
-    timer.prescaler_remainder = 0;
     timer.enable_delay_cycles = 0;
     timer.last_enable_phase = 0;
+    timer.enabled_at_cycle = 0;
     timer.just_enabled = false;
   }
 }
@@ -136,9 +136,15 @@ Timers::TickResult Timers::tick(std::uint32_t cycles,
 
     const std::uint64_t ticks =
         ((end_cycle - first_tick_cycle) / divisor) + 1U;
-    increment_timer(index, ticks, interrupts, result,
-                    static_cast<std::uint32_t>(first_tick_cycle - start_cycle),
+    increment_timer(index, ticks, interrupts, result, first_tick_cycle,
                     divisor);
+  }
+
+  // TickResult::first_irq_cycle is relative to this tick() window; the
+  // increment/overflow machinery above tracks it in absolute cycles so
+  // ordering survives cycle counters beyond 2^32.
+  if (result.first_irq_cycle.has_value()) {
+    result.first_irq_cycle = result.first_irq_cycle.value() - start_cycle;
   }
   return result;
 }
@@ -152,7 +158,7 @@ Timers::State Timers::save_state() const {
     timer_state.counter = timer.counter;
     timer_state.reload = timer.reload;
     timer_state.control = timer.control;
-    timer_state.prescaler_remainder = timer.prescaler_remainder;
+    timer_state.prescaler_remainder = 0;
     timer_state.overflow_count = timer.overflow_count;
     timer_state.enable_delay_cycles = timer.enable_delay_cycles;
     timer_state.last_enable_phase = timer.last_enable_phase;
@@ -189,10 +195,15 @@ bool Timers::load_state(const State& state) {
     timer.counter = timer_state.counter;
     timer.reload = timer_state.reload;
     timer.control = timer_state.control;
-    timer.prescaler_remainder = timer_state.prescaler_remainder;
+    // prescaler_remainder is a dead wire-format field and is ignored here.
     timer.overflow_count = timer_state.overflow_count;
     timer.enable_delay_cycles = timer_state.enable_delay_cycles;
     timer.last_enable_phase = timer_state.last_enable_phase;
+    // The cascade enable-delay window is anchored to the restored cycle, which
+    // is exact whenever enable_delay_cycles is still pending (a deferred
+    // enable can only survive zero-cycle ticks).
+    timer.enabled_at_cycle =
+        (timer_state.control & kEnableFlag) != 0 ? state.cycle_counter : 0;
     timer.just_enabled = timer_state.just_enabled;
   }
   return true;
@@ -252,10 +263,12 @@ std::uint64_t Timers::state_hash() const {
     hasher.add_u16(timer.counter);
     hasher.add_u16(timer.reload);
     hasher.add_u16(timer.control);
-    hasher.add_u64(timer.prescaler_remainder);
     hasher.add_u64(timer.overflow_count);
     hasher.add_u32(timer.enable_delay_cycles);
     hasher.add_u16(timer.last_enable_phase);
+    // enabled_at_cycle is intentionally not hashed: it is reconstructed from
+    // cycle_counter_/control on load_state, so it adds no distinguishing
+    // information for reachable states.
     hasher.add_bool(timer.just_enabled);
   }
   return hasher.value();
@@ -277,10 +290,10 @@ const Timers::Timer& Timers::checked_timer(std::size_t index) const {
 
 void Timers::increment_timer(std::size_t index, std::uint64_t ticks,
                              InterruptController& interrupts, TickResult& result,
-                             std::uint32_t first_tick_cycle,
+                             std::uint64_t first_tick_cycle,
                              std::uint32_t tick_stride) {
   Timer& timer = checked_timer(index);
-  std::uint32_t next_tick_cycle = first_tick_cycle;
+  std::uint64_t next_tick_cycle = first_tick_cycle;
   while (ticks > 0) {
     const std::uint32_t ticks_to_overflow =
         0x10000U - static_cast<std::uint32_t>(timer.counter);
@@ -290,19 +303,18 @@ void Timers::increment_timer(std::size_t index, std::uint64_t ticks,
     }
 
     ticks -= ticks_to_overflow;
+    // Absolute-cycle arithmetic (u64) keeps overflow ordering intact even
+    // when cycle_counter_ has grown past 2^32.
     const std::uint64_t overflow_cycle =
-        static_cast<std::uint64_t>(next_tick_cycle) +
-        static_cast<std::uint64_t>(ticks_to_overflow - 1U) * tick_stride;
+        next_tick_cycle + static_cast<std::uint64_t>(ticks_to_overflow - 1U) * tick_stride;
     timer.counter = timer.reload;
-    handle_overflow(index, interrupts, result,
-                    static_cast<std::uint32_t>(overflow_cycle));
-    next_tick_cycle =
-        static_cast<std::uint32_t>(overflow_cycle + tick_stride);
+    handle_overflow(index, interrupts, result, overflow_cycle);
+    next_tick_cycle = overflow_cycle + tick_stride;
   }
 }
 
 void Timers::handle_overflow(std::size_t index, InterruptController& interrupts,
-                             TickResult& result, std::uint32_t cycle) {
+                             TickResult& result, std::uint64_t cycle) {
   Timer& timer = checked_timer(index);
   ++timer.overflow_count;
 
@@ -317,7 +329,10 @@ void Timers::handle_overflow(std::size_t index, InterruptController& interrupts,
   const std::size_t next = index + 1;
   if (next < kTimerCount && enabled(next) && count_up(next)) {
     const Timer& next_timer = checked_timer(next);
-    if (cycle <= next_timer.enable_delay_cycles) {
+    // Suppress cascade increments that land inside the destination timer's
+    // enable-delay window: both cycles are absolute, so the comparison stays
+    // valid regardless of how far into the run the enable happened.
+    if (cycle <= next_timer.enabled_at_cycle + next_timer.enable_delay_cycles) {
       return;
     }
     increment_timer(next, 1, interrupts, result, cycle, 1);

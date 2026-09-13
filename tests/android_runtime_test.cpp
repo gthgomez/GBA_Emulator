@@ -8,24 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-void write_word(std::vector<std::uint8_t>& bytes, std::size_t offset,
-                std::uint32_t value) {
-  bytes.at(offset + 0U) = static_cast<std::uint8_t>(value & 0xFFU);
-  bytes.at(offset + 1U) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-  bytes.at(offset + 2U) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
-  bytes.at(offset + 3U) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::AndroidRuntime;
@@ -65,6 +48,7 @@ int main() {
   const gba::core::AndroidRuntimeFrameResult frame =
       runtime.step_frame(kFullFrameStepBudget);
   expect(frame.status == AndroidRuntimeStatus::ok, "runtime frame succeeds");
+  expect(frame.frame_complete, "full-budget frame reports frame complete");
   expect(frame.run.executed_steps > 0, "runtime frame steps core");
   expect(frame.run.scheduler_cycles >= gba::core::PpuTiming::kCyclesPerFrame,
          "runtime frame advances scheduler by one frame budget");
@@ -83,13 +67,29 @@ int main() {
   const gba::core::AndroidRuntimeFrameResult hashed =
       runtime.step_frame(kFullFrameStepBudget);
   expect(hashed.state_hash != 0, "enabled hashing reports a real state hash");
+  expect(hashed.frame_complete, "hashed full-budget frame reports frame complete");
   runtime.set_state_hash_enabled(false);
   expect(!runtime.state_hash_enabled(), "state hashing flag restores after opt-in");
 
+  // T8, designed-silent side: with the APU master enable OFF an empty sample
+  // batch is intentional, so it must not count as an underrun.
+  runtime.session().apu().write_soundcnt_x(0x0000);
   while (runtime.session().apu().pop_audio_sample().has_value()) {
   }
-  const gba::core::AndroidRuntimeFrameResult underrun = runtime.step_frame(1);
-  expect(underrun.audio_underruns == 1, "runtime reports audio underrun when buffer empty");
+  const gba::core::AndroidRuntimeFrameResult silent = runtime.step_frame(1);
+  expect(silent.audio_samples == 0, "master-disabled frame produces no samples");
+  expect(silent.audio_underruns == 0,
+         "designed-silent frame does not count as audio underrun");
+
+  // T8, audio-expected side: identical drained-buffer frame with the master
+  // enable restored must report the underrun.
+  runtime.session().apu().write_soundcnt_x(0x0080);
+  const gba::core::AndroidRuntimeFrameResult expected_audio_underrun =
+      runtime.step_frame(1);
+  expect(expected_audio_underrun.audio_samples == 0,
+         "master-enabled drained frame produces no samples");
+  expect(expected_audio_underrun.audio_underruns == 1,
+         "audio-expected frame counts an underrun when buffer is empty");
 
   const std::uint64_t cycles_before_bounded =
       runtime.session().scheduler().scheduler_cycles();
@@ -99,6 +99,8 @@ int main() {
       cycle_bounded.run.scheduler_cycles - cycles_before_bounded;
   expect(cycle_bounded.status == AndroidRuntimeStatus::ok,
          "cycle-bounded frame keeps ok status");
+  expect(!cycle_bounded.frame_complete,
+         "cycle-bounded frame reports frame incomplete");
   expect(cycle_bounded.run.stop_reason == gba::core::CoreRunStopReason::max_steps,
          "cycle-bounded frame stops on step budget");
   expect(cycle_delta_bounded < gba::core::PpuTiming::kCyclesPerFrame,
@@ -113,12 +115,28 @@ int main() {
          "fetch failure stops frame stepping");
   expect(fetch_failed.run.attempted_steps == 0,
          "fetch failure does not count as attempted step");
+  expect(!fetch_failed.frame_complete,
+         "abnormally stopped frame reports frame incomplete");
   expect(fetch_failed.rendered_scanlines == 0,
          "fetch failure skips scanline render");
 
   expect(runtime.load_rom(rom) == AndroidRuntimeStatus::ok,
          "reload clears prior failure state");
   expect(runtime.pixel(0, 0) == 0, "reload clears framebuffer presentation");
+
+  // T18: a KEYCNT-enabled press applied through the runtime entry point must
+  // poll the keypad IRQ line immediately (previously the direct keypad mask
+  // mutation bypassed polling until some later core step).
+  runtime.session().keypad().write_keycnt(
+      static_cast<std::uint16_t>(gba::core::Keypad::kIrqEnable |
+                                 static_cast<std::uint16_t>(gba::core::KeypadButton::a)));
+  expect(!runtime.session().interrupts().requested(gba::core::InterruptSource::keypad),
+         "keypad IRQ idle before input");
+  expect(runtime.set_button_mask(static_cast<std::uint16_t>(gba::core::KeypadButton::a)) ==
+             AndroidRuntimeStatus::ok,
+         "KEYCNT-enabled press accepted through runtime entry point");
+  expect(runtime.session().interrupts().requested(gba::core::InterruptSource::keypad),
+         "KEYCNT-enabled press raises keypad IRQ through runtime entry point");
 
   std::cout << "android_runtime_test: PASS\n";
   return 0;

@@ -4,27 +4,11 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-void write_word(std::vector<std::uint8_t>& bytes, std::size_t offset,
-                std::uint32_t value) {
-  bytes.at(offset + 0U) = static_cast<std::uint8_t>(value & 0xFFU);
-  bytes.at(offset + 1U) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-  bytes.at(offset + 2U) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
-  bytes.at(offset + 3U) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::Arm7tdmi;
@@ -205,14 +189,29 @@ int main() {
                                  PpuTiming::kVisibleCycles - 1U,
                                  hblank_halt_before->interrupts());
   hblank_halt_before->ppu().write_dispstat(0x0010);
+  // S3: deterministic core must not read env vars — diagnostics flow through
+  // the injectable trace sink instead of GBA_DEBUG_HALT.
+  std::vector<std::string> halt_traces;
+  hblank_halt_before->scheduler().set_debug_trace_sink(
+      [&halt_traces](const char* message) { halt_traces.emplace_back(message); });
   const gba::core::CoreSchedulerFetchStepResult hblank_halt_before_step =
       hblank_halt_before->step();
   expect(hblank_halt_before_step.step->cpu_step.status == ExecuteStatus::executed,
          "HBlank Halt-HLE before event executes");
+  // Provenance: elapsed 93 = Thumb ROM fetch latency under the standard
+  // WAITCNT setting plus BiosHleConstants::kHblankHaltReturnCycles (83, the
+  // uniform wake-return latency from commit 56fbcbe's GBA_DEBUG_HALT traces:
+  // entries at line-cycle 544/1116 both returned after 83 cycles).
   expect(hblank_halt_before_step.step->cpu_step.elapsed_cycles == 93,
          "HBlank Halt-HLE before raw event includes fetch and HLE return cycles");
-  expect(hblank_halt_before->ppu().line_cycle() == PpuTiming::kHblankFlagCycles + 50U,
+  // Provenance: the landing phase is anchored to the hardware-calibrated
+  // cycle-1004 HBlank flag event (commits ad7f718/81beba2, 2026-08-21);
+  // entering before the raw event wakes exactly at the flag edge.
+  expect(hblank_halt_before->ppu().line_cycle() ==
+             PpuTiming::kHblankFlagCycles + 93U,
          "HBlank Halt-HLE entered before raw HBlank overlaps the event cycle");
+  expect(!halt_traces.empty() && halt_traces.front().find("HALT entry") == 0,
+         "debug trace sink receives Halt entry diagnostics");
 
   auto hblank_halt_pending = std::make_unique<CoreSession>();
   hblank_halt_pending->bios().set_mode(BiosExecutionMode::hle);
@@ -230,12 +229,19 @@ int main() {
   hblank_halt_pending->interrupts().request(InterruptSource::hblank);
   const gba::core::CoreSchedulerFetchStepResult hblank_halt_pending_step =
       hblank_halt_pending->step();
-  expect(hblank_halt_pending_step.step->cpu_step.status == ExecuteStatus::executed,
-         "pending HBlank Halt-HLE executes");
+  // Immediate-exit path: IF is pre-set, so the wait loop returns without
+  // advancing; the measured landing phase differs from the event-crossing
+  // path above (misc-edge calibrates the wake-to-wake spacing, not this).
+  // Provenance: the +53 offset from the cycle-1004 HBlank flag anchor was
+  // re-calibrated by commit 81beba2 (2026-08-21) when the HBlank event and
+  // flag were unified at cycle 1004.
+  expect(hblank_halt_pending->ppu().line_cycle() ==
+             PpuTiming::kHblankFlagCycles + 53U,
+         "pending HBlank Halt-HLE keeps the steady return phase");
+  // Provenance: same 93-cycle fetch + uniform wake-return composition as the
+  // event-crossing fixture above.
   expect(hblank_halt_pending_step.step->cpu_step.elapsed_cycles == 93,
          "pending HBlank Halt-HLE includes fetch and HLE return cycles");
-  expect(hblank_halt_pending->ppu().line_cycle() == PpuTiming::kHblankFlagCycles + 51U,
-         "pending HBlank Halt-HLE keeps the steady return phase");
 
   auto div_hle = std::make_unique<CoreSession>();
   div_hle->bios().set_mode(BiosExecutionMode::hle);
@@ -473,6 +479,31 @@ int main() {
          "SWI-HLE LZ77UnCompVram expands repeated VRAM bytes");
   expect(lz77_backref_hle->memory().read16(0x06000024).value_or(0) == 0xBBAA,
          "SWI-HLE LZ77UnCompVram completes back-reference expansion");
+
+  // S6: input changes through the session facade must poll the keypad IRQ so
+  // a KEYCNT-enabled interrupt raises on press/release without waiting for a
+  // KEYCNT register write.
+  auto keypad_irq_session = std::make_unique<CoreSession>();
+  expect(!keypad_irq_session->interrupts().requested(InterruptSource::keypad),
+         "keypad IRQ idle before configuration");
+  keypad_irq_session->keypad().write_keycnt(0x4003);
+  expect(!keypad_irq_session->interrupts().requested(InterruptSource::keypad),
+         "keypad IRQ stays idle until matching input arrives");
+  keypad_irq_session->press_button(gba::core::KeypadButton::a);
+  expect(keypad_irq_session->interrupts().requested(InterruptSource::keypad),
+         "session facade press raises the KEYCNT keypad interrupt");
+  keypad_irq_session->release_button(gba::core::KeypadButton::a);
+  expect(keypad_irq_session->keypad().pressed_mask() == 0,
+         "session facade release clears the pressed key");
+  constexpr std::uint16_t kStartLPressed =
+      static_cast<std::uint16_t>(gba::core::KeypadButton::start) |
+      static_cast<std::uint16_t>(gba::core::KeypadButton::l);
+  expect(keypad_irq_session->set_input_mask(kStartLPressed),
+         "session facade accepts a valid button mask");
+  expect(keypad_irq_session->keypad().pressed_mask() == kStartLPressed,
+         "session facade mask reaches the owned keypad");
+  expect(!keypad_irq_session->set_input_mask(0xFC00),
+         "session facade rejects impossible button masks");
 
   std::cout << "core_session_test: PASS\n";
   return 0;

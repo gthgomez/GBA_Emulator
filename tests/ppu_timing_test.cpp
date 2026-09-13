@@ -5,20 +5,7 @@
 #include <iostream>
 #include <string_view>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-constexpr std::uint16_t irq_bit(gba::core::InterruptSource source) {
-  return static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(source));
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::InterruptController;
@@ -30,8 +17,8 @@ int main() {
   static_assert(PpuTiming::kVisibleLines == 160, "GBA visible lines are fixed");
   static_assert(PpuTiming::kTotalLines == 228, "GBA total lines are fixed");
   static_assert(PpuTiming::kVisibleCycles == 960, "GBA visible scanline cycles are fixed");
-  static_assert(PpuTiming::kHblankFlagCycles == 1006,
-                "DISPSTAT HBlank flag is low for 1006 cycles per scanline");
+  static_assert(PpuTiming::kHblankFlagCycles == 1004,
+                "DISPSTAT HBlank flag asserts after 1004 cycles per scanline");
   static_assert(PpuTiming::kHblankCycles == 272, "GBA HBlank cycles are fixed");
   static_assert(PpuTiming::kCyclesPerLine == 1232, "GBA scanline cycles are fixed");
   static_assert(PpuTiming::kCyclesPerFrame == 280896, "GBA frame cycles are fixed");
@@ -110,11 +97,12 @@ int main() {
   ppu.tick(1, interrupts);
   expect(!ppu.hblank(), "DISPSTAT HBlank flag is not yet set at cycle 960");
   expect(ppu.phase() == PpuPhase::hblank, "PPU phase reports HBlank");
-  expect(interrupts.requested(InterruptSource::hblank), "visible HBlank requests IRQ");
-  interrupts.write_interrupt_flags(irq_bit(InterruptSource::hblank));
+  expect(!interrupts.requested(InterruptSource::hblank),
+         "HBlank IRQ waits for the calibrated event point");
 
   ppu.tick(PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles, interrupts);
   expect(ppu.hblank(), "DISPSTAT HBlank flag sets after the event delay");
+  expect(interrupts.requested(InterruptSource::hblank), "visible HBlank requests IRQ");
 
   ppu.tick(PpuTiming::kCyclesPerLine - PpuTiming::kHblankFlagCycles, interrupts);
   expect(ppu.vcount() == 1, "PPU advances to line 1 after full scanline");
@@ -143,25 +131,78 @@ int main() {
 
   ppu.tick(PpuTiming::kVisibleCycles, interrupts);
   expect(!ppu.hblank(), "DISPSTAT HBlank flag remains delayed during VBlank lines");
+  expect(!interrupts.requested(InterruptSource::hblank),
+         "HBlank IRQ waits for the calibrated point on VBlank lines too");
+
+  ppu.tick(PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles, interrupts);
   expect(interrupts.requested(InterruptSource::hblank),
          "HBlank IRQ IS requested during VBlank scanlines (IRQ fires on all lines)");
   interrupts.write_interrupt_flags(irq_bit(InterruptSource::hblank));
 
-  ppu.tick(PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles, interrupts);
+  ppu.tick(1, interrupts);
   expect(ppu.hblank(), "DISPSTAT HBlank flag sets during VBlank scanlines");
 
   ppu.tick(static_cast<std::uint32_t>(PpuTiming::kCyclesPerLine) *
                    (PpuTiming::kTotalLines - PpuTiming::kVisibleLines - 2) +
-               (PpuTiming::kHblankCycles -
+               (PpuTiming::kCyclesPerLine -
                 (PpuTiming::kHblankFlagCycles - PpuTiming::kVisibleCycles)),
            interrupts);
   expect(ppu.vcount() == PpuTiming::kTotalLines - 1,
          "PPU reaches final hidden line 227");
   expect(!ppu.vblank(), "PPU clears VBlank flag on line 227");
 
-  ppu.tick(PpuTiming::kCyclesPerLine, interrupts);
+  ppu.reset();
+  ppu.tick(PpuTiming::kCyclesPerFrame, interrupts);
   expect(ppu.vcount() == 0, "PPU wraps VCOUNT after line 227");
   expect(ppu.frame_cycle() == 0, "PPU frame cycle wraps to zero");
+
+  gba::core::PpuTickEvents frame_events = ppu.tick(PpuTiming::kCyclesPerFrame, interrupts);
+  expect(frame_events.hblank_entries == PpuTiming::kVisibleLines,
+         "HBlank DMA events count once per visible scanline");
+  expect(frame_events.vblank_entries == 1, "VBlank event counts once per frame");
+  expect(frame_events.vcount_matches == 1,
+         "default VCount setting matches once per frame");
+
+  ppu.reset();
+  [[maybe_unused]] const gba::core::PpuTickEvents pre_line161 =
+      ppu.tick(static_cast<std::uint32_t>(PpuTiming::kCyclesPerLine) * 161U +
+                   PpuTiming::kHblankFlagCycles - 1U,
+               interrupts);
+  const gba::core::PpuTickEvents line161_entry =
+      ppu.tick(1, interrupts);
+  expect(pre_line161.hblank_entries == PpuTiming::kVisibleLines,
+         "HBlank entries accumulate only through the visible lines");
+  expect(line161_entry.hblank_entries == 0,
+         "HBlank DMA event is suppressed on VBlank line 161");
+
+  ppu.reset();
+  expect(!ppu.recheck_vcount_match(static_cast<std::uint16_t>(5U << 8)),
+         "DISPSTAT write away from current line does not assert match");
+  ppu.tick(static_cast<std::uint32_t>(PpuTiming::kCyclesPerLine) * 4U, interrupts);
+  expect(!ppu.recheck_vcount_match(
+             static_cast<std::uint16_t>((5U << 8) | 0x0020U)),
+         "DISPSTAT write below matching line does not assert match");
+  expect(ppu.vcount_setting() == 5, "recheck stores the new DISPSTAT value");
+  expect(!ppu.vcount_match(), "line 4 does not match setting 5");
+  ppu.tick(PpuTiming::kCyclesPerLine, interrupts);
+  expect(ppu.vcount_match(), "PPU reaches the programmed compare line");
+  expect(!ppu.recheck_vcount_match(static_cast<std::uint16_t>(7U << 8)),
+         "DISPSTAT write clearing the match does not assert");
+  expect(!ppu.vcount_match(), "match flag cleared by the DISPSTAT write");
+  expect(ppu.recheck_vcount_match(static_cast<std::uint16_t>(5U << 8)),
+         "DISPSTAT write onto matching line newly asserts match");
+  expect((ppu.dispstat() & 0x0004U) != 0,
+         "rechecked match exposes the VCOUNT flag in DISPSTAT");
+
+  const gba::core::PpuTiming::State saved = ppu.save_state();
+  ppu.write_dispstat(0);
+  ppu.tick(PpuTiming::kCyclesPerLine, interrupts);
+  expect(ppu.load_state(saved), "PPU state loads");
+  const gba::core::PpuTiming::State restored = ppu.save_state();
+  expect(restored.line == saved.line && restored.line_cycle == saved.line_cycle &&
+             restored.dispstat_control == saved.dispstat_control &&
+             restored.lcd_control == saved.lcd_control,
+         "loaded PPU state restores timing registers");
 
   std::cout << "ppu_timing_test: PASS\n";
   return 0;

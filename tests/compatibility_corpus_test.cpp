@@ -4,24 +4,7 @@
 #include <iostream>
 #include <string_view>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-void write_word(std::vector<std::uint8_t>& bytes, std::size_t offset,
-                std::uint32_t value) {
-  bytes.at(offset + 0U) = static_cast<std::uint8_t>(value & 0xFFU);
-  bytes.at(offset + 1U) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-  bytes.at(offset + 2U) = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
-  bytes.at(offset + 3U) = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::CompatibilityFixture;
@@ -49,11 +32,20 @@ int main() {
   rejected.name = "nonredistributable";
   rejected.redistributable = false;
 
+  // Negative path: license-accepted fixture whose expectations deliberately
+  // disagree with the program (the ADD loop yields r0 == 3, not 99). The
+  // corpus must run it and surface the failure instead of counting it as a
+  // pass.
+  CompatibilityFixture failing = accepted;
+  failing.name = "expectation-mismatch";
+  failing.run_spec.expected.registers.clear();
+  failing.run_spec.expected.registers.push_back({0, 99});
+
   const gba::core::CompatibilityCorpusResult result =
-      gba::core::run_compatibility_corpus({accepted, rejected});
-  expect(result.fixtures_seen == 2, "corpus sees both fixtures");
-  expect(result.fixtures_run == 1, "corpus runs only accepted fixture");
-  expect(result.fixtures_passed == 1, "accepted fixture passes");
+      gba::core::run_compatibility_corpus({accepted, rejected, failing});
+  expect(result.fixtures_seen == 3, "corpus sees all three fixtures");
+  expect(result.fixtures_run == 2, "corpus runs both accepted fixtures");
+  expect(result.fixtures_passed == 1, "only the passing fixture counts");
   expect(result.fixtures_rejected == 1, "rejected fixture is counted");
   expect(result.results.at(0).license_status == FixtureLicenseStatus::accepted,
          "accepted fixture license is accepted");
@@ -61,6 +53,17 @@ int main() {
          "accepted fixture harness passes");
   expect(result.results.at(1).license_status == FixtureLicenseStatus::nonredistributable,
          "nonredistributable fixture rejects");
+  expect(result.results.at(2).license_status == FixtureLicenseStatus::accepted,
+         "failing fixture license is accepted");
+  expect(result.results.at(2).harness.status == ProgramHarnessStatus::register_mismatch,
+         "failing fixture surfaces register mismatch");
+  expect(result.results.at(2).harness.failed_register.has_value() &&
+             result.results.at(2).harness.failed_register.value() == 0,
+         "mismatch names register r0");
+  expect(result.results.at(2).harness.expected_value == 99,
+         "mismatch reports expected value");
+  expect(result.results.at(2).harness.actual_value == 3,
+         "mismatch reports actual ADD-loop result");
   expect(result.combined_state_hash != 0, "corpus emits combined hash");
 
   std::cout << "compatibility_corpus_test: PASS\n";

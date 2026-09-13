@@ -5,16 +5,7 @@
 #include <optional>
 #include <string_view>
 
-namespace {
-
-void expect(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
-    std::exit(1);
-  }
-}
-
-}  // namespace
+#include "test_helpers.hpp"
 
 int main() {
   using gba::core::Apu;
@@ -35,21 +26,27 @@ int main() {
   apu.write_soundcnt_h(0xFFFF);
   apu.write_soundbias(0xFFFF);
   apu.write_wave_ram(0, 0xBEEF);
-  apu.write_fifo(DirectSoundChannel::a, 0x04030201);
+  apu.write_fifo(DirectSoundChannel::b, 0x11223344);
   expect(apu.soundcnt_l() == 0, "disabled APU ignores SOUNDCNT_L writes");
   expect(apu.soundcnt_h() == 0, "disabled APU ignores SOUNDCNT_H writes");
   expect(apu.soundbias() == 0x0200, "disabled APU ignores SOUNDBIAS writes");
-  expect(apu.wave_ram(0) == 0, "disabled APU ignores wave RAM writes");
-  expect(apu.fifo_size(DirectSoundChannel::a) == 0, "disabled APU ignores FIFO writes");
+  expect(apu.wave_ram(0) == 0xBEEF,
+         "wave RAM writes land while disabled (DMA preloads must survive)");
+  expect(apu.fifo_size(DirectSoundChannel::b) == 4,
+         "FIFO writes land while disabled (DMA preloads must survive)");
 
   apu.write_soundcnt_x(0x0080);
   expect(apu.master_enabled(), "SOUNDCNT_X bit 7 enables master sound");
   expect(apu.soundcnt_x() == 0x0080, "SOUNDCNT_X exposes master enable");
 
+  apu.write_soundcnt_h(0x8800);
+  expect(apu.fifo_size(DirectSoundChannel::b) == 0,
+         "FIFO reset pulses clear the pre-enable preload");
+
   apu.write_soundcnt_l(0xFFFF);
   expect(apu.soundcnt_l() == 0xFF77, "SOUNDCNT_L masks writable bits");
   apu.write_soundbias(0xFFFF);
-  expect(apu.soundbias() == 0xC3FF, "SOUNDBIAS masks writable bits");
+  expect(apu.soundbias() == 0x43FF, "SOUNDBIAS masks writable bits");
   apu.write_wave_ram(2, 0xBEEF);
   expect(apu.wave_ram(2) == 0xBEEF, "enabled APU stores wave RAM");
 
@@ -189,6 +186,7 @@ int main() {
 
   Apu psg;
   psg.write_soundcnt_x(0x0080);
+  psg.write_soundcnt_l(0xFF77);
   psg.configure_square_channel(0, 2, 8, 4);
   psg.configure_square_channel(1, 1, 4, 8);
   expect(psg.psg_channel_enabled(0), "square channel 1 enables");
@@ -220,12 +218,102 @@ int main() {
   psg.disable_psg_channel(3);
   expect(!psg.psg_channel_enabled(3), "noise channel disables explicitly");
 
+  Apu pan;
+  pan.write_soundcnt_x(0x0080);
+  // SOUNDCNT_L bytes: low = NR50 master volume, high = NR51 channel routing.
+  pan.write_soundcnt_l(0x0177);
+  pan.configure_square_channel(0, 3, 15, 4);
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> pan_tick_right =
+      pan.tick(Apu::kCpuCyclesPerAudioSample);
+  expect(pan.last_mixed_sample().left == 0, "NR51 keeps unrouted channel off the left mix");
+  expect(pan.last_mixed_sample().right == 15360,
+         "NR50 full right volume scales the routed channel");
+  pan.write_soundcnt_l(0x0173);
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> pan_tick_quiet =
+      pan.tick(Apu::kCpuCyclesPerAudioSample);
+  expect(pan.last_mixed_sample().right == 7680,
+         "NR50 lower right volume halves the routed channel");
+  pan.write_soundcnt_l(0x1173);
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> pan_tick_both =
+      pan.tick(Apu::kCpuCyclesPerAudioSample);
+  expect(pan.last_mixed_sample().left == 15360, "NR51 routes channel to the left mix");
+  expect(pan.last_mixed_sample().right == 7680, "right mix keeps its own NR51 routing");
+
+  Apu nr52;
+  nr52.write_soundcnt_x(0x0080);
+  nr52.write_soundcnt_l(0xFF77);
+  nr52.configure_square_channel(0, 2, 8, 4);
+  nr52.configure_square_channel(1, 2, 8, 4);
+  nr52.configure_wave_channel(1, 8);
+  nr52.configure_noise_channel(8, 4, false);
+  expect((nr52.soundcnt_x() & 0x000FU) == 0x000F,
+         "NR52 readback exposes channel-active bits 0-3");
+  nr52.disable_psg_channel(1);
+  nr52.disable_psg_channel(3);
+  expect((nr52.soundcnt_x() & 0x000FU) == 0x0005,
+         "disabled channels clear their NR52 active bits");
+
+  Apu bank;
+  bank.write_soundcnt_x(0x0080);
+  bank.write_soundcnt_l(0x4477);
+  bank.set_wave_bank_select(false);
+  bank.write_wave_ram(0, 0xAAAA);
+  expect(bank.wave_ram(0) == 0xAAAA, "CPU wave RAM write is visible in the accessed bank");
+  expect(bank.wave_ram_playing(0) == 0, "playing bank stays clear before the switch");
+  bank.configure_wave_channel(1, 32);
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> bank_silent_tick =
+      bank.tick(Apu::kCpuCyclesPerAudioSample);
+  expect(bank.last_mixed_sample().left == -8192,
+         "mixing reads the playing bank while it is still empty");
+  bank.set_wave_bank_select(true);
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> bank_play_tick =
+      bank.tick(Apu::kCpuCyclesPerAudioSample);
+  expect(bank.last_mixed_sample().left == 2048,
+         "mixing reads the selected bank after NR30 bank switch");
+  expect(bank.last_mixed_sample().right == 2048,
+         "banked wave playback reaches both mixer outputs");
+  bank.write_wave_ram(0, 0x5555);
+  expect(bank.wave_ram_playing(0) == 0xAAAA, "CPU writes never clobber the playing bank");
+  expect(bank.wave_ram(0) == 0x5555, "CPU writes follow the opposite bank after switch");
+
+  Apu preserve;
+  preserve.write_soundcnt_x(0x0080);
+  preserve.write_wave_ram(3, 0xCAFE);
+  preserve.write_soundcnt_x(0);
+  preserve.write_soundcnt_x(0x0080);
+  expect(preserve.wave_ram(3) == 0xCAFE,
+         "NR52-off cycle preserves wave RAM contents");
+
+  Apu persist;
+  persist.write_soundcnt_x(0x0080);
+  persist.write_soundcnt_l(0xFF77);
+  persist.set_wave_bank_select(true);
+  persist.write_wave_ram(0, 0x1234);
+  persist.write_fifo(DirectSoundChannel::a, 0x01020304);
+  persist.configure_square_channel(0, 2, 9, 4);
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> persist_warmup =
+      persist.tick(Apu::kCpuCyclesPerFrameSequencerStep * 2U);
+  const std::uint64_t hash_before = persist.state_hash();
+  const gba::core::Apu::State snapshot = persist.save_state();
+  [[maybe_unused]] const std::optional<gba::core::ApuFrameStep> persist_drift =
+      persist.tick(Apu::kCpuCyclesPerAudioSample * 5U);
+  expect(persist.state_hash() != hash_before, "APU state advances before restore");
+  expect(persist.load_state(snapshot), "APU state loads");
+  expect(persist.state_hash() == hash_before, "restored APU hash matches snapshot");
+  expect(persist.fifo_size(DirectSoundChannel::a) == 4,
+         "restored FIFO contents survive a save/load roundtrip");
+  expect(persist.wave_ram(0) == 0x1234,
+         "restored wave RAM survives a save/load roundtrip");
+  gba::core::Apu::State corrupt = snapshot;
+  corrupt.fifos.at(0).head = Apu::kFifoCapacity;
+  expect(!persist.load_state(corrupt), "invalid FIFO head rejects load_state");
+
   apu.write_soundcnt_x(0);
   expect(!apu.master_enabled(), "clearing SOUNDCNT_X bit 7 disables master sound");
   expect(apu.soundcnt_l() == 0, "master disable clears SOUNDCNT_L");
   expect(apu.soundcnt_h() == 0, "master disable clears SOUNDCNT_H");
   expect(apu.fifo_size(DirectSoundChannel::a) == 0, "master disable clears FIFO A");
-  expect(apu.wave_ram(2) == 0, "master disable clears wave RAM in this seed");
+  expect(apu.wave_ram(2) == 0xBEEF, "master disable preserves wave RAM in this seed");
   expect(!apu.tick(Apu::kCpuCyclesPerFrameSequencerStep).has_value(),
          "disabled APU does not tick frame sequencer");
 

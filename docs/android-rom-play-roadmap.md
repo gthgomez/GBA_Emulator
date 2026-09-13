@@ -278,7 +278,10 @@ void gba_android_core_destroy(void* handle);
 AndroidBridgeStatus gba_android_core_reset(void* handle);
 AndroidBridgeStatus gba_android_core_load_rom(void* handle, const uint8_t* bytes, size_t size);
 AndroidBridgeStatus gba_android_core_run(void* handle, uint32_t max_steps, AndroidBridgeRunResult* result);
-uint64_t gba_android_core_state_hash(void* handle);
+// Since the P0-P2 review wave this accessor returns a status and writes the
+// hash through `out_hash`; callers must check the status (an empty session is
+// not distinguishable from a failure via a zero return value).
+AndroidBridgeStatus gba_android_core_state_hash(void* handle, uint64_t* out_hash);
 ```
 
 ### `AndroidRuntime` (C++ / JNI target)

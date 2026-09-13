@@ -1,3 +1,6 @@
+# Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference.
+#requires -Version 7.3
+
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
@@ -7,6 +10,22 @@ $checkScript = Join-Path $PSScriptRoot "check-core-performance-regression.ps1"
 $testDir = Join-Path $repoRoot "build\performance-regression-gate-test"
 
 New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+
+function Assert-NativeExitCode {
+  param(
+    [string]$Step,
+    [int]$Expected = 0
+  )
+
+  if ($LASTEXITCODE -ne $Expected) {
+    Write-Host ""
+    Write-Host "core_performance_regression_gate_test: FAIL ($Step exited with $LASTEXITCODE)"
+    if ($null -eq $LASTEXITCODE) {
+      exit 1
+    }
+    exit $LASTEXITCODE
+  }
+}
 
 $baseline = Get-Content -Raw -LiteralPath $baselinePath | ConvertFrom-Json
 
@@ -48,6 +67,7 @@ New-BenchmarkOutput -Path $goodOutput -MakeSlow $false
 New-BenchmarkOutput -Path $badOutput -MakeSlow $true
 
 & $checkScript -Runs 1 -BenchmarkOutputPath $goodOutput -ReportPath $goodReport | Out-Null
+Assert-NativeExitCode -Step "check-core-performance-regression (good fixture)"
 
 $badRejected = $false
 try {

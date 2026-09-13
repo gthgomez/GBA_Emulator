@@ -46,6 +46,22 @@ class DmaController {
  public:
   static constexpr std::size_t kChannelCount = 4;
 
+  struct DmaChannelState {
+    std::uint32_t source = 0;
+    std::uint32_t destination = 0;
+    std::uint16_t word_count = 0;
+    std::uint16_t control = 0;
+    std::uint32_t current_source = 0;
+    std::uint32_t current_destination = 0;
+    std::uint32_t current_count = 0;
+    std::uint32_t data_latch = 0;
+  };
+
+  struct State {
+    std::array<DmaChannelState, kChannelCount> channels{};
+    bool immediate_pending = false;
+  };
+
   DmaController();
 
   void reset();
@@ -77,21 +93,15 @@ class DmaController {
                                          InterruptController& interrupts,
                                          const WaitStateControl* waitcnt = nullptr);
   [[nodiscard]] DmaRunResult run_sound_fifo(DmaTrigger trigger, MemoryBus& memory,
-                                            Apu& apu,
-                                            InterruptController& interrupts,
-                                            const WaitStateControl* waitcnt = nullptr);
+                                             Apu& apu,
+                                             InterruptController& interrupts,
+                                             const WaitStateControl* waitcnt = nullptr);
+
+  [[nodiscard]] State save_state() const;
+  [[nodiscard]] bool load_state(const State& state);
 
  private:
-  struct Channel {
-    std::uint32_t source;
-    std::uint32_t destination;
-    std::uint16_t word_count;
-    std::uint16_t control;
-    std::uint32_t current_source;
-    std::uint32_t current_destination;
-    std::uint32_t current_count;
-    std::uint32_t data_latch;
-  };
+  using Channel = DmaChannelState;
 
   std::array<Channel, kChannelCount> channels_;
   bool immediate_pending_;
