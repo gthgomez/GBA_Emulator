@@ -921,13 +921,13 @@ int main() {
   thumb_cpu.reset_elapsed_cycles();
   thumb_cpu.set_register(1, 0x12345678);
   thumb_cpu.set_register(2, 0xFF);
-  expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 2,
-         "Thumb MUL step times early exit from Rs magnitude");
-  thumb_cpu.reset_elapsed_cycles();
-  thumb_cpu.set_register(1, 5);
-  thumb_cpu.set_register(2, 0x12345678);
   expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 5,
-         "Thumb MUL step ignores Rd magnitude for early-out timing");
+         "Thumb MUL step times iterations from Rd magnitude");
+  thumb_cpu.reset_elapsed_cycles();
+  thumb_cpu.set_register(1, 0x00000078);
+  thumb_cpu.set_register(2, 0x12345678);
+  expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 2,
+         "Thumb MUL step early-exits from Rd magnitude, not Rs");
   thumb_cpu.set_register(0, 5);
   thumb_cpu.set_register(1, 6);
   expect(thumb_cpu.execute_thumb(thumb_add_r2_r0_r1) == ExecuteStatus::executed,
