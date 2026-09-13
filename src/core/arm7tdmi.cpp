@@ -3846,10 +3846,12 @@ std::optional<ArmElapsedCycleEstimate> Arm7tdmi::runtime_thumb_elapsed_cycles(
     return std::nullopt;
   }
 
-  // The ARM7TDMI multiplier iterates over the multiplier operand, which is
-  // Rs for Thumb MUL (Rd holds the destination/multiplicand).
+  // The ARM7TDMI multiplier iterates over the multiplier operand. For Thumb
+  // MUL (encoding 0x4353 for `mul r3, r2`: rd=3, rs=2) the hardware uses the
+  // destination register (Rd), which also holds the multiplicand; the mGBA
+  // timing suite's expected cycles track Rd, not Rs.
   return ArmElapsedCycleEstimate{
-      signed_multiply_iterations(registers_.at(decoded.rs)) + 1U, true, false};
+      signed_multiply_iterations(registers_.at(decoded.rd)) + 1U, true, false};
 }
 
 ArmStepResult Arm7tdmi::step_arm(std::uint32_t instruction) {
