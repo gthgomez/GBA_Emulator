@@ -224,6 +224,7 @@ class CoreScheduler {
   [[nodiscard]] std::uint32_t intr_wait_batch_cycles(std::uint16_t mask) const;
   [[nodiscard]] std::uint32_t intr_wait_timer_horizon_cycles(std::uint16_t mask) const;
   [[nodiscard]] std::uint32_t intr_wait_ppu_horizon_cycles(std::uint16_t mask) const;
+  [[nodiscard]] std::uint32_t intr_wait_serial_horizon_cycles(std::uint16_t mask) const;
   void update_auto_irq_latency(std::uint32_t elapsed_cycles);
   [[nodiscard]] bool auto_irq_ready() const;
   void reset_auto_irq_latency();
