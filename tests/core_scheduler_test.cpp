@@ -178,17 +178,17 @@ int main() {
   const gba::core::CoreSchedulerStepResult skipped = scheduler.step_arm(kAddEqR0R0Imm1);
   expect(skipped.cpu_step.status == ExecuteStatus::skipped_condition,
          "condition-failed instruction is reported");
-  expect(skipped.devices.cycles == 1, "skipped ARM instruction reports no device cycles");
-  expect(scheduler.scheduler_cycles() == 2,
+  expect(skipped.devices.cycles == 0, "skipped ARM instruction reports no device cycles");
+  expect(scheduler.scheduler_cycles() == 1,
          "skipped ARM instruction leaves global cycles unchanged");
-  expect(timers.counter(0) == 0xFFF2,
+  expect(timers.counter(0) == 0xFFF1,
          "skipped ARM instruction leaves timer counter unchanged");
 
   const gba::core::CoreDeviceTickResult apu_tick =
       scheduler.advance_devices(Apu::kCpuCyclesPerFrameSequencerStep);
   expect(apu_tick.cycles == Apu::kCpuCyclesPerFrameSequencerStep,
          "manual device advance reports cycles");
-  expect(scheduler.scheduler_cycles() == 2U + Apu::kCpuCyclesPerFrameSequencerStep,
+  expect(scheduler.scheduler_cycles() == 1U + Apu::kCpuCyclesPerFrameSequencerStep,
          "manual device advance accumulates cycles");
   expect(!apu_tick.apu_frame_step.has_value(),
          "disabled APU reports no frame step during device advance");
@@ -518,7 +518,7 @@ int main() {
   expect(fetched_skip.pc_advanced, "skipped fetched instruction still advances PC");
   expect(cpu.register_value(Arm7tdmi::kPc) == kSyntheticProgramBase + 8U,
          "skipped fetched instruction advances PC by one ARM word");
-  expect(scheduler.scheduler_cycles() == 2,
+  expect(scheduler.scheduler_cycles() == 1,
          "skipped fetched ARM instruction leaves scheduler cycles unchanged");
 
   cpu.reset();

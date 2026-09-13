@@ -58,9 +58,11 @@ constexpr std::uint32_t kIrqDisableFlag = 0x00000080;
 constexpr std::uint32_t kModeMask = 0x0000001F;
 // PSR control byte: mode bits plus the I/F/T state bits.
 constexpr std::uint32_t kControlByteMask = 0x000000FF;
-// ARM condition-failed instructions still occupy one sequential fetch cycle
-// on the bus; only the execution stage is suppressed.
-constexpr std::uint32_t kArmSkippedConditionElapsedCycles = 1;
+// A condition-failed ARM instruction is still fetched (the scheduler charges
+// that sequential fetch cycle), but its execution stage is suppressed, so it
+// contributes no execution cycles here. Charging one here as well double-counts
+// the fetch and shifts cycle-exact suites (mGBA timers/timer-irq/sio-timing).
+constexpr std::uint32_t kArmSkippedConditionElapsedCycles = 0;
 constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
 
 // Trace-fitted tuning tags for mirrored-OAM block loads that cross from the
