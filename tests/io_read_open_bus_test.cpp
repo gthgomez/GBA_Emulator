@@ -1,7 +1,7 @@
 // Native headless lock for the mGBA `io-read` suite contract.
 //
 // The external mGBA suite proves this by executing a Thumb `ldrh` and letting
-// the ARM7TDMI open-bus path supply the value for write-only/INVALID IO
+// the ARM7TDMI open-bus path supply the value for write-only/unmapped IO
 // registers. That suite needs a devkitARM-built ROM and is therefore not part
 // of the local core verifier set. This test replays the exact same table
 // (src/io-read.c, pinned suite aac98dca785eaec3932af217aa658275737a8ed8)
@@ -13,7 +13,11 @@
 //   4: 0xDEAD              (low half of the open-bus word at PC+4)
 //   6: 0xDEAD              (high half of the open-bus word at PC+4)
 // At the execute cycle of the LDRH the Thumb pipeline open bus reads the word
-// at PC+4, so any register that does not drive the data bus returns 0xDEAD.
+// at PC+4, so most registers that do not drive the data bus return 0xDEAD.
+// Not every INVALID offset does: the INVALID gaps at
+// 0x66/0x6A/0x6E/0x76/0x7A/0x7E/0x86/0x8A/0x136/0x142/0x15A/0x206/0x20A/0x302
+// and the DMA0-3CNT_LO halves read as 0x0000, and the table below encodes those
+// exceptions.
 
 #include "gba/core/core_session.hpp"
 

@@ -128,5 +128,5 @@ local regression gates exist, rollback/recovery is defined, and known issues are
 
 Controlled external beta remains blocked: the 2026-08-14 device soak delivered the missing
 audio/pacing evidence and it is a **FAIL** (underrun storm + 1.4–2 fps presentation stall on a
-release build), and the workstation credibility matrix is RED (`io-read`, `misc-edge`
-regressions; `video` target missing). Saves on device and 10+ min thermal remain unmeasured.
+release build), and the workstation credibility matrix is RED (`misc-edge`
+regression; `video` target missing). Saves on device and 10+ min thermal remain unmeasured.

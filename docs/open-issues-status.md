@@ -43,7 +43,9 @@ first valid pwsh-7 run since June) reported `io-read` and `misc-edge` as RED and
 >   `tests/io_read_open_bus_test.cpp` (130/130). The 2026-08-14 `io-read` figure is
 >   treated as a stale/mis-built artifact.
 > - The `video` target is **absent from the matrix by design**
->   (`tools/mgba-suite-green-baseline.json` explicitly excludes it); the 7 oracle probes
+>   (the default `-Suites` list in `tools/run-credibility-matrix.ps1:5-7` omits it;
+>   note `tools/mgba-suite-green-baseline.json` lists `"video"` in `green_suites` even
+>   though its notes treat it as outside the baseline); the 7 oracle probes
 >   are verified separately via `tools/run-video-suite-all.ps1` and are GREEN.
 >
 > `misc-edge` remains the only genuine regression. Needs triage before any beta candidate.
