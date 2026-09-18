@@ -2799,9 +2799,23 @@ std::uint32_t CoreScheduler::intr_wait_timer_horizon_cycles(std::uint16_t mask) 
   return kIntrWaitCoarseBatchCycles;
 }
 
+std::uint32_t CoreScheduler::intr_wait_serial_horizon_cycles(
+    std::uint16_t mask) const {
+  constexpr std::uint16_t kSerialBit =
+      static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(InterruptSource::serial));
+  if (io_ == nullptr || (mask & kSerialBit) == 0 || !io_->sio_transfer_active()) {
+    return kIntrWaitCoarseBatchCycles;
+  }
+  // Never let a device-advance chunk cross the serial completion edge: the
+  // serial IRQ is requested inside that edge, and overshooting it delays the
+  // observed transfer-complete cycle (mGBA sio-timing: +26 cycles).
+  return std::max<std::uint32_t>(io_->sio_transfer_cycles_remaining(), 1U);
+}
+
 std::uint32_t CoreScheduler::intr_wait_batch_cycles(std::uint16_t mask) const {
-  return std::clamp(std::min(intr_wait_ppu_horizon_cycles(mask),
-                             intr_wait_timer_horizon_cycles(mask)),
+  return std::clamp(std::min({intr_wait_ppu_horizon_cycles(mask),
+                              intr_wait_timer_horizon_cycles(mask),
+                              intr_wait_serial_horizon_cycles(mask)}),
                     1U, kIntrWaitCoarseBatchCycles);
 }
 

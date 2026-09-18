@@ -318,6 +318,14 @@ void IoRegisters::tick(std::uint32_t cycles) {
   }
 }
 
+bool IoRegisters::sio_transfer_active() const {
+  return sio_transfer_active_;
+}
+
+std::uint32_t IoRegisters::sio_transfer_cycles_remaining() const {
+  return sio_transfer_cycles_remaining_;
+}
+
 std::optional<std::uint16_t> IoRegisters::read16(std::uint32_t address) const {
   if (!is_halfword_aligned(address)) {
     return std::nullopt;
