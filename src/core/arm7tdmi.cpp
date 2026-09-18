@@ -58,10 +58,13 @@ constexpr std::uint32_t kIrqDisableFlag = 0x00000080;
 constexpr std::uint32_t kModeMask = 0x0000001F;
 // PSR control byte: mode bits plus the I/F/T state bits.
 constexpr std::uint32_t kControlByteMask = 0x000000FF;
-// A condition-failed ARM instruction is still fetched (the scheduler charges
-// that sequential fetch cycle), but its execution stage is suppressed, so it
-// contributes no execution cycles here. Charging one here as well double-counts
-// the fetch and shifts cycle-exact suites (mGBA timers/timer-irq/sio-timing).
+// This is NOT a first-principles hardware constant. A condition-failed ARM
+// instruction is still fetched on hardware (GBATEK's table lists 1S), but the
+// scheduler does not charge that sequential fetch in every region:
+// apply_fetch_timing returns zero for IWRAM/BIOS and whenever no wait-state
+// controller is attached, so charging 1 here double-counts an offset the fitted
+// fetch model already carries and regresses the cycle-exact mGBA oracle
+// (timers/timer-irq/sio-timing). The value 0 below is calibrated to that oracle.
 constexpr std::uint32_t kArmSkippedConditionElapsedCycles = 0;
 constexpr std::uint32_t kThumbSkippedConditionElapsedCycles = 1;
 
