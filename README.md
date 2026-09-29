@@ -3,14 +3,14 @@
 Portable Game Boy Advance emulator core (C++17) with public mGBA test-suite evidence and a
 sibling Android dev shell. Controlled external beta remains blocked without device evidence.
 
-## Current Status (updated 2026-08-22)
+## Current Status (updated 2026-09-18)
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Local core verifiers | PASS (28/28) | `.\tools\run-core-tests.ps1` — clean `g++ -Werror` rebuild, all binaries pass |
-| mGBA public suites (13) | 11 GREEN / 2 REGRESSED | `io-read` (51/130) and `misc-edge` (6/12) regressed 2026-08-14 — see `docs/open-issues-status.md`. Remaining 11 GREEN; regression baseline in `tools/mgba-suite-green-baseline.json` |
+| Local core verifiers | PASS (29/29) | `.\tools\run-core-tests.ps1` — clean `g++ -Werror` rebuild, all binaries pass (29th: the IntrWait serial-horizon verifier added with this PR) |
+| mGBA public suites (13) | 11 GREEN / 2 NOT FULL | `io-read` is GREEN 130/130 (re-verified 2026-09-12; the recorded `51/130` RED was disproven by PR #7). `misc-edge` (6/12) and `timing` (1956/2020, 64 failures pre-existing on `main`) remain below `pass=total` — see `docs/open-issues-status.md`. Baseline in `tools/mgba-suite-green-baseline.json` |
 | Video oracle aliases (7) | GREEN | Deterministic `video_probe` via `.\tools\run-video-suite-all.ps1`; upstream interactive `video` suite is intentionally **not** in the credibility matrix baseline |
-| Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` is RED due to the `io-read`/`misc-edge` regressions above (latest: `build/test-results/credibility-matrix-latest.json`) |
+| Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` stays RED while `misc-edge` (6/12) and `timing` (1956/2020) are below `pass=total`; `io-read` is no longer a regression (latest: `build/test-results/credibility-matrix-latest.json`) |
 | Android shell | Scaffold only | [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) — JNI bridge self-test; see `docs/android-integration-plan.md` |
 | Controlled beta | BLOCKED | No target-device soak row yet — `docs/controlled-beta-readiness.md` |
 
