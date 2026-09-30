@@ -1,8 +1,8 @@
 # GBA_Emulator Status
 
-**Last verified:** 2026-08-22
+**Last verified:** 2026-08-22 (core verifiers); status reconciled 2026-09-29 against `docs/open-issues-status.md` (2026-09-12 record) — no test reruns performed for the reconciliation itself
 **Status:** active development
-**Confidence:** high (core verifiers); medium (accuracy — 2 mGBA suites regressed, see below)
+**Confidence:** high (core verifiers); medium (accuracy — `misc-edge` regressed; post-#6 timer/timing state unknown, see below)
 
 ## Purpose
 
@@ -11,11 +11,14 @@ Portable Game Boy Advance (GBA) emulator core written in C++17 with mGBA test-su
 ## Current State
 
 - **Core verifiers: 28/28 PASS.** Re-verified 2026-08-22 via `tools/run-core-tests.ps1` (clean `g++ -Werror` rebuild, all binaries run and pass). No compile warnings, no runtime failures in the headless suite.
-- **mGBA public suites: 11/13 GREEN, 2 REGRESSED.** Of the 13 upstream suites, `io-read` (51/130) and `misc-edge` (6/12) regressed as of **2026-08-14** (see `docs/open-issues-status.md`). The other 11 (`memory`, `bios-math`, `dma`, `shifter`, `carry`, `multiply-long`, `timer-irq`, `timers`, `timing`, `sio-read`, `sio-timing`) remain GREEN.
-- **Video oracle aliases: 7/7 GREEN** via the separate `tools/run-video-suite-all.ps1` runner (the upstream interactive `video` suite is intentionally excluded from the credibility matrix baseline).
+- **mGBA public suites: 12/13 last measured GREEN, 1 REGRESSED (`misc-edge`).** `io-read` (51/130) was recorded RED on 2026-08-14 but **disproven on 2026-09-12**: a rerun of the pinned suite gives 130/130 and the contract is locked by `tests/io_read_open_bus_test.cpp` (see `docs/open-issues-status.md`). The remaining genuine regression is `misc-edge` (6/12 as of 2026-08-14); PR #6 ("misc-edge HBlank flag start-cycle", merged 2026-09-12) landed investigation + groundwork only, and **no post-#6 `misc-edge` rerun is on record** — treat its current state as UNKNOWN until a rerun exists.
+- **Post-#6 timer/sio/timing state: UNKNOWN.** PR #6's scheduler/timer batching is merged to `main` (2026-09-12), and open PR #8 (`fix/timer-tick-regression`, head `e1e0f99`) reports it regressed `timers` (576/936), `timer-irq` (69/90), `sio-timing` (0/4) and `timing` (1946/2020) relative to the #6 parent. PR #8 is **not merged** and no rerun of these suites on current `main` is on record, so these four suites must not be counted GREEN from the pre-#6 measurements. The `GREEN` entries below are the last-measured states, not a certification of current `main`.
+- **Video oracle aliases: 7/7 GREEN at last run (2026-06-05)** via the separate `tools/run-video-suite-all.ps1` runner (the upstream interactive `video` suite is intentionally excluded from the credibility matrix baseline and absent from the matrix by design — it does not emit `END pass=total`). No newer oracle run is on record; do not infer current-`main` greenness from the 2026-06-05 result.
+- **Physical device soak: still failing/blocked.** The 2026-08-14 P1 soak evidence records audible-but-choppy audio (2,787 underruns @ frame 60; 710,778 after restart) and 1.4–2 fps pacing with a full present stall; thermal soak unmeasured. These FAIL records are preserved in `docs/evidence/` and are not superseded.
+- **Commercial-ROM compatibility: no claim.** Only the legal locally built mGBA suite ROM is exercised; retail-game compatibility is explicitly untested.
 - **Controlled external beta remains blocked** without target-device soak evidence.
 
-**Engine audit (2026-08-22):** The `io-read` regression is traced to IO open-bus read modeling. `IoRegisters::read16` returns `std::nullopt` for write-only/INVALID registers (correct per gbatek), but `MemoryBus::read16` → `read16_or_thumb_pipeline_open_bus` substitutes the pipeline instruction word on `nullopt` instead of the expected open-bus value (`0xDEAD`), so 79 of 130 registers mismatch. The readable-register masks (BGxCNT, WININ/OUT, BLDCNT, BLDALPHA, sound regs) are confirmed correct against `io-read.c`. The `misc-edge` "H-blank bit start" sub-test is timing-sensitive and plausibly related to commit `81beba2` ("unify HBlank event+flag at hardware-calibrated cycle 1004").
+**Engine audit (2026-08-22) — superseded for `io-read`:** the original audit traced the `io-read` regression to IO open-bus read modeling. That root cause was self-contradictory and was **disproven on 2026-09-12**: the pipeline-open-bus fallback *is* what produces the expected `0xDEAD` open-bus value, and re-running the pinned suite gives 130/130 on both `main` and the HBlank branch. The 2026-08-14 `51/130` figure was a stale/mis-built artifact. The contract is now locked natively by `tests/io_read_open_bus_test.cpp` (130/130). The `misc-edge` "H-blank bit start" sub-test remains timing-sensitive; PR #6 records the flag-cycle investigation.
 
 ## Verified Capabilities
 
@@ -40,9 +43,9 @@ Portable Game Boy Advance (GBA) emulator core written in C++17 with mGBA test-su
 
 ## Risks and Unknowns
 
-- **IO open-bus read modeling (open defect, root cause of `io-read` regression):** unhandled/ `std::nullopt` IO reads fall back to the pipeline instruction word rather than a latched open-bus value, so write-only/INVALID registers return the wrong value under the mGBA `io-read` harness. Fix requires a per-region open-bus latch.
-- **HBlank flag ↔ Timer0 phase (`misc-edge` regression):** the "H-blank bit start" sub-test is sensitive to exact HBlank-flag assertion timing relative to the CPU timer; review commit `81beba2`.
-- Timing edge cases on unaligned memory access across specific Game Pak prefetch wait-states.
+- **Post-#6 timer/sio/timing conformance (unknown):** open PR #8 reports `timers`, `timer-irq`, `sio-timing` and `timing` regressions introduced by PR #6's scheduler/timer batching. No rerun on current `main` is on record; the state is UNKNOWN until PR #8 merges or a fresh matrix run is recorded.
+- **`misc-edge` current state (unknown):** last measured 6/12 (2026-08-14). PR #6's fix landed as "investigation + groundwork" only; no post-merge rerun is on record.
+- **Timing edge cases on unaligned memory access across specific Game Pak prefetch wait-states.**
 
 ## Verification
 
@@ -56,6 +59,7 @@ Portable Game Boy Advance (GBA) emulator core written in C++17 with mGBA test-su
 
 ## Evidence Sources
 
-- [README.md](file:///C:/Workspace/Project_Android/GBA_Emulator/README.md)
-- [QA_CHECKLIST.md](file:///C:/Workspace/Project_Android/GBA_Emulator/QA_CHECKLIST.md)
-- [docs/open-issues-status.md](file:///C:/Workspace/Project_Android/GBA_Emulator/docs/open-issues-status.md)
+- [README.md](README.md)
+- [QA_CHECKLIST.md](QA_CHECKLIST.md)
+- [docs/open-issues-status.md](docs/open-issues-status.md)
+- Device soak evidence: [docs/evidence/](docs/evidence/) (failed 2026-08-14 P1 records preserved)

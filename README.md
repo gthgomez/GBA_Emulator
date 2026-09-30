@@ -3,16 +3,18 @@
 Portable Game Boy Advance emulator core (C++17) with public mGBA test-suite evidence and a
 sibling Android dev shell. Controlled external beta remains blocked without device evidence.
 
-## Current Status (updated 2026-08-22)
+## Current Status (updated 2026-09-29; dimension-scoped)
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Local core verifiers | PASS (28/28) | `.\tools\run-core-tests.ps1` — clean `g++ -Werror` rebuild, all binaries pass |
-| mGBA public suites (13) | 11 GREEN / 2 REGRESSED | `io-read` (51/130) and `misc-edge` (6/12) regressed 2026-08-14 — see `docs/open-issues-status.md`. Remaining 11 GREEN; regression baseline in `tools/mgba-suite-green-baseline.json` |
-| Video oracle aliases (7) | GREEN | Deterministic `video_probe` via `.\tools\run-video-suite-all.ps1`; upstream interactive `video` suite is intentionally **not** in the credibility matrix baseline |
-| Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` is RED due to the `io-read`/`misc-edge` regressions above (latest: `build/test-results/credibility-matrix-latest.json`) |
+| Local core verifiers | PASS (28/28, 2026-08-22) | `.\tools\run-core-tests.ps1` — clean `g++ -Werror` rebuild, all binaries pass |
+| mGBA public suites (conformance) | 12 last measured GREEN / 1 REGRESSED | `misc-edge` (6/12) is the remaining genuine regression (2026-08-14); `io-read` "51/130" was disproven 2026-09-12 (GREEN 130/130, locked by `tests/io_read_open_bus_test.cpp`). `timers`/`timer-irq`/`sio-timing`/`timing` are **UNKNOWN on current main** — open PR #8 reports PR #6's batching regressed them and no post-#6 rerun exists. See `docs/open-issues-status.md`; baseline in `tools/mgba-suite-green-baseline.json` |
+| Video oracle aliases | GREEN at last run (2026-06-05), no newer rerun | 7 deterministic `video_probe` hashes via `.\tools\run-video-suite-all.ps1`; upstream interactive `video` suite is absent from the matrix **by design** (no `END pass=total`), not missing by failure |
+| Credibility matrix | RED at last measured run | `.\tools\run-credibility-matrix.ps1` — last valid run (2026-08-14) was RED; current-`main` state UNKNOWN pending rerun (latest artifact: `build/test-results/credibility-matrix-latest.json`) |
+| Physical device soak | FAIL / BLOCKED | 2026-08-14 P1 soak: choppy audio (2,787 underruns @ frame 60), 1.4–2 fps pacing with present stall, thermal unmeasured — failed records preserved in `docs/evidence/` |
+| Commercial-ROM compatibility | NO CLAIM | Only the legal locally built mGBA suite ROM is exercised; retail-game compatibility untested — see `docs/fixture-license-registry.md` |
 | Android shell | Scaffold only | [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) — JNI bridge self-test; see `docs/android-integration-plan.md` |
-| Controlled beta | BLOCKED | No target-device soak row yet — `docs/controlled-beta-readiness.md` |
+| Controlled beta | BLOCKED | No passing target-device soak row — `docs/controlled-beta-readiness.md` |
 
 > **Note:** Sanitized builds (`run-core-tests.ps1 -Sanitize`) cannot run in this environment — the bundled MinGW `g++` (Rev1, 12.2.0) ships no `libasan`/`libubsan`, so ASan/UBSan link fails. This is a toolchain limitation, not an engine defect.
 
