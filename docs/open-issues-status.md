@@ -1,7 +1,7 @@
 # Open Issues Status
 
-Status: 2026-08-15 update — device soak audio/pacing FAILs + credibility matrix regression recorded  
-Date: 2026-06-03 (updated 2026-08-15)
+Status: 2026-09-29 reconciliation — post-#6 timer/timing state marked UNKNOWN (open PR #8); dimension statuses separated  
+Date: 2026-06-03 (updated 2026-09-29; prior updates 2026-08-15, 2026-09-12)
 
 This document summarizes what is **closed** (verified with reproducible evidence) versus
 what **remains** for production and controlled beta. It does not replace per-suite logs in
@@ -48,7 +48,17 @@ first valid pwsh-7 run since June) reported `io-read` and `misc-edge` as RED and
 >   though its notes treat it as outside the baseline); the 7 oracle probes
 >   are verified separately via `tools/run-video-suite-all.ps1` and are GREEN.
 >
-> `misc-edge` remains the only genuine regression. Needs triage before any beta candidate.
+> `misc-edge` remains the only genuinely measured regression (6/12, 2026-08-14). PR #6
+> ("misc-edge HBlank flag start-cycle", merged 2026-09-12) landed investigation + groundwork
+> only; no post-merge `misc-edge` rerun exists, so its current state is UNKNOWN.
+>
+> **Post-#6 timer/timing UNKNOWN (2026-09-29).** PR #6's scheduler/timer batching is merged
+> to `main`. Open PR #8 (`fix/timer-tick-regression`, head `e1e0f99`) reports it regressed
+> `timers` (576/936), `timer-irq` (69/90), `sio-timing` (0/4) and `timing` (1946/2020)
+> relative to the #6 parent. PR #8 is **not merged** and no rerun of these suites on current
+> `main` is on record, so the `GREEN` cells below for those suites are last-measured states
+> from before 2026-09-12 and must not be read as a certification of current `main`. Do not
+> label these regressions resolved until PR #8 merges or a fresh matrix run exists.
 
 | Target | Pass/total (2026-06-01 baseline) | Last measured |
 | --- | --- | --- |
@@ -59,12 +69,12 @@ first valid pwsh-7 run since June) reported `io-read` and `misc-edge` as RED and
 | `shifter` | 140/140 | GREEN |
 | `carry` | 93/93 | GREEN |
 | `multiply-long` | 72/72 | GREEN |
-| `timer-irq` | 90/90 | GREEN |
-| `timers` | 936/936 | GREEN |
-| `timing` | 2020/2020 | GREEN |
+| `timer-irq` | 90/90 | UNKNOWN on current main (open PR #8 reports 69/90 post-#6); last measured GREEN pre-2026-09-12 |
+| `timers` | 936/936 | UNKNOWN on current main (open PR #8 reports 576/936 post-#6); last measured GREEN pre-2026-09-12 |
+| `timing` | 2020/2020 | UNKNOWN on current main (open PR #8 reports 1946/2020 post-#6); last measured GREEN pre-2026-09-12 |
 | `sio-read` | 90/90 | GREEN |
-| `sio-timing` | 4/4 (four SKIPPED no-peer multiplayer cases) | GREEN |
-| `misc-edge` | 12/12 | **RED 6/12** (H-blank bit start Hblank) |
+| `sio-timing` | 4/4 (four SKIPPED no-peer multiplayer cases) | UNKNOWN on current main (open PR #8 reports 0/4 post-#6); last measured GREEN pre-2026-09-12 |
+| `misc-edge` | 12/12 | **RED 6/12** (H-blank bit start Hblank, 2026-08-14); PR #6 groundwork merged 2026-09-12, no rerun since — current state UNKNOWN |
 
 Harness aliases (not in the regression baseline file, but green in the credibility matrix):
 `loadstore`, `ldmia`, `stmia`.
@@ -94,7 +104,7 @@ green:
 - UI: bridge + runtime self-tests, SAF **Open ROM** (`ACTION_OPEN_DOCUMENT`), `EmulatorSession`,
   `GameScreen` frame loop, `TouchGameControls` overlay.
 - Map: `docs/android-integration-plan.md`, `docs/android-rom-play-roadmap.md`,
-  [`GbaEmulatorAndroid/PROJECT_CONTEXT.md`](../../GbaEmulatorAndroid/PROJECT_CONTEXT.md).
+  `GbaEmulatorAndroid/PROJECT_CONTEXT.md` (sibling checkout `../GbaEmulatorAndroid`; not linked because the path resolves only on a side-by-side local clone).
 
 ### Device evidence (P0 synthetic)
 
@@ -127,7 +137,7 @@ artifacts exist — not merely synthetic self-test PASS.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Upstream `video` suite | **MISSING (2026-08-14)** | baseline expects the `video` alias group but the current matrix produces no `video` row — re-verify `run-video-suite-all.ps1` and the matrix config; seven oracle aliases were green as of 2026-06-01 |
+| Upstream `video` suite | Absent from matrix **by design** (reconciled 2026-09-12) | the default `-Suites` list in `tools/run-credibility-matrix.ps1` omits it (interactive video emits no `END pass=total`); the 7 oracle aliases are verified separately via `tools/run-video-suite-all.ps1` (last run 2026-06-05; no newer rerun on record) |
 | Additional video tests | Open | Beyond the seven oracle aliases |
 | CPU pipeline / Thumb coverage | Partial | See `docs/production-engine-roadmap.md` |
 | PPU/APU hardware completeness | Seed-level | Renderer/mixer seeds, not full hardware |
