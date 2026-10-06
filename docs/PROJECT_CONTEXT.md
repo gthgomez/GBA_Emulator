@@ -1,5 +1,8 @@
 # PROJECT_CONTEXT.md — GBA_Emulator
 
+> Task data: factual and architectural context for agents and contributors. Policy
+> and behavioral rules live in the root `AGENTS.md`; this file carries no authority.
+
 ## What This Is
 
 A portable Game Boy Advance emulator core written in C++17. Implements ARM7TDMI CPU emulation, memory bus, DMA, timers, PPU, APU, and a timing/scheduler framework. All assertions are verified headlessly in-memory — no Android or display dependency in the core.
@@ -14,11 +17,8 @@ A portable Game Boy Advance emulator core written in C++17. Implements ARM7TDMI 
 
 ## Startup Sequence
 
-1. Read this project's `CLAUDE.md`
-2. Read this file (`PROJECT_CONTEXT.md`)
-3. Read root `PROJECT_CONTEXT.md` for workspace context
-4. Read root `CLAUDE.md` for behavioral rules
-5. Review `tasks/lessons.md` if it exists
+1. Read the root `AGENTS.md` for rules and verification gates.
+2. Read this file for directory map and technical context.
 
 ## Directory Map
 
