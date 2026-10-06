@@ -71,7 +71,7 @@ jobs:
       - name: Install SDL3 (Windows, pinned mingw devel)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .	ools\setup-desktop-deps.ps1
+        run: .\tools\setup-desktop-deps.ps1
 
       - name: Install SDL3 (Linux, pinned source build)
         if: runner.os == 'Linux'
@@ -87,10 +87,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:PATH = "C:\msys64\mingw64in;$env:PATH"
-          cmake -S . -B build/desktop -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="$PWD\external\SDL3_64-w64-mingw32"
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          cmake -S . -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD\external\SDL3\x86_64-w64-mingw32"
 
       - name: Configure (Linux)
         if: runner.os == 'Linux'
@@ -100,11 +98,11 @@ jobs:
         run: cmake --build build/desktop --config Release
 
       # Headless lab smoke without proprietary ROMs: a synthetic fixture is
-      # generated in-workflow (embedded the same way as the game_boot test).
+      # generated in the script (zeroed content, valid header, never committed).
       - name: Headless lab smoke (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .	oolsun-desktop-smoke.ps1
+        run: .\tools\run-desktop-smoke.ps1
 
       - name: Headless lab smoke (Linux)
         if: runner.os == 'Linux'
