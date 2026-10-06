@@ -54,6 +54,11 @@ class IoRegisters {
   void load_state(const IoRegistersState& state);
   [[nodiscard]] std::uint64_t state_hash() const;
   void tick(std::uint32_t cycles);
+  // Serial-transfer progress, exposed so the IntrWait batching loop can bound
+  // its device-advance chunks by the serial completion edge (otherwise a chunk
+  // can overshoot it and delay the observed transfer-complete cycle).
+  [[nodiscard]] bool sio_transfer_active() const;
+  [[nodiscard]] std::uint32_t sio_transfer_cycles_remaining() const;
   [[nodiscard]] std::optional<std::uint16_t> read16(std::uint32_t address) const;
   [[nodiscard]] std::optional<std::uint32_t> read32(std::uint32_t address) const;
   [[nodiscard]] bool write16(std::uint32_t address, std::uint16_t value);

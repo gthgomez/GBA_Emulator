@@ -921,13 +921,13 @@ int main() {
   thumb_cpu.reset_elapsed_cycles();
   thumb_cpu.set_register(1, 0x12345678);
   thumb_cpu.set_register(2, 0xFF);
-  expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 2,
-         "Thumb MUL step times early exit from Rs magnitude");
-  thumb_cpu.reset_elapsed_cycles();
-  thumb_cpu.set_register(1, 5);
-  thumb_cpu.set_register(2, 0x12345678);
   expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 5,
-         "Thumb MUL step ignores Rd magnitude for early-out timing");
+         "Thumb MUL step times iterations from Rd magnitude");
+  thumb_cpu.reset_elapsed_cycles();
+  thumb_cpu.set_register(1, 0x00000078);
+  thumb_cpu.set_register(2, 0x12345678);
+  expect(thumb_cpu.step_thumb(thumb_mul_r1_r2).elapsed_cycles == 2,
+         "Thumb MUL step early-exits from Rd magnitude, not Rs");
   thumb_cpu.set_register(0, 5);
   thumb_cpu.set_register(1, 6);
   expect(thumb_cpu.execute_thumb(thumb_add_r2_r0_r1) == ExecuteStatus::executed,
@@ -1311,8 +1311,9 @@ int main() {
   branch_step_cpu.set_register(2, 12);
   expect_step(branch_step_cpu.step_arm(cmp_r2_12), ExecuteStatus::executed, 1, 4, false, false,
               "scheduler step charges CMP");
-  expect_step(branch_step_cpu.step_arm(bne_skipped), ExecuteStatus::skipped_condition, 1, 5,
-              false, false, "skipped ARM condition charges one sequential cycle");
+  expect_step(branch_step_cpu.step_arm(bne_skipped), ExecuteStatus::skipped_condition, 0, 4,
+              false, false,
+              "skipped ARM condition charges no execute cycle (fetch handled by scheduler)");
 
   constexpr std::uint32_t str_r1_base_plus_4 =
       kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | rn(6) | rd(1) | offset12(4);
@@ -1451,7 +1452,7 @@ int main() {
       kCondNe | kSingleDataTransferImmediate | kPreIndexed | kUp | kLoad | rn(6) |
       rd(5) | offset12(4);
   expect_step(scheduler_cpu.step_arm(ldrne_r5_base_plus_4, scheduler_memory),
-              ExecuteStatus::skipped_condition, 1, 1, false, false,
+              ExecuteStatus::skipped_condition, 0, 0, false, false,
               "false condition is still skipped before memory timing preflight");
   const auto decoded_store = Arm7tdmi::decode_single_data_transfer_immediate(str_r1_base_plus_4);
   expect(!decoded_store.load, "STR load bit decodes");
