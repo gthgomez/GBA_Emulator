@@ -76,3 +76,45 @@ And with the repo's own harness:
 .\build\rom_video_smoke.exe --rom "..\local\test-roms\Pokemon - Emerald Version (USA, Europe).gba" `
   --frames 300 --max-steps-per-frame 2000000 --check-frame 8,60,120,150,180,215,300 --json
 ```
+
+
+## CORRECTION (2026-10-06, later the same day) — bisect attribution withdrawn
+
+The `git bisect` verdict above is **invalid** and `6785fcc` is **not** the regression commit:
+
+- The bisect script swallowed configure/build failures (`>/dev/null 2>&1`, `|| true`) and the
+  lab marker never verified the artifact's engine-commit stamp. Every commit older than the
+  CMake build surface (PR #12) has no `apps/desktop`, so the build failed silently and the
+  **stale binary from the prior bisect step** produced the verdict. Git consequently converged
+  on `6785fcc`, which is merely the topological child of the bisect-good endpoint.
+
+Direct per-commit builds (single `g++` invocation, no CMake, per-commit frame traces):
+
+| Commit | Frame-28 framebuffer CRC (reference-good = `10599149`) |
+| --- | --- |
+| `19b1558` (bisect good endpoint) | `10599149` — good |
+| `6785fcc` (falsely blamed) | `10599149` — **good; scheduler cycles match the reference exactly** |
+| `0edf607` | `10599149` — good |
+| `9755c99` | `1338142574` — **broken (real regression commit)** |
+
+`9755c99` ("misc-edge HBlank flag start-cycle (investigation + groundwork)", PR #6) carried a
+~420-line renderer rewrite plus PPU-timing latch changes; it is the sole source of both the
+uniform-black symptom and the residual ±2–4 cycle/frame scheduler jitter. The "Experiments"
+section above targeted DMA device advancement and is moot for the same reason.
+
+### Actual root cause (proven by hybrid differential + mGBA source)
+
+`window_layer_mask()` (`src/core/ppu_renderer.cpp`) applies `WINOUT & 0x3F` to the
+outside-window region **even when no window is enabled in DISPCNT**, and the PPU latch resets
+WININ/WINOUT to `0x0000`. Emerald never writes WINOUT, so every layer was masked and only the
+backdrop rendered. mGBA — our reference — bypasses windowing entirely when all three DISPCNT
+window-enable bits are clear (`video-software.c`: `windows[0].control.packed = 0xFF`) and does
+not seed WININ/WINOUT at reset either (`io.c` `GBAIOInit`). The GBATEK "WININ/WINOUT reset =
+0x3F3F" claim could not be confirmed against the primary source and is **not** implemented;
+the mGBA-aligned bypass is the fix.
+
+Fix: bypass windowing when all window-enable bits are clear (one guard in
+`window_layer_mask()`), plus a regression test. Post-fix: frames 0–31 framebuffer CRCs match
+the pre-regression core exactly; frame 20 CRC `335654572` and frame 300 CRC `1075455715`
+match the superseded 2026-08-14 evidence values verbatim; 30/30 verifiers PASS; video-oracle
+suite and determinism re-verified (see fix PR).

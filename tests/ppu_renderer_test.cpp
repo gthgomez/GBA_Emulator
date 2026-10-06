@@ -166,6 +166,18 @@ int main() {
   expect(renderer.pixel(25, 0) == kBackdrop, "WIN1 outside region leaves backdrop");
   expect(renderer.pixel(0, 0) == kBgGreen, "WIN1 inside region draws enabled BG");
 
+  // Regression (issue #15): WINOUT=0 with every window disabled in DISPCNT
+  // must not mask layers — the window circuit is bypassed entirely
+  // (mGBA-aligned). Emerald leaves WINOUT at 0 and renders only its backdrop
+  // if WINOUT is applied unconditionally.
+  const gba::core::PpuRenderStats windowless_stats =
+      renderer.render_scanline(memory, control(kBg0Enable, static_cast<std::uint16_t>(8U << 8)),
+                               0);
+  expect(windowless_stats.window_masked_pixels == 0,
+         "windowing disabled masks no pixels");
+  expect(renderer.pixel(0, 0) == kBgGreen,
+         "WINOUT ignored when no window is enabled");
+
   expect(memory.write16(0x06000000, 0xFFFF), "seed mode 3 high-bit bitmap pixel");
   const gba::core::PpuRenderStats mode3_stats =
       renderer.render_scanline(memory, control(3, 0), 0);
