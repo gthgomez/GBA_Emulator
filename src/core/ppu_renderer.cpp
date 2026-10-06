@@ -109,6 +109,13 @@ constexpr std::uint16_t kColorMask = 0x7FFF;
   const bool win0_on = (control.dispcnt & kWin0Enable) != 0;
   const bool win1_on = (control.dispcnt & kWin1Enable) != 0;
   const bool obj_window_on = (control.dispcnt & kObjWindowEnable) != 0;
+  if (!win0_on && !win1_on && !obj_window_on) {
+    // Windowing disabled in DISPCNT: the window circuit is bypassed and every
+    // layer is visible regardless of WINOUT. Games commonly leave WINOUT at
+    // its power-on 0 (mGBA behaves the same way); applying WINOUT here blanked
+    // real-game output (issue #15).
+    return kWindowLayerMask;
+  }
   if (win0_on && inside_window_rect(control.win0h, control.win0v, x, y)) {
     return static_cast<std::uint16_t>(control.winin & kWindowLayerMask);
   }
