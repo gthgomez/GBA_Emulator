@@ -1,5 +1,7 @@
 set(GBA_DESKTOP_SOURCES
     main.cpp
+    desktop_app.cpp
+    stb_impl.cpp
 )
 
 add_executable(gba-desktop ${GBA_DESKTOP_SOURCES})

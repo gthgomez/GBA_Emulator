@@ -4,16 +4,16 @@
 //   * headless lab mode (--headless): deterministic frame-budgeted run with
 //     scripted input, hashes, screenshots, and a JSON artifact. This is the
 //     primary verification surface for engine work.
-//   * interactive play mode: SDL3 window/input/audio (implemented in the
-//     desktop host files; this translation unit refuses interactive runs
-//     rather than pretending to play).
+//   * interactive play mode: SDL3 window/input/audio via desktop_app.cpp,
+//     backed by the same EmulatorRuntime as the lab.
 //
 // Emulator behavior lives entirely in gba_core; this file only orchestrates.
 
 #include "gba/core/emulator_runtime.hpp"
+
+#include "desktop_app.hpp"
 #include "gba/core/save_state_codec.hpp"
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
 #include <algorithm>
@@ -62,6 +62,8 @@ struct CliOptions {
   bool state_hash = false;
   std::string save_state_output;
   std::string load_state_input;
+  std::uint32_t quit_after_frames = 0;
+  std::string window_screenshot_path;
 };
 
 struct InputEvent {
@@ -120,6 +122,10 @@ CliOptions parse_cli(int argc, char** argv) {
       rom_seen = true;
     } else if (arg == "--headless") {
       opts.headless = true;
+    } else if (arg == "--quit-after") {
+      opts.quit_after_frames = next_u32();
+    } else if (arg == "--window-screenshot") {
+      opts.window_screenshot_path = next_string();
     } else if (arg == "--frames") {
       opts.frames = next_u32();
     } else if (arg == "--max-steps-per-frame") {
@@ -544,6 +550,19 @@ const char* stop_reason_name(CoreRunStopReason reason) {
   }
 }
 
+std::string json_escape(const std::string& in) {
+  static constexpr char kBackslash = static_cast<char>(0x5C);
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (const char c : in) {
+    if (c == kBackslash || c == '"') {
+      out.push_back(kBackslash);
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Headless lab run.
 // ---------------------------------------------------------------------------
@@ -682,7 +701,7 @@ int run_headless(const CliOptions& opts) {
   artifact += "    \"host\": \"gba-desktop\"\n";
   artifact += "  },\n";
   artifact += "  \"rom\": {\n";
-  artifact += "    \"path\": \"" + opts.rom_path + "\",\n";
+  artifact += "    \"path\": \"" + json_escape(opts.rom_path) + "\",\n";
   artifact += "    \"sha256\": \"" + rom_sha256 + "\",\n";
   artifact += "    \"size\": " + std::to_string(rom.size()) + "\n";
   artifact += "  },\n";
@@ -751,11 +770,12 @@ int run_headless(const CliOptions& opts) {
 int main(int argc, char** argv) {
   const CliOptions opts = parse_cli(argc, argv);
   if (!opts.headless) {
-    // Play mode lands with the SDL host; refuse clearly rather than falling
-    // back to a silent headless run.
-    std::cerr << "gba-desktop: interactive play mode requires the SDL host "
-                 "(not yet compiled in). Use --headless for lab mode.\n";
-    return 2;
+    gba::desktop::HostOptions host;
+    host.rom_path = opts.rom_path;
+    host.initial_scale = 3;
+    host.quit_after_frames = opts.quit_after_frames;
+    host.window_screenshot_path = opts.window_screenshot_path;
+    return gba::desktop::DesktopApp(host).run();
   }
   return run_headless(opts);
 }
