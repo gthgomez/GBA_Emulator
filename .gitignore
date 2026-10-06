@@ -27,3 +27,6 @@ bios*.gba
 bios*.bin
 *.apk
 *.aab
+
+# Desktop host deps (pinned SDL3 fetched by tools/setup-desktop-deps.ps1)
+external/SDL3/
