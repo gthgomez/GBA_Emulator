@@ -41,7 +41,21 @@ From this repository:
 .\tools\run-core-tests.ps1
 ```
 
-The script compiles and runs all local core verifier binaries with C++17 using `g++`.
+or on Linux:
+
+```bash
+./tools/run-core-tests.sh
+```
+
+Both runners compile and run all local core verifier binaries with C++17 using
+`g++ -std=c++17 -Wall -Wextra -Werror`, skip up-to-date binaries incrementally,
+and exit non-zero on any compile or test failure. The bash script is the portable
+counterpart of the PowerShell runner — same tests, same source lists, same flags,
+no `.exe` suffixes (binaries land in `build/`).
+
+Every push and pull request runs both runners on `ubuntu-latest` (bash) and
+`windows-latest` (PowerShell) via GitHub Actions — see
+[.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Docs
 

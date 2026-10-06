@@ -7,19 +7,32 @@ on:
 
 jobs:
   core-tests:
-    name: Core test suite (run-core-tests.ps1)
-    runs-on: windows-latest
+    name: Core test suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Portable bash runner: same tests, sources, and flags as the PowerShell
+      # script (g++ -std=c++17 -Wall -Wextra -Werror), no .exe suffixes.
+      - name: Run core verifiers (Linux)
+        if: runner.os == 'Linux'
+        run: ./tools/run-core-tests.sh
+
       - name: Set up MSYS2 (MinGW-w64 g++)
+        if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           install: mingw-w64-x86_64-gcc
 
-      - name: Run core verifiers
+      - name: Run core verifiers (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
@@ -30,6 +43,7 @@ jobs:
       # this gate is informational: it still surfaces checksum/operations drift
       # in the logs without blocking the build on benchmark-runner jitter.
       - name: Benchmark regression gate (check-core-performance-regression.ps1)
+        if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -38,5 +52,6 @@ jobs:
           .\tools\check-core-performance-regression.ps1
 
       - name: Release readiness gate (check-release-readiness.ps1)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: .\tools\check-release-readiness.ps1
