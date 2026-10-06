@@ -31,6 +31,12 @@ if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-smoke: FAIL (rom generator)";
 $exe = Join-Path $repoRoot "build" "desktop" "apps" "desktop" "gba-desktop.exe"
 if (-not (Test-Path $exe)) { $exe = Join-Path $repoRoot "build" "desktop" "gba-desktop" }
 
+# The mingw SDL3 prebuilt links dynamically; the DLL must sit beside the exe.
+$dll = Join-Path $repoRoot "external" "SDL3" "x86_64-w64-mingw32" "bin" "SDL3.dll"
+if (Test-Path $dll) {
+    Copy-Item $dll (Join-Path (Split-Path -Parent $exe) "SDL3.dll") -Force
+}
+
 & $exe --headless --rom $romPath --frames 120 --frame-hash --audio-hash --state-hash `
     --artifact (Join-Path $labDir "run1.json")
 if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-smoke: FAIL (run1 exit $LASTEXITCODE)"; exit 1 }

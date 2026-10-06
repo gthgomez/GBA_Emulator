@@ -76,6 +76,8 @@ jobs:
       - name: Install SDL3 (Linux, pinned source build)
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev
           SDL_VERSION=3.4.18
           curl -sL -o /tmp/sdl3.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL3-${SDL_VERSION}.tar.gz"
           tar -xzf /tmp/sdl3.tar.gz -C /tmp
