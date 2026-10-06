@@ -550,6 +550,19 @@ const char* stop_reason_name(CoreRunStopReason reason) {
   }
 }
 
+std::string json_escape(const std::string& in) {
+  static constexpr char kBackslash = static_cast<char>(0x5C);
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (const char c : in) {
+    if (c == kBackslash || c == '"') {
+      out.push_back(kBackslash);
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Headless lab run.
 // ---------------------------------------------------------------------------
@@ -688,7 +701,7 @@ int run_headless(const CliOptions& opts) {
   artifact += "    \"host\": \"gba-desktop\"\n";
   artifact += "  },\n";
   artifact += "  \"rom\": {\n";
-  artifact += "    \"path\": \"" + opts.rom_path + "\",\n";
+  artifact += "    \"path\": \"" + json_escape(opts.rom_path) + "\",\n";
   artifact += "    \"sha256\": \"" + rom_sha256 + "\",\n";
   artifact += "    \"size\": " + std::to_string(rom.size()) + "\n";
   artifact += "  },\n";
