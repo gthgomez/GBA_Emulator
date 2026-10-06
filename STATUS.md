@@ -1,6 +1,6 @@
 # GBA_Emulator Status
 
-**Last verified:** 2026-09-18
+**Last verified:** 2026-09-18 (core verifiers); status reconciled 2026-09-29 against `docs/open-issues-status.md`
 **Status:** active development
 **Confidence:** high (core verifiers); medium (accuracy — `misc-edge` RED and `timing` short of `pass=total`, see below)
 
@@ -10,9 +10,11 @@ Portable Game Boy Advance (GBA) emulator core written in C++17 with mGBA test-su
 
 ## Current State
 
-- **Core verifiers: 29/29 PASS.** Re-verified 2026-09-18 via `tools/run-core-tests.ps1` (clean `g++ -Werror` rebuild, all binaries run and pass). The 29th verifier (`intr_wait_serial_horizon_test`) guards the IntrWait serial completion edge added with this PR. No compile warnings, no runtime failures in the headless suite.
+- **Core verifiers: 29/29 PASS.** Re-verified 2026-09-18 via `tools/run-core-tests.ps1` (clean `g++ -Werror` rebuild, all binaries run and pass). The 29th verifier (`intr_wait_serial_horizon_test`) guards the IntrWait serial completion edge added with PR #8. No compile warnings, no runtime failures in the headless suite.
 - **mGBA public suites: 11/13 GREEN, 2 below `pass=total`.** `io-read` is **GREEN 130/130** (re-verified 2026-09-12; the recorded `51/130` RED was disproven by PR #7). `misc-edge` (6/12) is RED and `timing` is 1956/2020 (64 failures pre-existing on `main`), so neither meets the `pass=total` bar. The other 11 (`memory`, `bios-math`, `dma`, `shifter`, `carry`, `multiply-long`, `timer-irq`, `timers`, `sio-read`, `sio-timing`, plus `io-read`) are GREEN.
-- **Video oracle aliases: 7/7 GREEN** via the separate `tools/run-video-suite-all.ps1` runner (the upstream interactive `video` suite is intentionally excluded from the credibility matrix baseline).
+- **Video oracle aliases: 7/7 GREEN** via the separate `tools/run-video-suite-all.ps1` runner (the upstream interactive `video` suite is intentionally excluded from the credibility matrix baseline and absent from the matrix by design — it does not emit `END pass=total`).
+- **Physical device soak: still failing/blocked.** The 2026-08-14 P1 soak evidence records audible-but-choppy audio (2,787 underruns @ frame 60; 710,778 after restart) and 1.4–2 fps pacing with a full present stall; thermal soak unmeasured. These FAIL records are preserved in `docs/evidence/` and are not superseded.
+- **Commercial-ROM compatibility: no claim.** Only the legal locally built mGBA suite ROM is exercised; retail-game compatibility is explicitly untested.
 - **Controlled external beta remains blocked** without target-device soak evidence.
 
 **Engine audit (2026-09-18):** The recorded `io-read` regression was disproven. Re-running the pinned suite (`aac98dca`) gives **130/130** on both `main` and the HBlank branch, and a direct CPU probe confirms the expected open-bus values (write-only/INVALID registers → open bus `0xDEAD`; BG0CNT→`0xDFFF`, WININ/OUT→`0x3F3F`, BLDCNT→`0x3FFF`, BLDALPHA→`0x1F1F`); the pipeline-open-bus fallback is in fact what produces `0xDEAD`. The contract is now locked natively by `tests/io_read_open_bus_test.cpp`. The `misc-edge` "H-blank bit start" sub-test remains timing-sensitive and plausibly related to commit `81beba2` ("unify HBlank event+flag at hardware-calibrated cycle 1004").
@@ -56,6 +58,7 @@ Portable Game Boy Advance (GBA) emulator core written in C++17 with mGBA test-su
 
 ## Evidence Sources
 
-- [README.md](file:///C:/Workspace/Project_Android/GBA_Emulator/README.md)
-- [QA_CHECKLIST.md](file:///C:/Workspace/Project_Android/GBA_Emulator/QA_CHECKLIST.md)
-- [docs/open-issues-status.md](file:///C:/Workspace/Project_Android/GBA_Emulator/docs/open-issues-status.md)
+- [README.md](README.md)
+- [QA_CHECKLIST.md](QA_CHECKLIST.md)
+- [docs/open-issues-status.md](docs/open-issues-status.md)
+- Device soak evidence: [docs/evidence/](docs/evidence/) (failed 2026-08-14 P1 records preserved)
