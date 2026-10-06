@@ -1,6 +1,6 @@
 # GBA_Emulator Status
 
-**Last verified:** 2026-09-18 (core verifiers); status reconciled 2026-09-29 against `docs/open-issues-status.md`
+**Last verified:** 2026-10-06 (core verifiers 30/30 PASS; desktop host merged at `78a3951`)
 **Status:** active development
 **Confidence:** high (core verifiers); medium (accuracy — `misc-edge` RED and `timing` short of `pass=total`, see below)
 
@@ -9,6 +9,18 @@
 Portable Game Boy Advance (GBA) emulator core written in C++17 with mGBA test-suite verification, deterministic timing/scheduler, and an opaque C API for Android JNI integration.
 
 ## Current State
+
+- **Desktop host shipped (2026-10-06, PRs #12/#13):** `gba-desktop` play mode
+  (SDL3 window/input/audio, cartridge saves, save states, pause/reset) and a
+  deterministic headless lab (JSON artifacts, scripted input, hashes,
+  screenshots) on the same `EmulatorRuntime`. CI builds the desktop host on
+  Linux + Windows with a synthetic-ROM determinism smoke. See
+  `docs/DESKTOP.md`.
+- **Real-game video regression (issue #15):** Pokemon Emerald renders uniform
+  black from ~frame 30 since core commit `6785fcc` (hardware-timing Phase 1).
+  Bisect evidence: `docs/evidence/2026-10-06-emerald-video-regression-bisect.md`.
+  Verifier/mGBA suites stay green — the regression is only observable on
+  real-game content via the desktop lab. Highest-priority correctness item.
 
 - **Core verifiers: 29/29 PASS.** Re-verified 2026-09-18 via `tools/run-core-tests.ps1` (clean `g++ -Werror` rebuild, all binaries run and pass). The 29th verifier (`intr_wait_serial_horizon_test`) guards the IntrWait serial completion edge added with PR #8. No compile warnings, no runtime failures in the headless suite.
 - **mGBA public suites: 11/13 GREEN, 2 below `pass=total`.** `io-read` is **GREEN 130/130** (re-verified 2026-09-12; the recorded `51/130` RED was disproven by PR #7). `misc-edge` (6/12) is RED and `timing` is 1956/2020 (64 failures pre-existing on `main`), so neither meets the `pass=total` bar. The other 11 (`memory`, `bios-math`, `dma`, `shifter`, `carry`, `multiply-long`, `timer-irq`, `timers`, `sio-read`, `sio-timing`, plus `io-read`) are GREEN.
