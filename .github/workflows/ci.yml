@@ -55,3 +55,57 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\tools\check-release-readiness.ps1
+
+  desktop-host:
+    name: Desktop host (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install SDL3 (Windows, pinned mingw devel)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .	ools\setup-desktop-deps.ps1
+
+      - name: Install SDL3 (Linux, pinned source build)
+        if: runner.os == 'Linux'
+        run: |
+          SDL_VERSION=3.4.18
+          curl -sL -o /tmp/sdl3.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL3-${SDL_VERSION}.tar.gz"
+          tar -xzf /tmp/sdl3.tar.gz -C /tmp
+          cmake -S /tmp/SDL3-${SDL_VERSION} -B /tmp/sdl3-build -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF
+          cmake --build /tmp/sdl3-build -j
+          sudo cmake --install /tmp/sdl3-build
+
+      - name: Configure (Windows MinGW)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64in;$env:PATH"
+          cmake -S . -B build/desktop -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$PWD\external\SDL3_64-w64-mingw32"
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build gba-desktop
+        run: cmake --build build/desktop --config Release
+
+      # Headless lab smoke without proprietary ROMs: a synthetic fixture is
+      # generated in-workflow (embedded the same way as the game_boot test).
+      - name: Headless lab smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .	oolsun-desktop-smoke.ps1
+
+      - name: Headless lab smoke (Linux)
+        if: runner.os == 'Linux'
+        run: ./tools/run-desktop-smoke.sh
