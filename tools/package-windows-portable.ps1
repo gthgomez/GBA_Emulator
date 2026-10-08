@@ -30,7 +30,10 @@ Copy-Item -LiteralPath $exe (Join-Path $stage "gba-desktop.exe")
 
 # Enumerate the executable's real imports rather than assuming SDL3.dll is the
 # only one. Windows system DLLs are resolved by the OS; everything else must be
-# shipped beside the exe.
+# shipped beside the exe. The api-ms-win-crt-* family is the Universal CRT: an
+# OS component on Windows 10+ that System32 always provides (UCRT-targeting
+# toolchains such as the runner's C:\mingw64 GCC import it; MSVCRT toolchains
+# do not).
 $systemDlls = @(
     "advapi32.dll", "bcrypt.dll", "cfgmgr32.dll", "comdlg32.dll", "dwmapi.dll",
     "gdi32.dll", "hid.dll", "imm32.dll", "kernel32.dll", "msvcrt.dll",
@@ -39,6 +42,9 @@ $systemDlls = @(
     "userenv.dll", "uxtheme.dll", "version.dll", "winmm.dll", "winhttp.dll",
     "ws2_32.dll", "dinput8.dll", "xinput1_4.dll", "dsound.dll"
 )
+function Test-SystemDll([string]$dll) {
+    $systemDlls -contains $dll -or $dll.StartsWith("api-ms-win-crt-")
+}
 
 $objdump = Get-Command objdump -ErrorAction SilentlyContinue
 if (-not $objdump) { throw "objdump not found (install MSYS2/MinGW binutils) to verify imports" }
@@ -47,15 +53,22 @@ $imports = & $objdump.Source -p $exe |
     ForEach-Object { $_.Matches[0].Groups[1].Value.Trim().ToLowerInvariant() } |
     Sort-Object -Unique
 
+# The MinGW runtime DLLs (libgcc/libstdc++/libwinpthread) live beside whatever
+# g++ built the executable. That is not necessarily C:\msys64\mingw64: the
+# GitHub runner image also carries a standalone C:\mingw64 toolchain, and PATH
+# decides which one CMake picks. Prefer the active compiler's own bin
+# directory, then the known image locations.
 $searchDirs = @(
     (Split-Path -Parent $exe),
-    (Join-Path $repoRoot "external/SDL3/x86_64-w64-mingw32/bin"),
-    "C:\msys64\mingw64\bin"
+    (Join-Path $repoRoot "external/SDL3/x86_64-w64-mingw32/bin")
 )
+$compiler = Get-Command g++ -ErrorAction SilentlyContinue
+if ($compiler) { $searchDirs += (Split-Path -Parent $compiler.Source) }
+$searchDirs += "C:\msys64\mingw64\bin", "C:\mingw64\bin"
 $copied = @()
 $missing = @()
 foreach ($dll in $imports) {
-    if ($systemDlls -contains $dll) { continue }
+    if (Test-SystemDll $dll) { continue }
     $source = $null
     foreach ($dir in $searchDirs) {
         $candidate = Join-Path $dir $dll
