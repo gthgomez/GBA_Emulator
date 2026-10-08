@@ -3087,9 +3087,19 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
             prefetch_buffer_halfwords_, boundary_forced_nonsequential};
   }
   CoreSchedulerStepResult step = step_arm(instruction.value(), elapsed_override);
+  // A taken branch whose target is the instruction itself leaves the PC at
+  // the fetch address, exactly like an instruction that never touches the
+  // PC. Decoding the branch group distinguishes the two: a taken branch-to-
+  // self must keep its target (it is an intentional infinite loop on
+  // hardware), not be rewritten into a fallthrough.
+  const bool executed_branch_to_self =
+      step.cpu_step.status == ExecuteStatus::executed &&
+      Arm7tdmi::can_decode_branch(instruction.value()) &&
+      cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
   const bool should_advance_pc =
       step.cpu_step.status != ExecuteStatus::unsupported &&
-      cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+      cpu_.register_value(Arm7tdmi::kPc) == fetch_address &&
+      !executed_branch_to_self;
   bool seed_prefetch_after_branch_exchange = false;
   bool pc_changed_with_pipeline_refill = false;
   if (!should_advance_pc && step.cpu_step.status == ExecuteStatus::executed &&
@@ -3298,9 +3308,18 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
   CoreSchedulerStepResult step =
       step_thumb(instruction.value(), prefetch_internal_load_overlap,
                  elapsed_override);
+  // Same branch-to-self ambiguity as the ARM path above: a taken Thumb
+  // branch to its own address (e.g. 0xE7FE) must keep its target instead of
+  // being rewritten into a fallthrough.
+  const bool executed_branch_to_self =
+      step.cpu_step.status == ExecuteStatus::executed &&
+      (Arm7tdmi::can_decode_thumb_unconditional_branch(instruction.value()) ||
+       Arm7tdmi::can_decode_thumb_conditional_branch(instruction.value())) &&
+      cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
   const bool should_advance_pc =
       step.cpu_step.status != ExecuteStatus::unsupported &&
-      cpu_.register_value(Arm7tdmi::kPc) == fetch_address;
+      cpu_.register_value(Arm7tdmi::kPc) == fetch_address &&
+      !executed_branch_to_self;
   bool seed_prefetch_after_branch_exchange = false;
   bool pc_changed_with_pipeline_refill = false;
   if (!should_advance_pc && step.cpu_step.status == ExecuteStatus::executed &&
