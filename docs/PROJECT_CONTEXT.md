@@ -5,15 +5,16 @@
 
 ## What This Is
 
-A portable Game Boy Advance emulator core written in C++17. Implements ARM7TDMI CPU emulation, memory bus, DMA, timers, PPU, APU, and a timing/scheduler framework. All assertions are verified headlessly in-memory — no Android or display dependency in the core.
+A portable Game Boy Advance emulator core written in C++17. Implements ARM7TDMI CPU emulation, memory bus, DMA, timers, PPU, APU, and a timing/scheduler framework. Core assertions are verified headlessly in-memory — no Android or display dependency in the core. Two hosts share the core through the `gba::core::EmulatorRuntime` facade: the SDL3 desktop host under `apps/desktop` (play mode + deterministic headless lab) and the sibling Android shell.
 
 ## Tech Stack
 
 - **Language:** C++17
-- **Build:** Direct `g++` compilation via PowerShell scripts (no CMake for core — CMake used only for Android JNI bridge in sibling project)
+- **Core build/test:** Direct `g++` compilation via PowerShell/bash scripts (no CMake)
+- **Desktop host build:** CMake + SDL3 (`apps/desktop`); one engine, no duplicated core
 - **Testing:** Headless in-memory test framework with deterministic assertions
 - **Benchmarking:** Custom benchmark harness for timing-critical paths
-- **Target:** Portable core with opaque C++ API; JNI/Android integration deferred to sibling `GbaEmulatorAndroid`
+- **Target:** Portable core with opaque C++ API; desktop and Android hosts on the same facade
 
 ## Startup Sequence
 
@@ -25,6 +26,8 @@ A portable Game Boy Advance emulator core written in C++17. Implements ARM7TDMI 
 ```
 GBA_Emulator/
 ├── include/                     — C++ headers
+├── apps/                        — Platform hosts (share the core via EmulatorRuntime)
+│   └── desktop/                 — SDL3 reference host: play mode + headless lab (CMake)
 ├── src/core/                    — Core emulator source
 │   ├── arm7tdmi.cpp             — CPU emulation (ARM/Thumb)
 │   ├── memory_bus.cpp           — Memory mapping and bus
@@ -40,9 +43,8 @@ GBA_Emulator/
 │   ├── wait_state_control.cpp   — WAITCNT timing
 │   ├── bios.cpp                 — BIOS HLE (no bundled BIOS file)
 │   ├── android_core_bridge.cpp  — Narrow JNI-facing C API bridge
-│   ├── android_runtime.cpp      — Android runtime (video/input/audio flow)
-│   ├── save_state_codec.cpp     — Save state serialization
-│   └── instruction_cache.cpp    — Predecoded instruction cache
+│   ├── android_runtime.cpp      — Runtime facade (video/input/audio/save-state flow)
+│   └── save_state_codec.cpp     — Save state serialization
 ├── tests/                       — Headless in-memory test files
 ├── benchmarks/                  — Benchmark harness and tests
 ├── tools/                       — Build and verification scripts
@@ -51,15 +53,22 @@ GBA_Emulator/
 │   ├── run-credibility-matrix.ps1
 │   ├── run-mgba-suite.ps1       — mGBA public test suite runner
 │   ├── run-rom-smoke.ps1        — ROM smoke tests (out-of-tree ROMs)
+│   ├── run-desktop-smoke.*      — Desktop headless determinism smoke
+│   ├── run-desktop-save-smoke.* — Desktop cartridge-save lifecycle smoke
+│   ├── run-desktop-interactive-smoke.* — Interactive SDL host smoke (dummy drivers)
+│   ├── make-synthetic-rom.py    — Generates legal synthetic ROM fixtures
+│   ├── check-png-nonuniform.py  — Verifies a screenshot is not blank
+│   ├── package-windows-portable.ps1 — Portable Windows ZIP
 │   └── mgba-suite-green-baseline.json
 ├── docs/                        — Detailed documentation
+│   ├── DESKTOP.md               — Desktop host build/controls/persistence
 │   ├── android-integration-plan.md
 │   ├── android-device-soak-checklist.md
 │   ├── controlled-beta-readiness.md
 │   ├── open-issues-status.md
 │   ├── design-decisions.md
 │   └── production-engine-roadmap.md
-├── external/                    — External test suites (mGBA)
+├── external/                    — External test suites (mGBA) / SDL3 (gitignored)
 └── build/                       — Build outputs
 ```
 
@@ -83,8 +92,11 @@ GBA_Emulator/
 
 ## Verification
 
-- Core tests: `.\tools\run-core-tests.ps1`
+- Core tests: `.\tools\run-core-tests.ps1` (or `./tools/run-core-tests.sh`)
 - Core benchmarks: `.\tools\run-core-benchmarks.ps1`
 - Credibility matrix: `.\tools\run-credibility-matrix.ps1`
 - mGBA public suite: `.\tools\run-mgba-suite.ps1`
-- All commands compile from source via `g++` — no Gradle or CMake involved at the core level
+- Desktop host (CMake + SDL3): `tools/run-desktop-smoke.*`, `tools/run-desktop-save-smoke.*`,
+  `tools/run-desktop-interactive-smoke.*` — see `docs/DESKTOP.md`
+- Core commands compile from source via `g++` — no Gradle or CMake involved at the
+  core level. Only the desktop host uses CMake.

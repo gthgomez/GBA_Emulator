@@ -13,19 +13,31 @@ cmake -S . -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release `
 cmake --build build/desktop --config Release
 ```
 
-Linux: install the SDL3 dev packages (or let `tools/run-desktop-smoke.sh`'s CI
-recipe build pinned SDL3 from source), then `cmake -S . -B build/desktop` and
-`cmake --build build/desktop`. Copy `SDL3.dll` beside the exe on Windows if it
-is not already there (the smoke script does this automatically).
+The executable lands at `build\desktop\apps\desktop\gba-desktop.exe` and needs
+`SDL3.dll` beside it (the smoke scripts copy it automatically). To produce a
+self-contained portable ZIP — the exe, every non-system DLL it imports, and
+license/attribution files — run:
+
+```powershell
+.\tools\package-windows-portable.ps1 -Version 0.1.0
+# -> dist\gba-desktop-0.1.0-windows-x64.zip
+```
+
+Linux: install the SDL3 dev packages (or build pinned SDL3 from source, as CI
+does), then `cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release` and
+`cmake --build build/desktop`.
 
 ## Play mode
 
 ```powershell
+.\build\desktop\apps\desktop\gba-desktop.exe            # opens a ROM file dialog
 .\build\desktop\apps\desktop\gba-desktop.exe D:\ROMs\game.gba
 ```
 
-Window shows the engine framebuffer (nearest-neighbor, letterboxed, resizable,
-F11 fullscreen). Controls:
+Launching with no arguments opens a file picker instead of printing usage.
+Paths containing spaces are fine (quote them in the shell as usual). The window
+shows the engine framebuffer (nearest-neighbor, letterboxed, resizable, F11
+fullscreen). Controls:
 
 | Input | Action |
 | --- | --- |
@@ -36,33 +48,63 @@ F11 fullscreen). Controls:
 | Tab (hold) | Fast-forward |
 | P or Space | Pause/resume |
 | F5 / F8 | Save / load state (slot 1) |
-| F9 | Reset (full re-boot) |
+| F9 | Reset (full re-boot; keeps cartridge save) |
 | M | Mute |
 | O | Open ROM dialog |
 | Drag-and-drop | Open ROM |
 | Esc | Quit |
 
-Cartridge saves persist to `<rom>.sav` next to the ROM (imported at boot,
-flushed on exit and every ~5 s of dirty frames). Save states are
-`<rom>.sav.state1` (core `SaveStateCodec` v3 format). Incompatible or corrupt
-save states fail visibly on stderr, never silently.
+Keyboard and gamepad input are aggregated from independent sources: an idle or
+disconnected controller can never cancel a held key, presses from multiple
+controllers are OR-combined, and losing window focus releases the keyboard mask
+so no button stays stuck.
+
+### Saves and data safety
+
+- Cartridge saves persist to `<rom>.sav` next to the ROM (or in
+  `--save-directory`), imported at boot, flushed on exit and every ~5 s of dirty
+  frames. Games with no cartridge-backed save never create a `.sav`.
+- Save states are `<rom>.state1` etc. (core `SaveStateCodec` v3 format). Because
+  the codec snapshot is self-contained, the host additionally refuses a state
+  that was captured from a different ROM.
+- All save writes are replace-in-place safe: a sibling temp file is written and
+  renamed over the destination, so a failed or interrupted write cannot truncate
+  a good save. (This is crash-safe, not a power-loss durability guarantee.)
+- Switching ROMs (dialog or drag-and-drop) flushes the outgoing cartridge save
+  first; a rejected replacement ROM rolls the running session back rather than
+  discarding it.
+- Reset re-imports the current cartridge save, so in-game progress survives a
+  console reset (save states are separate files).
+- A corrupt/incompatible `.sav` is copied to `<rom>.sav.rejected` before the
+  host starts fresh, so the original bytes are never destroyed.
+- Corrupt or wrong-ROM save states fail visibly on stderr and leave the running
+  game untouched.
+
+### Automation hooks (CI / scripting)
+
+| Flag | Effect |
+| --- | --- |
+| `--quit-after N` | quit after N presented frames |
+| `--reset-after N` | perform a full reset after N presented frames |
+| `--window-screenshot PATH` | capture the presented window to a PNG |
 
 ## Headless lab mode (primary verification surface)
 
 ```powershell
 .\build\desktop\apps\desktop\gba-desktop.exe --headless `
-  --rom D:\ROMs\game.gba --frames 600 --unthrottled `
+  --rom D:\ROMs\game.gba --frames 600 `
   --input-script .\local\scripts\menu.json `
   --screenshot-frame 60 --screenshot-output build\lab\shots `
   --frame-hash --audio-hash --state-hash `
   --artifact build\lab\run.json
 ```
 
-Key flags: `--frames`, `--max-steps-per-frame`, `--input-script` (JSON events
-`{frame, button, state}`), `--screenshot-frame` (repeatable) +
-`--screenshot-output`, `--frame-hash` (CRC32s sampled every 30 frames + final),
-`--audio-hash`, `--state-hash`, `--save-state`/`--load-state` (round-trip
-verified), `--artifact` (versioned JSON, schema_version 1).
+Headless runs are never wall-clock throttled. Key flags: `--frames`,
+`--max-steps-per-frame`, `--input-script` (JSON events `{frame, button, state}`),
+`--screenshot-frame` (repeatable) + `--screenshot-output`, `--frame-hash` (CRC32s
+sampled every 30 frames + final), `--audio-hash`, `--state-hash`,
+`--save-state`/`--load-state` (round-trip verified), `--artifact` (versioned JSON,
+schema_version 1).
 
 The artifact records engine commit + build type, ROM sha256/size, stop reason,
 unsupported-instruction/fetch-failure counters, framebuffer CRC32, audio
@@ -81,18 +123,51 @@ Input script format:
 }
 ```
 
-## CI
+## CI and local verification
 
-`.github/workflows/ci.yml` runs a `desktop-host` job on Linux + Windows:
-pinned SDL3, CMake Release build, then `tools/run-desktop-smoke.ps1` /
-`.sh`, which generate a synthetic legal ROM in `build/` (never committed),
-run headless twice, and assert completion + bit-identical determinism.
-No proprietary ROMs in CI.
+`.github/workflows/ci.yml` runs a `desktop-host` job on Linux + Windows: pinned
+SDL3, CMake Release build, then:
+
+- `tools/run-desktop-smoke.{ps1,sh}` — synthetic legal ROM (never committed),
+  two headless runs, asserts completion + bit-identical determinism.
+- `tools/run-desktop-save-smoke.{ps1,sh}` — cartridge-save restart persistence,
+  reset preservation, no spurious empty `.sav`, rejected-save preservation.
+- `tools/run-desktop-interactive-smoke.{ps1,sh}` — drives the *interactive* SDL
+  host under the dummy video/audio drivers and asserts the captured window
+  contains real (nonuniform) graphics, then checks that an undefined-instruction
+  ROM exits non-zero.
+
+The synthetic fixtures are generated by `tools/make-synthetic-rom.py`; PNG
+content is checked by `tools/check-png-nonuniform.py`. No proprietary ROMs,
+BIOS files, or private saves are used or committed.
 
 ## Known state
 
-Real-game video rendering is currently broken on `main` for Pokemon Emerald
-(uniform black since core commit `6785fcc`; timing suites unaffected). See
-[issue #15](https://github.com/gthgomez/GBA_Emulator/issues/15) and
-`docs/evidence/2026-10-06-emerald-video-regression-bisect.md`. The synthetic
-ROM path used by CI is unaffected.
+- The Pokemon Emerald uniform-black regression (issue #15) introduced by
+  `6785fcc` was diagnosed in PR #14 and **fixed in PR #17** (PPU windowing
+  bypass when no window is enabled). It is historical, not current.
+- A separate engine defect was found while building the interactive fixture: a
+  bare branch-to-self (`B #-8`) runs away instead of looping, while a
+  branch-to-previous-instruction loop works. It is recorded in
+  `docs/open-issues-status.md`; the synthetic fixtures use the working idiom.
+- mGBA `misc-edge` and `timing` conformance gaps remain (see
+  `docs/open-issues-status.md`); they do not block desktop play.
+
+## Remaining limitations
+
+- No physical Windows playtest is recorded from CI; the interactive smoke drives
+  the real host but under dummy drivers, not a GPU/display session.
+- Save-state and cartridge-save behaviour is verified through synthetic fixtures
+  and unit tests; no retail ROM compatibility is claimed.
+- Reset-preserves-cartridge-save is implemented in the desktop host, because the
+  core `CoreSession::reset()` clears the game pak. Any other host (e.g. Android)
+  must apply the same policy to be equivalent.
+- `--save-directory` keys saves on the ROM *file name*, so two different ROMs with
+  the same file name in a shared save directory would share (and overwrite) one
+  `.sav`. Use a distinct directory per title, or the default (save next to ROM).
+- ROMs that contain more than one save-type marker (`detect_game_pak_save_type()`
+  returns `nullopt`) are treated as having no cartridge save: the host neither
+  loads nor writes a `.sav` for them.
+- A persistently failing save write is retried at most once per flush interval,
+  not continuously; if the destination stays unwritable the save is not persisted
+  and the failure is reported on stderr.
