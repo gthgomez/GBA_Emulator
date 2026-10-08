@@ -67,5 +67,7 @@ Run from the repository root (PowerShell):
 - `.\tools\run-mgba-suite.ps1` — mGBA public test suite regression
 - `.\tools\run-credibility-matrix.ps1` — Credibility matrix
 
+On Linux, including Cloud Agents, the same core suite is `./tools/run-core-tests.sh`. Invoke the PowerShell verifiers with `pwsh -File ./tools/<script>.ps1`. The Cloud Agent environment installs `g++` (also selected as `c++`), CMake, Python 3, PowerShell 7, and SDL3 3.4.18 under `/usr/local`. Build the desktop host with `cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release` and `cmake --build build/desktop`, then run `./tools/run-desktop-smoke.sh`.
+
 All commands compile from source via `g++`; no Gradle or CMake is involved at the
 core level.
