@@ -115,7 +115,7 @@ bool DesktopApp::init_window() {
       options_.rom_path.empty()
           ? std::string("gba-desktop")
           : "gba-desktop - " +
-                std::filesystem::path(options_.rom_path).filename().string();
+                persistence::native_path(options_.rom_path).filename().u8string();
   const int width = 240 * options_.initial_scale;
   const int height = 160 * options_.initial_scale;
   const SDL_WindowFlags flags = options_.start_fullscreen
@@ -214,7 +214,8 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
   if (cartridge_save_enabled_) {
     if (!options_.save_directory.empty()) {
       std::error_code ec;
-      std::filesystem::create_directories(options_.save_directory, ec);
+      std::filesystem::create_directories(
+          persistence::native_path(options_.save_directory), ec);
       if (ec) {
         std::cerr << "gba-desktop: warning: cannot create save directory "
                   << options_.save_directory << ": " << ec.message() << "\n";
@@ -226,9 +227,12 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
     // fresh over the only surviving copy.
     std::error_code orphan_ec;
     const std::string orphan_path = cartridge_save_path_ + ".old";
-    if (!std::filesystem::exists(cartridge_save_path_, orphan_ec) &&
-        std::filesystem::exists(orphan_path, orphan_ec)) {
-      std::filesystem::rename(orphan_path, cartridge_save_path_, orphan_ec);
+    if (!std::filesystem::exists(persistence::native_path(cartridge_save_path_),
+                                 orphan_ec) &&
+        std::filesystem::exists(persistence::native_path(orphan_path), orphan_ec)) {
+      std::filesystem::rename(persistence::native_path(orphan_path),
+                              persistence::native_path(cartridge_save_path_),
+                              orphan_ec);
       if (!orphan_ec) {
         std::cerr << "gba-desktop: recovered interrupted save write from "
                   << orphan_path << "\n";

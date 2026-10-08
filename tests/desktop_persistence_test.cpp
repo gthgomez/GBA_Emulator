@@ -152,6 +152,29 @@ void test_backup_preserves_rejected_save(const fs::path& dir) {
          "backup of a missing file reports nothing to preserve");
 }
 
+void test_utf8_paths(const fs::path& dir) {
+  // Persistence path strings are UTF-8 (SDL dialogs/drag-and-drop provide
+  // UTF-8; main() converts argv). On Windows a plain fs::path(std::string)
+  // would decode with the ANSI code page, so exercise a non-ASCII name.
+  const std::string path =
+      (dir / std::filesystem::u8path(u8"caf\u00e9-rom.sav")).u8string();
+  expect(write_file_atomic(path, bytes_of("utf8-payload")),
+         "atomic write creates a UTF-8-named file");
+  expect(contents_of(path) == "utf8-payload", "UTF-8-named file reads back");
+  expect(fs::exists(std::filesystem::u8path(path)),
+         "UTF-8-named file is visible on disk");
+
+  const auto backup = backup_file(path, ".rejected");
+  expect(backup.has_value(), "UTF-8-named file can be backed up");
+  expect(contents_of(*backup) == "utf8-payload", "UTF-8 backup preserves bytes");
+
+  const std::string prefix =
+      save_data_prefix(path, (dir / std::filesystem::u8path(u8"saves\u00e9"))
+                                 .u8string());
+  expect(cartridge_save_path(prefix) == prefix + ".sav",
+         "save path suffix works for UTF-8 prefixes");
+}
+
 void test_save_paths(const fs::path& dir) {
   const std::string rom = (dir / "My Game (USA).gba").string();
   expect(save_data_prefix(rom, "") == rom, "prefix defaults to ROM path");
@@ -173,6 +196,7 @@ int main() {
   test_atomic_failure_leaves_previous_intact(dir);
   test_fallback_recovers_crash_orphan(dir);
   test_backup_preserves_rejected_save(dir);
+  test_utf8_paths(dir);
   test_save_paths(dir);
 
   std::error_code ec;

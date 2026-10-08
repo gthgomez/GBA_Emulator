@@ -39,8 +39,8 @@ $systemDlls = @(
     "gdi32.dll", "hid.dll", "imm32.dll", "kernel32.dll", "msvcrt.dll",
     "ntdll.dll", "ole32.dll", "oleaut32.dll", "powrprof.dll", "rpcrt4.dll",
     "secur32.dll", "setupapi.dll", "shell32.dll", "shlwapi.dll", "user32.dll",
-    "userenv.dll", "uxtheme.dll", "version.dll", "winmm.dll", "winhttp.dll",
-    "ws2_32.dll", "dinput8.dll", "xinput1_4.dll", "dsound.dll"
+    "ucrtbase.dll", "userenv.dll", "uxtheme.dll", "version.dll", "winmm.dll",
+    "winhttp.dll", "ws2_32.dll", "dinput8.dll", "xinput1_4.dll", "dsound.dll"
 )
 function Test-SystemDll([string]$dll) {
     $systemDlls -contains $dll -or $dll.StartsWith("api-ms-win-crt-")
@@ -86,12 +86,51 @@ if ($copied -notcontains "sdl3.dll") {
     throw "SDL3.dll was not among the executable's imports; packaging assumption is stale"
 }
 
+# The exe's import list is not necessarily the whole closure: a shipped DLL
+# may itself depend on a non-system DLL the exe never imports. Walk the
+# staged DLLs' imports to a fixpoint under the same rules.
+$shipped = [System.Collections.Generic.HashSet[string]]::new()
+foreach ($dll in $copied) { [void]$shipped.Add($dll) }
+$queue = [System.Collections.Generic.Queue[string]]::new()
+foreach ($dll in $copied) { $queue.Enqueue($dll) }
+while ($queue.Count -gt 0) {
+    $dll = $queue.Dequeue()
+    $dllImports = & $objdump.Source -p (Join-Path $stage $dll) |
+        Select-String "DLL Name: (.+)" |
+        ForEach-Object { $_.Matches[0].Groups[1].Value.Trim().ToLowerInvariant() } |
+        Sort-Object -Unique
+    foreach ($import in $dllImports) {
+        if (Test-SystemDll $import) { continue }
+        if ($shipped.Contains($import)) { continue }
+        $source = $null
+        foreach ($dir in $searchDirs) {
+            $candidate = Join-Path $dir $import
+            if (Test-Path -LiteralPath $candidate) { $source = $candidate; break }
+        }
+        if ($null -eq $source) {
+            throw "shipped DLL '$dll' imports '$import', which is neither a system DLL nor found beside the toolchain"
+        }
+        Copy-Item -LiteralPath $source (Join-Path $stage $import) -Force
+        [void]$shipped.Add($import)
+        $queue.Enqueue($import)
+        $copied += $import
+    }
+}
+
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") (Join-Path $stage "LICENSE.txt")
 Copy-Item -LiteralPath (Join-Path $repoRoot "NOTICE") (Join-Path $stage "NOTICE.txt")
-$sdlLicense = Join-Path $repoRoot "external/SDL3/x86_64-w64-mingw32/LICENSE.txt"
-if (Test-Path -LiteralPath $sdlLicense) {
-    Copy-Item -LiteralPath $sdlLicense (Join-Path $stage "SDL3-LICENSE.txt")
+# The pinned prebuilt keeps SDL's license under share/licenses; older layouts
+# put it at the tree root. Fail closed rather than ship SDL3.dll unlicensed.
+$sdlLicenseCandidates = @(
+    (Join-Path $repoRoot "external/SDL3/x86_64-w64-mingw32/share/licenses/SDL3/LICENSE.txt"),
+    (Join-Path $repoRoot "external/SDL3/x86_64-w64-mingw32/LICENSE.txt"),
+    (Join-Path $repoRoot "external/SDL3/LICENSE.txt")
+)
+$sdlLicense = $sdlLicenseCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if ($null -eq $sdlLicense) {
+    throw "SDL3 license text not found; refusing to package SDL3.dll without it (looked in: $($sdlLicenseCandidates -join '; '))"
 }
+Copy-Item -LiteralPath $sdlLicense (Join-Path $stage "SDL3-LICENSE.txt")
 
 $readme = @"
 gba-desktop $Version (portable Windows x64)

@@ -1,6 +1,6 @@
 # GBA_Emulator Status
 
-**Last verified:** 2026-10-08 (core verifiers 32/32 PASS on Windows and Linux; desktop MVP data-safety fixes verified locally on native Windows — CI run on the PR head pending/see PR #18)
+**Last verified:** 2026-10-08 (core verifiers 32/32 PASS on native Windows via `run-core-tests.ps1`; both runners register the same 32 verifiers, Linux parity verified by CI — desktop MVP data-safety fixes verified locally on native Windows, see PR #18)
 **Status:** active development
 **Confidence:** high (core verifiers + desktop automation + manual Windows qualification); medium (accuracy — `misc-edge` RED and `timing` short of `pass=total`, see below)
 

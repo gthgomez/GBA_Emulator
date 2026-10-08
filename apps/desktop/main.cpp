@@ -12,6 +12,7 @@
 #include "gba/core/emulator_runtime.hpp"
 
 #include "desktop_app.hpp"
+#include "desktop_persistence.hpp"
 #include "gba/core/save_state_codec.hpp"
 
 #include "stb_image_write.h"
@@ -121,6 +122,12 @@ CliOptions parse_cli(int argc, char** argv) {
       }
       return argv[++i];
     };
+    // argv strings are ANSI-code-page encoded; the rest of the program
+    // stores path strings as UTF-8 (the encoding SDL dialogs and
+    // drag-and-drop provide), so convert once at the boundary.
+    auto next_path = [&]() -> std::string {
+      return std::filesystem::path(next_string()).u8string();
+    };
     auto next_u32 = [&]() -> std::uint32_t {
       const std::string value = next_string();
       try {
@@ -131,7 +138,7 @@ CliOptions parse_cli(int argc, char** argv) {
       }
     };
     if (arg == "--rom") {
-      opts.rom_path = next_string();
+      opts.rom_path = next_path();
       rom_seen = true;
     } else if (arg == "--headless") {
       opts.headless = true;
@@ -142,26 +149,26 @@ CliOptions parse_cli(int argc, char** argv) {
     } else if (arg == "--switch-after") {
       opts.switch_after_frames = next_u32();
     } else if (arg == "--switch-to") {
-      opts.switch_to_path = next_string();
+      opts.switch_to_path = next_path();
     } else if (arg == "--window-screenshot") {
-      opts.window_screenshot_path = next_string();
+      opts.window_screenshot_path = next_path();
     } else if (arg == "--save-directory") {
-      opts.save_directory = next_string();
+      opts.save_directory = next_path();
     } else if (arg == "--frames") {
       opts.frames = next_u32();
     } else if (arg == "--max-steps-per-frame") {
       opts.max_steps_per_frame = next_u32();
     } else if (arg == "--input-script") {
-      opts.input_script_path = next_string();
+      opts.input_script_path = next_path();
     } else if (arg == "--artifact") {
-      opts.artifact_path = next_string();
+      opts.artifact_path = next_path();
     } else if (arg == "--screenshot-frame") {
       opts.screenshot_frames.push_back(next_u32());
       if (opts.screenshot_dir.empty()) {
         opts.screenshot_dir = ".";
       }
     } else if (arg == "--screenshot-output") {
-      opts.screenshot_dir = next_string();
+      opts.screenshot_dir = next_path();
     } else if (arg == "--frame-hash") {
       opts.frame_hash = true;
     } else if (arg == "--audio-hash") {
@@ -169,14 +176,14 @@ CliOptions parse_cli(int argc, char** argv) {
     } else if (arg == "--state-hash") {
       opts.state_hash = true;
     } else if (arg == "--save-state") {
-      opts.save_state_output = next_string();
+      opts.save_state_output = next_path();
     } else if (arg == "--load-state") {
-      opts.load_state_input = next_string();
+      opts.load_state_input = next_path();
     } else if (arg == "--help" || arg == "-h") {
       usage(0);
     } else if (!rom_seen && arg.rfind("-", 0) != 0) {
       // Positional ROM path: `gba-desktop game.gba`.
-      opts.rom_path = arg;
+      opts.rom_path = std::filesystem::path(arg).u8string();
       rom_seen = true;
     } else {
       std::cerr << "gba-desktop: unknown argument: " << arg << "\n";
@@ -192,7 +199,9 @@ CliOptions parse_cli(int argc, char** argv) {
 }
 
 std::vector<std::uint8_t> read_file(const std::string& path) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  // Path strings are UTF-8 (see the argv conversion in parse_cli); a plain
+  // narrow-string constructor would decode with the ANSI code page.
+  std::ifstream file(gba::desktop::persistence::native_path(path), std::ios::binary | std::ios::ate);
   if (!file) {
     return {};
   }
@@ -209,7 +218,7 @@ std::vector<std::uint8_t> read_file(const std::string& path) {
 }
 
 bool write_file(const std::string& path, const std::vector<std::uint8_t>& bytes) {
-  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  std::ofstream file(gba::desktop::persistence::native_path(path), std::ios::binary | std::ios::trunc);
   if (!file) {
     return false;
   }
@@ -556,10 +565,13 @@ bool write_screenshot(const std::string& dir, std::uint32_t frame,
     rgb[i * 3 + 2] = static_cast<std::uint8_t>((px & 0x1F) * 255 / 31);
   }
   std::error_code ec;
-  std::filesystem::create_directories(dir, ec);
+  // dir arrives as UTF-8; note stbi_write_png ultimately uses narrow fopen,
+  // so a screenshot directory outside the ANSI code page will fail on Windows.
+  const std::filesystem::path dir_native = gba::desktop::persistence::native_path(dir);
+  std::filesystem::create_directories(dir_native, ec);
   char name[64];
   std::snprintf(name, sizeof(name), "frame-%04u.png", static_cast<unsigned>(frame));
-  const std::string path = (std::filesystem::path(dir) / name).string();
+  const std::string path = (dir_native / name).u8string();
   return stbi_write_png(path.c_str(), kWidth, kHeight, 3, rgb.data(), kWidth * 3) != 0;
 }
 

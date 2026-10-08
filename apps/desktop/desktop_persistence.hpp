@@ -17,16 +17,27 @@
 
 namespace gba::desktop::persistence {
 
+// Narrow path strings crossing this API are UTF-8. SDL hands the host UTF-8
+// paths for file dialogs and drag-and-drop, and main() converts command-line
+// arguments (ANSI code page) to UTF-8 on the way in. All file access goes
+// through this helper, so non-ASCII ROM names work on Windows regardless of
+// the system's active code page (a plain fs::path(std::string) would decode
+// with the ANSI code page and fail).
+inline std::filesystem::path native_path(const std::string& utf8_path) {
+  return std::filesystem::u8path(utf8_path);
+}
+
 // Reads a whole file. Returns an empty vector when the file is missing,
 // unreadable, or genuinely empty; callers treat all three as "no data".
 inline std::vector<std::uint8_t> read_binary_file(const std::string& path) {
   std::error_code ec;
+  const std::filesystem::path native = native_path(path);
   // Directories can be opened on some platforms; reject anything that is not a
   // regular file so tellg() cannot report a nonsense size.
-  if (!std::filesystem::is_regular_file(path, ec)) {
+  if (!std::filesystem::is_regular_file(native, ec)) {
     return {};
   }
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  std::ifstream file(native, std::ios::binary | std::ios::ate);
   if (!file) {
     return {};
   }
@@ -67,10 +78,12 @@ inline std::vector<std::uint8_t> read_binary_file(const std::string& path) {
 inline bool write_file_atomic(const std::string& path,
                               const std::vector<std::uint8_t>& bytes) {
   std::error_code ec;
-  const std::filesystem::path target(path);
+  const std::filesystem::path target = native_path(path);
   const std::filesystem::path dir =
       target.has_parent_path() ? target.parent_path() : std::filesystem::path(".");
-  const std::filesystem::path temp = dir / (target.filename().string() + ".tmp");
+  // Suffixes below are ASCII, so appending them to the UTF-8 spelling of a
+  // file name is byte-safe.
+  const std::filesystem::path temp = dir / (target.filename().u8string() + ".tmp");
 
   {
     std::ofstream out(temp, std::ios::binary | std::ios::trunc);
@@ -91,7 +104,7 @@ inline bool write_file_atomic(const std::string& path,
 
   // `.old` is the fallback's move-aside slot.
   const std::filesystem::path backup =
-      dir / (target.filename().string() + ".old");
+      dir / (target.filename().u8string() + ".old");
 
   // A previous run may have crashed between the fallback's two renames: the
   // original then exists only as `backup`. Put it back first -- if this write
@@ -153,21 +166,22 @@ inline bool write_file_atomic(const std::string& path,
 inline std::optional<std::string> backup_file(const std::string& path,
                                               const std::string& suffix) {
   std::error_code ec;
-  if (!std::filesystem::exists(path, ec)) {
+  const std::filesystem::path native = native_path(path);
+  if (!std::filesystem::exists(native, ec)) {
     return std::nullopt;
   }
-  const std::filesystem::path base(path + suffix);
+  const std::filesystem::path base = native_path(path + suffix);
   std::filesystem::path candidate = base;
   for (int attempt = 1; std::filesystem::exists(candidate, ec) && attempt < 1000;
        ++attempt) {
-    candidate = std::filesystem::path(base.string() + "." + std::to_string(attempt));
+    candidate = native_path(base.u8string() + "." + std::to_string(attempt));
   }
-  std::filesystem::copy_file(path, candidate,
+  std::filesystem::copy_file(native, candidate,
                              std::filesystem::copy_options::overwrite_existing, ec);
   if (ec) {
     return std::nullopt;
   }
-  return candidate.string();
+  return candidate.u8string();
 }
 
 // Prefix shared by a ROM's cartridge save and save states. Lives next to the
@@ -177,9 +191,8 @@ inline std::string save_data_prefix(const std::string& rom_path,
   if (save_directory.empty()) {
     return rom_path;
   }
-  return (std::filesystem::path(save_directory) /
-          std::filesystem::path(rom_path).filename())
-      .string();
+  return (native_path(save_directory) / native_path(rom_path).filename())
+      .u8string();
 }
 
 inline std::string cartridge_save_path(const std::string& prefix) {
