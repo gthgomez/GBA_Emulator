@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #include "test_helpers.hpp"
@@ -37,9 +38,13 @@ std::vector<std::uint8_t> make_rom(std::uint8_t tag) {
   return rom;
 }
 
-CoreSession make_session(const std::vector<std::uint8_t>& rom) {
-  CoreSession session;
-  expect(session.memory().load_game_pak_rom(rom), "session loads ROM");
+// A CoreSession embeds ~405 KB of machine RAM (EWRAM/VRAM/IWRAM arrays). This
+// test holds several sessions at once, so every one of them lives on the heap:
+// six stack instances (~2.4 MB) overflowed the MinGW-w64 executable's default
+// 2 MiB stack reservation (observed as 0xC00000FD on Windows CI).
+std::unique_ptr<CoreSession> make_session(const std::vector<std::uint8_t>& rom) {
+  auto session = std::make_unique<CoreSession>();
+  expect(session->memory().load_game_pak_rom(rom), "session loads ROM");
   return session;
 }
 
@@ -50,46 +55,47 @@ int main() {
   const std::vector<std::uint8_t> rom_b = make_rom(0x5A);
 
   // Capture a state from ROM A after giving it some progress to carry.
-  CoreSession source = make_session(rom_a);
-  expect(source.memory().configure_game_pak_save(GamePakSaveType::sram32k),
+  std::unique_ptr<CoreSession> source = make_session(rom_a);
+  expect(source->memory().configure_game_pak_save(GamePakSaveType::sram32k),
          "configure cartridge save");
-  expect(source.memory().write8(0x0E000010, 0x5AU), "seed cartridge save");
-  expect(source.memory().write32(0x02000000, 0xCAFEF00DU), "seed EWRAM");
-  source.cpu().set_register(gba::core::Arm7tdmi::kPc, 0x08000000U);
-  const std::vector<std::uint8_t> blob = SaveStateCodec::encode(source);
-  const std::uint64_t source_hash = source.state_hash();
+  expect(source->memory().write8(0x0E000010, 0x5AU), "seed cartridge save");
+  expect(source->memory().write32(0x02000000, 0xCAFEF00DU), "seed EWRAM");
+  source->cpu().set_register(gba::core::Arm7tdmi::kPc, 0x08000000U);
+  const std::vector<std::uint8_t> blob = SaveStateCodec::encode(*source);
+  const std::uint64_t source_hash = source->state_hash();
+  source.reset();
 
   // Same-ROM load commits the snapshot.
-  CoreSession same_rom_live = make_session(rom_a);
-  CoreSession scratch{};
-  expect(load_save_state_for_session(same_rom_live, blob, scratch) ==
+  std::unique_ptr<CoreSession> same_rom_live = make_session(rom_a);
+  std::unique_ptr<CoreSession> scratch = std::make_unique<CoreSession>();
+  expect(load_save_state_for_session(*same_rom_live, blob, *scratch) ==
              SaveStateLoadStatus::ok,
          "same-ROM state loads");
-  expect(same_rom_live.state_hash() == source_hash,
+  expect(same_rom_live->state_hash() == source_hash,
          "same-ROM load restores the captured machine");
 
   // Wrong-ROM load is refused and leaves the live session byte-identical.
-  CoreSession wrong_rom_live = make_session(rom_b);
-  expect(wrong_rom_live.memory().write32(0x02000004, 0x12345678U), "seed live EWRAM");
-  const std::uint64_t wrong_rom_hash = wrong_rom_live.state_hash();
-  CoreSession scratch_b{};
-  expect(load_save_state_for_session(wrong_rom_live, blob, scratch_b) ==
+  std::unique_ptr<CoreSession> wrong_rom_live = make_session(rom_b);
+  expect(wrong_rom_live->memory().write32(0x02000004, 0x12345678U), "seed live EWRAM");
+  const std::uint64_t wrong_rom_hash = wrong_rom_live->state_hash();
+  std::unique_ptr<CoreSession> scratch_b = std::make_unique<CoreSession>();
+  expect(load_save_state_for_session(*wrong_rom_live, blob, *scratch_b) ==
              SaveStateLoadStatus::wrong_rom,
          "state from a different ROM is refused");
-  expect(wrong_rom_live.state_hash() == wrong_rom_hash,
+  expect(wrong_rom_live->state_hash() == wrong_rom_hash,
          "wrong-ROM refusal leaves the live session untouched");
-  expect(wrong_rom_live.memory().game_pak_rom_size() == rom_b.size() &&
-             wrong_rom_live.memory().export_game_pak_rom() == rom_b,
+  expect(wrong_rom_live->memory().game_pak_rom_size() == rom_b.size() &&
+             wrong_rom_live->memory().export_game_pak_rom() == rom_b,
          "wrong-ROM refusal keeps the live ROM in place");
 
   // A corrupt blob fails to decode and also leaves the live session untouched.
   std::vector<std::uint8_t> corrupt = blob;
   corrupt.at(0) = 0;  // Break the magic.
-  CoreSession scratch_c{};
-  expect(load_save_state_for_session(wrong_rom_live, corrupt, scratch_c) ==
+  std::unique_ptr<CoreSession> scratch_c = std::make_unique<CoreSession>();
+  expect(load_save_state_for_session(*wrong_rom_live, corrupt, *scratch_c) ==
              SaveStateLoadStatus::decode_failed,
          "corrupt blob fails to decode");
-  expect(wrong_rom_live.state_hash() == wrong_rom_hash,
+  expect(wrong_rom_live->state_hash() == wrong_rom_hash,
          "decode failure leaves the live session untouched");
 
   std::cout << "desktop_save_state_guard_test: PASS\n";

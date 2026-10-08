@@ -70,13 +70,21 @@ so no button stays stuck.
 - All save writes are replace-in-place safe: a sibling temp file is written and
   renamed over the destination, so a failed or interrupted write cannot truncate
   a good save. (This is crash-safe, not a power-loss durability guarantee.)
+  A save found only as the `<rom>.sav.old` crash orphan is restored and
+  re-imported on the next launch. The `.tmp`/`.old`/`.rejected` sibling names
+  are owned by the host — do not use them for your own backups.
 - Switching ROMs (dialog or drag-and-drop) flushes the outgoing cartridge save
-  first; a rejected replacement ROM rolls the running session back rather than
-  discarding it.
+  first and *refuses the switch* if that write fails, so unsaved progress can
+  never be discarded; a rejected replacement ROM rolls the running session back
+  rather than discarding it.
 - Reset re-imports the current cartridge save, so in-game progress survives a
   console reset (save states are separate files).
 - A corrupt/incompatible `.sav` is copied to `<rom>.sav.rejected` before the
-  host starts fresh, so the original bytes are never destroyed.
+  host starts fresh, so the original bytes are never destroyed. If even the
+  backup cannot be created, the host goes fail-closed: cartridge save writes
+  are disabled for the session (the window title shows
+  `[save writes disabled]`) and the original file is left untouched.
+- An empty machine snapshot is never written over a sized save file.
 - Corrupt or wrong-ROM save states fail visibly on stderr and leave the running
   game untouched.
 
@@ -86,6 +94,7 @@ so no button stays stuck.
 | --- | --- |
 | `--quit-after N` | quit after N presented frames |
 | `--reset-after N` | perform a full reset after N presented frames |
+| `--switch-after N` + `--switch-to PATH` | switch to another ROM after N presented frames |
 | `--window-screenshot PATH` | capture the presented window to a PNG |
 
 ## Headless lab mode (primary verification surface)
@@ -131,7 +140,10 @@ SDL3, CMake Release build, then:
 - `tools/run-desktop-smoke.{ps1,sh}` — synthetic legal ROM (never committed),
   two headless runs, asserts completion + bit-identical determinism.
 - `tools/run-desktop-save-smoke.{ps1,sh}` — cartridge-save restart persistence,
-  reset preservation, no spurious empty `.sav`, rejected-save preservation.
+  reset preservation, no spurious empty `.sav`, rejected-save preservation,
+  fail-closed behaviour when a rejected save cannot be backed up, ROM-switch
+  refusal while the save flush fails, defective-ROM switch surfacing exit 3
+  with the outgoing save flushed, and crash-orphan (`.sav.old`) recovery.
 - `tools/run-desktop-interactive-smoke.{ps1,sh}` — drives the *interactive* SDL
   host under the dummy video/audio drivers and asserts the captured window
   contains real (nonuniform) graphics, then checks that an undefined-instruction
@@ -155,8 +167,13 @@ BIOS files, or private saves are used or committed.
 
 ## Remaining limitations
 
-- No physical Windows playtest is recorded from CI; the interactive smoke drives
-  the real host but under dummy drivers, not a GPU/display session.
+- CI still verifies the interactive host under dummy video/audio drivers. A
+  real Windows display/audio qualification was performed manually on the
+  development machine (2026-10-08: windowed rendering at ~60 fps from the
+  extracted portable ZIP, save/restart/switch/reset/orphan-recovery lifecycle,
+  20-minute/72,000-frame sustained run with zero audio underruns); physical
+  gamepad testing was not performed (no controller connected), and audible
+  audio / hands-on keyboard qualification remains with the user.
 - Save-state and cartridge-save behaviour is verified through synthetic fixtures
   and unit tests; no retail ROM compatibility is claimed.
 - Reset-preserves-cartridge-save is implemented in the desktop host, because the

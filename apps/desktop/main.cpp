@@ -64,6 +64,8 @@ struct CliOptions {
   std::string load_state_input;
   std::uint32_t quit_after_frames = 0;
   std::uint32_t reset_after_frames = 0;
+  std::uint32_t switch_after_frames = 0;
+  std::string switch_to_path;
   std::string window_screenshot_path;
   std::string save_directory;
 };
@@ -99,6 +101,8 @@ struct InputEvent {
       "Automation hooks (play mode):\n"
       "  --quit-after N                      quit after N presented frames\n"
       "  --reset-after N                     reset after N presented frames\n"
+      "  --switch-after N                    switch to --switch-to ROM after N frames\n"
+      "  --switch-to PATH                    ROM used by --switch-after\n"
       "  --window-screenshot PATH            capture the presented window to PNG\n"
       "  --save-directory DIR                store .sav/.state files in DIR\n",
       stderr);
@@ -135,6 +139,10 @@ CliOptions parse_cli(int argc, char** argv) {
       opts.quit_after_frames = next_u32();
     } else if (arg == "--reset-after") {
       opts.reset_after_frames = next_u32();
+    } else if (arg == "--switch-after") {
+      opts.switch_after_frames = next_u32();
+    } else if (arg == "--switch-to") {
+      opts.switch_to_path = next_string();
     } else if (arg == "--window-screenshot") {
       opts.window_screenshot_path = next_string();
     } else if (arg == "--save-directory") {
@@ -789,6 +797,8 @@ int main(int argc, char** argv) {
     host.initial_scale = 3;
     host.quit_after_frames = opts.quit_after_frames;
     host.reset_after_frames = opts.reset_after_frames;
+    host.switch_after_frames = opts.switch_after_frames;
+    host.switch_to_path = opts.switch_to_path;
     host.window_screenshot_path = opts.window_screenshot_path;
     host.save_directory = opts.save_directory;
     return gba::desktop::DesktopApp(host).run();

@@ -104,6 +104,37 @@ void test_atomic_failure_leaves_previous_intact(const fs::path& dir) {
 #endif
 }
 
+void test_fallback_recovers_crash_orphan(const fs::path& dir) {
+  // Simulate a crash between the fallback renames: the original exists only
+  // as the `.old` sibling (target missing). The next write must restore the
+  // orphan to `target` first (so a failed write can never consume the only
+  // copy); a successful write then legitimately supersedes it.
+  const std::string path = (dir / "crashed.sav").string();
+  expect(write_file_atomic(path, bytes_of("only-copy")), "seed crashed-save original");
+  std::error_code ec;
+  fs::rename(path, path + ".old", ec);
+  expect(!ec, "crash simulation moved original to .old");
+  expect(!fs::exists(path), "crash simulation removed target");
+
+  expect(write_file_atomic(path, bytes_of("replacement")),
+         "write over a crash orphan succeeds");
+  expect(contents_of(path) == "replacement",
+         "successful write installs new content over the recovered orphan");
+  expect(!fs::exists(path + ".old"), "orphan copy is consumed once superseded");
+  expect(!fs::exists(path + ".tmp"), "recovered write leaves no temp file");
+
+  // A second crash-orphan write that fails must leave the orphan untouched.
+  const std::string doomed = (dir / "not-a-dir").string();
+  {
+    std::ofstream out(doomed, std::ios::binary | std::ios::trunc);
+    out << "x";
+  }
+  expect(!write_file_atomic(doomed + "/game.sav", bytes_of("NEW")),
+         "write into a file-as-directory fails");
+  expect(!fs::exists(doomed + "/game.sav.old"),
+         "failed write creates no stray fallback copies");
+}
+
 void test_backup_preserves_rejected_save(const fs::path& dir) {
   const std::string path = (dir / "corrupt.sav").string();
   expect(write_file_atomic(path, bytes_of("rejected-payload")), "seed rejected save");
@@ -140,6 +171,7 @@ int main() {
   test_read_missing_is_empty(dir);
   test_atomic_create_and_replace(dir);
   test_atomic_failure_leaves_previous_intact(dir);
+  test_fallback_recovers_crash_orphan(dir);
   test_backup_preserves_rejected_save(dir);
   test_save_paths(dir);
 

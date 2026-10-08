@@ -65,3 +65,8 @@ finally {
 }
 
 Write-Host "run-desktop-interactive-smoke: PASS (interactive window rendered nonuniform frames; interactive error exit=$badExit)"
+# Terminate with an explicit exit code: the last native command in this script
+# is a *deliberately failing* run, so $LASTEXITCODE still holds its failure
+# code here. GitHub Actions' pwsh wrapper exits with $LASTEXITCODE when the
+# script does not, which failed this step even while it printed PASS.
+exit 0

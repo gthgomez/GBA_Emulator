@@ -35,6 +35,10 @@ struct HostOptions {
   // Automation hook: perform a full reset after N presented frames (lifecycle
   // testing of cartridge-save preservation across reset).
   std::uint32_t reset_after_frames = 0;
+  // Automation hook: switch to `switch_to_path` after N presented frames
+  // (lifecycle testing of the switch-time save flush and its refusal path).
+  std::uint32_t switch_after_frames = 0;
+  std::string switch_to_path;
   std::string window_screenshot_path;
 };
 
@@ -96,7 +100,10 @@ class DesktopApp {
   void clear_queued_audio();
   void pace_frame(bool fast_forward);
   void toggle_fullscreen();
-  void flush_cartridge_save(bool force);
+  // Writes the cartridge save when it is dirty (or always, when `force`).
+  // Returns true when no write was needed or the write succeeded; false when
+  // a required write failed (callers decide whether that is fatal).
+  bool flush_cartridge_save(bool force);
   bool write_save_state(int slot);
   bool read_save_state(int slot);
   void reset_runtime();

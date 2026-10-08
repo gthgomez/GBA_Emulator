@@ -48,9 +48,19 @@ inline std::vector<std::uint8_t> read_binary_file(const std::string& path) {
 // Writes `bytes` by first materializing a sibling temporary file, flushing it,
 // then renaming it over `path`. On POSIX rename(2) atomically replaces the
 // destination; std::filesystem::rename does the same on Windows (it maps to a
-// replace-existing move), with an explicit remove+retry fallback for
-// filesystems that refuse the replace. Either way the previous file is never
-// truncated before the replacement is complete.
+// replace-existing move), with an explicit fallback for filesystems that
+// refuse the replace.
+//
+// Only the rename path is atomic. The fallback (move the old file aside, put
+// the new one in place, restore the old one on failure) has a crash window in
+// which the original exists only as the `.old` sibling; the next write
+// therefore restores such an orphan BEFORE writing anything, so a failed
+// follow-up write can never consume the only surviving copy.
+//
+// The `<name>.tmp` / `<name>.old` sibling names are owned by this helper and
+// may be reclaimed between calls; they are not safe as user storage. The temp
+// name is deterministic, so two processes writing the same file concurrently
+// can collide -- single-writer per save file is assumed.
 //
 // This is crash-safe against process termination, but it is NOT a claim of
 // power-loss durability: no fsync of the file or its directory is performed.
@@ -79,15 +89,41 @@ inline bool write_file_atomic(const std::string& path,
     }
   }
 
-  std::filesystem::rename(temp, target, ec);
-  if (!ec) {
-    return true;
-  }
-  // The platform refused to replace in place. Move the old file aside, put the
-  // new one in place, and restore the old one if that fails -- so the original
-  // is never destroyed before its replacement is committed.
+  // `.old` is the fallback's move-aside slot.
   const std::filesystem::path backup =
       dir / (target.filename().string() + ".old");
+
+  // A previous run may have crashed between the fallback's two renames: the
+  // original then exists only as `backup`. Put it back first -- if this write
+  // subsequently fails, the orphan must still be sitting at `target`, not
+  // consumed as garbage.
+  std::error_code probe_ec;
+  const bool target_missing = !std::filesystem::exists(target, probe_ec);
+  const bool backup_exists = std::filesystem::exists(backup, probe_ec);
+  if (target_missing && backup_exists) {
+    std::error_code recover_ec;
+    std::filesystem::rename(backup, target, recover_ec);
+    if (recover_ec) {
+      // Recovery failed: `backup` is still the only copy; fail without
+      // touching it.
+      std::error_code ignored;
+      std::filesystem::remove(temp, ignored);
+      return false;
+    }
+  }
+
+  std::filesystem::rename(temp, target, ec);
+  if (!ec) {
+    // The live file is at `target`; any `.old` left here is a stale leftover
+    // (older content of the same save) and can be reclaimed.
+    std::error_code ignored;
+    std::filesystem::remove(backup, ignored);
+    return true;
+  }
+  // The platform refused to replace in place (locked or read-only target).
+  // Move the old file aside, put the new one in place, and restore the old
+  // one if that fails -- the original is never destroyed before its
+  // replacement is committed.
   std::error_code move_ec;
   std::filesystem::remove(backup, move_ec);
   move_ec.clear();

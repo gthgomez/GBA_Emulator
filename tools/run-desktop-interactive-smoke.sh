@@ -50,3 +50,6 @@ if [ "$badExit" -eq 0 ]; then
 fi
 
 echo "run-desktop-interactive-smoke: PASS (interactive window rendered nonuniform frames; interactive error exit=$badExit)"
+# Explicit success exit: the negative-assertion run above intentionally left a
+# nonzero status, and the script's own exit status must not inherit it.
+exit 0
