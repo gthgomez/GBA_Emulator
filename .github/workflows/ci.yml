@@ -109,3 +109,47 @@ jobs:
       - name: Headless lab smoke (Linux)
         if: runner.os == 'Linux'
         run: ./tools/run-desktop-smoke.sh
+
+      # Cartridge-save lifecycle: restart persistence, reset preservation,
+      # no spurious empty saves, rejected-save preservation.
+      - name: Save-lifecycle smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          .\tools\run-desktop-save-smoke.ps1
+
+      - name: Save-lifecycle smoke (Linux)
+        if: runner.os == 'Linux'
+        run: ./tools/run-desktop-save-smoke.sh
+
+      # Drives the interactive SDL host with dummy video/audio drivers and
+      # asserts a real (nonuniform) window was presented.
+      - name: Interactive host smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          .\tools\run-desktop-interactive-smoke.ps1
+
+      - name: Interactive host smoke (Linux)
+        if: runner.os == 'Linux'
+        run: ./tools/run-desktop-interactive-smoke.sh
+
+      # Portable Windows ZIP (exe + verified runtime DLLs + licenses). Built
+      # as a CI artifact only; no release is published from CI.
+      - name: Package portable Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          .\tools\package-windows-portable.ps1
+
+      - name: Upload portable Windows package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gba-desktop-windows-x64
+          path: dist/gba-desktop-*-windows-x64.zip
+          if-no-files-found: error
+

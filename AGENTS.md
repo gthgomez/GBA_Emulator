@@ -9,10 +9,14 @@ instruction files are also prohibited. Factual and architectural context lives i
 ## What This Is
 
 A portable Game Boy Advance emulator core written in C++17 (ARM7TDMI CPU, memory bus,
-DMA, timers, PPU, APU, timing/scheduler framework). All verification is headless —
-no Android, display, or JNI dependency in the core. Android integration lives in the
-sibling `GbaEmulatorAndroid` dev shell. See `docs/PROJECT_CONTEXT.md` for the full
-directory map and technical background.
+DMA, timers, PPU, APU, timing/scheduler framework). Core verification is headless —
+no Android, display, or JNI dependency in the core. On top of the core sit two hosts
+that share the same `gba::core::EmulatorRuntime` facade: an SDL3 desktop reference
+host (`apps/desktop`, CMake) with play mode and a deterministic headless lab, and the
+sibling `GbaEmulatorAndroid` Android shell (JNI). Never add a second emulation path
+for a host — emulator behavior belongs in the shared core. See
+`docs/PROJECT_CONTEXT.md` for the directory map and `docs/DESKTOP.md` for the desktop
+host.
 
 ## Hard Rules
 
@@ -27,7 +31,9 @@ directory map and technical background.
 - **Determinism is required.** Benchmark baselines track run-to-run variance. If a
   change introduces non-determinism, fix it.
 - **All verification is headless.** Tests compile via `g++` and run as native
-  executables — no Android, display, or JNI required.
+  executables — no Android, display, or JNI required. The desktop host is built
+  with CMake + SDL3; its interactive path is exercised under SDL's dummy video
+  and audio drivers, so CI still needs no display.
 - **Legal boundary:** mGBA public test suite ROM only. No commercial ROM or BIOS
   compatibility claims.
 
@@ -67,7 +73,14 @@ Run from the repository root (PowerShell):
 - `.\tools\run-mgba-suite.ps1` — mGBA public test suite regression
 - `.\tools\run-credibility-matrix.ps1` — Credibility matrix
 
+Desktop host (CMake + SDL3; build with `docs/DESKTOP.md`):
+
+- `tools\run-desktop-smoke.ps1` / `tools/run-desktop-smoke.sh` — headless determinism
+- `tools\run-desktop-save-smoke.{ps1,sh}` — cartridge-save lifecycle safety
+- `tools\run-desktop-interactive-smoke.{ps1,sh}` — interactive host window render
+- `tools\package-windows-portable.ps1` — portable Windows ZIP
+
 On Linux, including Cloud Agents, the same core suite is `./tools/run-core-tests.sh`. Invoke the PowerShell verifiers with `pwsh -File ./tools/<script>.ps1`. The Cloud Agent environment installs `g++` (also selected as `c++`), CMake, Python 3, PowerShell 7, and SDL3 3.4.18 under `/usr/local`. Build the desktop host with `cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release` and `cmake --build build/desktop`, then run `./tools/run-desktop-smoke.sh`.
 
-All commands compile from source via `g++`; no Gradle or CMake is involved at the
-core level.
+All core commands compile from source via `g++`; no Gradle or CMake is involved at the
+core level. Only the desktop host uses CMake.

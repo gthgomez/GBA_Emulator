@@ -795,38 +795,42 @@ bool parse_io_state(Reader& reader, IoRegistersState& io) {
 
 std::vector<std::uint8_t> SaveStateCodec::encode(const CoreSession& session) {
   // Const whole-machine view; the dma/ppu/apu accessors lack const overloads.
-  const CoreSessionState machine = session.save_state();
-  const Arm7tdmi::State cpu = machine.cpu.save_state();
-  const MemoryBus::State memory = machine.memory.save_state();
-  const Timers::State timers = machine.timers.save_state();
-  const DmaController::State dma = machine.dma.save_state();
-  const PpuTiming::State ppu = machine.ppu.save_state();
-  const Apu::State apu = machine.apu.save_state();
-  const IoRegistersState io = machine.io;
+  // A CoreSessionState is ~405 KB and a MemoryBus::State ~396 KB (fixed
+  // EWRAM/VRAM/IWRAM arrays); both live on the heap so repeated encode() calls
+  // do not stack these snapshots against the thread-stack reservation (2 MiB
+  // for MinGW-w64 executables, 1 MiB for MSVC defaults).
+  const auto machine = std::make_unique<CoreSessionState>(session.save_state());
+  const auto memory = std::make_unique<MemoryBus::State>(machine->memory.save_state());
+  const Arm7tdmi::State cpu = machine->cpu.save_state();
+  const Timers::State timers = machine->timers.save_state();
+  const DmaController::State dma = machine->dma.save_state();
+  const PpuTiming::State ppu = machine->ppu.save_state();
+  const Apu::State apu = machine->apu.save_state();
+  const IoRegistersState io = machine->io;
 
   std::vector<std::uint8_t> out;
-  out.reserve(sizeof(std::uint32_t) * 3 + memory.ewram.size() +
-              memory.iwram.size() + memory.palette.size() + memory.vram.size() +
-              memory.oam.size() + memory.mgba_debug_string.size() +
-              memory.game_pak_rom.size() + memory.game_pak_save.size());
+  out.reserve(sizeof(std::uint32_t) * 3 + memory->ewram.size() +
+              memory->iwram.size() + memory->palette.size() + memory->vram.size() +
+              memory->oam.size() + memory->mgba_debug_string.size() +
+              memory->game_pak_rom.size() + memory->game_pak_save.size());
 
   write_u32(out, kMagic);
   write_u32(out, kVersion);
   write_u64(out, session.state_hash());
 
   write_cpu_state(out, cpu);
-  write_memory_state(out, memory);
-  write_interrupt_state(out, machine.interrupts);
+  write_memory_state(out, *memory);
+  write_interrupt_state(out, machine->interrupts);
   write_timers_state(out, timers);
   write_dma_state(out, dma);
   write_ppu_state(out, ppu);
   write_apu_state(out, apu);
-  write_u16(out, machine.keypad.pressed_mask());
-  write_u16(out, machine.keypad.keycnt());
-  write_u16(out, machine.waitcnt.read_control());
-  write_u8(out, static_cast<std::uint8_t>(machine.bios.mode()));
+  write_u16(out, machine->keypad.pressed_mask());
+  write_u16(out, machine->keypad.keycnt());
+  write_u16(out, machine->waitcnt.read_control());
+  write_u8(out, static_cast<std::uint8_t>(machine->bios.mode()));
   write_io_state(out, io);
-  write_scheduler_state(out, machine.scheduler);
+  write_scheduler_state(out, machine->scheduler);
   return out;
 }
 
@@ -856,9 +860,11 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
   }
 
   // Phase 1: parse and structurally validate everything into locals. The
-  // target session is not touched on any rejection below.
+  // target session is not touched on any rejection below. The memory state is
+  // heap-allocated: at ~396 KB it would dominate a 1 MiB thread-stack budget
+  // if left as a frame local.
   Arm7tdmi::State cpu{};
-  MemoryBus::State memory{};
+  const auto memory = std::make_unique<MemoryBus::State>();
   std::uint16_t interrupt_enable = 0;
   std::uint16_t interrupt_flags = 0;
   bool master_enabled = false;
@@ -872,7 +878,7 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
   std::uint8_t bios_mode = 0;
   IoRegistersState io{};
   CoreSchedulerState scheduler{};
-  if (!parse_cpu_state(reader, cpu) || !parse_memory_state(reader, memory) ||
+  if (!parse_cpu_state(reader, cpu) || !parse_memory_state(reader, *memory) ||
       !parse_interrupt_state(reader, interrupt_enable, interrupt_flags,
                              master_enabled) ||
       !parse_timers_state(reader, timers) || !parse_dma_state(reader, dma) ||
@@ -888,7 +894,7 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
   // Phase 2: build a scratch machine through each component loader's own
   // validation policy. Any rejection leaves `session` untouched.
   auto next = std::make_unique<CoreSessionState>();
-  if (!next->cpu.load_state(cpu) || !next->memory.load_state(memory) ||
+  if (!next->cpu.load_state(cpu) || !next->memory.load_state(*memory) ||
       !next->timers.load_state(timers) || !next->dma.load_state(dma) ||
       !next->ppu.load_state(ppu) || !next->apu.load_state(apu) ||
       !next->keypad.set_pressed_mask(pressed_mask)) {

@@ -16,9 +16,11 @@ $scriptPath = $PSCommandPath
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
 $includeHeaders = @()
-if (Test-Path -LiteralPath $includeDir) {
-    $includeHeaders = @(Get-ChildItem -LiteralPath $includeDir -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in @(".hpp", ".h", ".hh", ".hxx") })
+foreach ($headerDir in @($includeDir, (Join-Path $repoRoot "apps\desktop"))) {
+    if (Test-Path -LiteralPath $headerDir) {
+        $includeHeaders += @(Get-ChildItem -LiteralPath $headerDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @(".hpp", ".h", ".hh", ".hxx") })
+    }
 }
 
 function Resolve-SourcePaths {
@@ -646,6 +648,32 @@ $coreTests = @(
             "src\core\timers.cpp",
             "src\core\wait_state_control.cpp",
             "tests\dma_ppu_invariant_test.cpp"
+        )
+    },
+    @{
+        Name = "desktop_persistence_test"
+        Sources = @(
+            "tests\desktop_persistence_test.cpp"
+        )
+    },
+    @{
+        Name = "desktop_save_state_guard_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\save_state_codec.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\desktop_save_state_guard_test.cpp"
         )
     }
 )
