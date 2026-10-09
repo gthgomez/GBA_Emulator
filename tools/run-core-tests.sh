@@ -51,14 +51,17 @@ script_path=$(cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 
 mkdir -p "$build_dir"
 
-# Headers under include/ participate in staleness checks, matching the
-# PowerShell runner (any header newer than a binary forces a rebuild).
+# Headers under include/ and the desktop host sources participate in staleness
+# checks, matching the PowerShell runner (any header newer than a binary forces
+# a rebuild).
 include_headers=()
-if [[ -d "$include_dir" ]]; then
-    while IFS= read -r -d '' hdr; do
-        include_headers+=("$hdr")
-    done < <(find "$include_dir" -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.hh' -o -name '*.hxx' \) -print0)
-fi
+for header_dir in "$include_dir" "$repo_root/apps/desktop"; do
+    if [[ -d "$header_dir" ]]; then
+        while IFS= read -r -d '' hdr; do
+            include_headers+=("$hdr")
+        done < <(find "$header_dir" -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.hh' -o -name '*.hxx' \) -print0)
+    fi
+done
 
 # Test table: name|source|source|... (relative to repo root, forward slashes).
 # Mirrors $coreTests in tools/run-core-tests.ps1.
@@ -77,6 +80,7 @@ core_tests=(
     "bios_test|src/core/bios.cpp|tests/bios_test.cpp"
     "io_registers_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/io_registers_test.cpp"
     "core_scheduler_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/core_scheduler_test.cpp"
+    "intr_wait_serial_horizon_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/intr_wait_serial_horizon_test.cpp"
     "core_session_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/core_session.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/core_session_test.cpp"
     "program_harness_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/core_session.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/program_harness.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/program_harness_test.cpp"
     "compatibility_corpus_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/compatibility_corpus.cpp|src/core/core_scheduler.cpp|src/core/core_session.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/program_harness.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/compatibility_corpus_test.cpp"
@@ -92,6 +96,8 @@ core_tests=(
     "thumb_open_bus_asymmetric_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/core_session.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/thumb_open_bus_asymmetric_test.cpp"
     "io_read_open_bus_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/core_session.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/io_read_open_bus_test.cpp"
     "dma_ppu_invariant_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/core_session.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/dma_ppu_invariant_test.cpp"
+    "desktop_persistence_test|tests/desktop_persistence_test.cpp"
+    "desktop_save_state_guard_test|src/core/arm7tdmi.cpp|src/core/apu.cpp|src/core/bios.cpp|src/core/core_scheduler.cpp|src/core/core_session.cpp|src/core/dma_controller.cpp|src/core/interrupt_controller.cpp|src/core/io_registers.cpp|src/core/keypad.cpp|src/core/memory_bus.cpp|src/core/ppu_timing.cpp|src/core/save_state_codec.cpp|src/core/timers.cpp|src/core/wait_state_control.cpp|tests/desktop_save_state_guard_test.cpp"
 )
 
 # Tag distinguishes sanitized from plain builds in the source manifest so

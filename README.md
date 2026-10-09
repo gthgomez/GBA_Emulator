@@ -7,7 +7,8 @@ sibling Android dev shell. Controlled external beta remains blocked without devi
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Local core verifiers | PASS (29/29) | `.\tools\run-core-tests.ps1` — clean `g++ -Werror` rebuild, all binaries pass (29th: IntrWait serial-horizon verifier) |
+| Local core verifiers | PASS (32/32) | `.\tools\run-core-tests.ps1` / `./tools/run-core-tests.sh` — clean `g++ -Werror` rebuild, all binaries pass, identical inventory on both runners (31st/32nd: desktop persistence + save-state ROM-association guards, added with the desktop MVP) |
+| Desktop host (SDL3 play + headless lab) | PASS (automated) | `gba-desktop`: interactive SDL3 window/input/audio, cartridge saves, save states, reset/ROM-switch data safety, deterministic headless lab. CI runs headless-determinism, save-lifecycle, and interactive-host smokes on Linux + Windows. Physical Windows playtest not yet recorded — see `docs/DESKTOP.md` |
 | mGBA public suites (conformance) | 11 GREEN / 2 NOT FULL | `io-read` is GREEN 130/130 (re-verified 2026-09-12; `51/130` RED was disproven by PR #7). `misc-edge` (6/12) and `timing` (1956/2020, 64 failures pre-existing on `main`) remain below `pass=total` — see `docs/open-issues-status.md`. Baseline in `tools/mgba-suite-green-baseline.json` |
 | Video oracle aliases | GREEN | 7 deterministic `video_probe` hashes via `.\tools\run-video-suite-all.ps1`; upstream interactive `video` suite is absent from the matrix **by design** (no `END pass=total`), not missing by failure |
 | Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` stays RED while `misc-edge` (6/12) and `timing` (1956/2020) are below `pass=total`; `io-read` is no longer a regression (latest: `build/test-results/credibility-matrix-latest.json`) |
