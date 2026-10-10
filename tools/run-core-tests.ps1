@@ -347,6 +347,25 @@ $coreTests = @(
         )
     },
     @{
+        Name = "branch_to_self_test"
+        Sources = @(
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\branch_to_self_test.cpp"
+        )
+    },
+    @{
         Name = "intr_wait_serial_horizon_test"
         Sources = @(
             "src\core\arm7tdmi.cpp",
