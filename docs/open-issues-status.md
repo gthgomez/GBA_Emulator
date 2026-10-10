@@ -144,6 +144,7 @@ artifacts exist — not merely synthetic self-test PASS.
 | CPU pipeline / Thumb coverage | Partial | See `docs/production-engine-roadmap.md` |
 | PPU/APU hardware completeness | Seed-level | Renderer/mixer seeds, not full hardware |
 | Save-state on disk / migration UX | Bounded codec only | No production persistence promise |
+| Flash128K save-state decoding | **RESOLVED (2026-10-10)** | The v3 decoder incorrectly capped backup storage at the 64 KiB bus aperture, rejecting valid two-bank Flash128K snapshots and preventing desktop rollback after a rejected ROM switch. It now accepts up to 128 KiB while retaining exact protocol-size and hash validation and transactional rejection. Core regressions cover every backup type, both banks, selected bank, ID mode, pending program commands and malformed payloads; desktop regressions cover guarded play-mode restore, failed-switch rollback and automatic/explicit headless save/resume. The wire format is unchanged, including compatibility with previously written Flash128K states. |
 | BIOS | No bundle | HLE enabled on Android/runtime `load_rom` (`configure_for_game_boot`); RegisterRamReset SWI 0x01 HLE; no retail BIOS file execution |
 
 ### Android product path

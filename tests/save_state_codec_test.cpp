@@ -264,6 +264,113 @@ int main() {
   expect(bios_restored->state_hash() == bios_session->state_hash(),
          "BIOS-mode save-state restores the encoded hash");
 
+  // Every supported backup capacity must roundtrip, including banked storage
+  // larger than the 64 KiB cartridge-save bus aperture.
+  struct BackupCase {
+    GamePakSaveType type;
+    std::size_t size;
+  };
+  for (const auto& backup : {BackupCase{GamePakSaveType::none, 0},
+                            BackupCase{GamePakSaveType::sram32k, 32768},
+                            BackupCase{GamePakSaveType::flash64k, 65536},
+                            BackupCase{GamePakSaveType::flash128k, 131072},
+                            BackupCase{GamePakSaveType::eeprom512, 512},
+                            BackupCase{GamePakSaveType::eeprom8k, 8192}}) {
+    auto backup_source = std::make_unique<CoreSession>();
+    expect(backup_source->memory().load_game_pak_rom(rom), "backup fixture loads ROM");
+    expect(backup_source->memory().configure_game_pak_save(backup.type),
+           "backup fixture configures protocol");
+    std::vector<std::uint8_t> data(backup.size, 0xFF);
+    if (!data.empty()) {
+      data.front() = 0x12;
+      data.back() = 0x34;
+      expect(backup_source->memory().import_game_pak_save(backup.type, data),
+             "backup fixture seeds boundary bytes");
+    }
+    auto backup_restored = std::make_unique<CoreSession>();
+    expect(SaveStateCodec::decode_into(*backup_restored,
+                                      SaveStateCodec::encode(*backup_source)).status ==
+               SaveStateDecodeStatus::ok,
+           "all backup capacities decode, including Flash128K");
+    expect(backup_restored->memory().game_pak_save_type() == backup.type &&
+               backup_restored->memory().export_game_pak_save() == data,
+           "backup roundtrip preserves protocol and every byte");
+    expect(backup_restored->state_hash() == backup_source->state_hash(),
+           "backup roundtrip preserves machine hash");
+  }
+
+  auto flash_source = std::make_unique<CoreSession>();
+  expect(flash_source->memory().load_game_pak_rom(rom), "Flash128K fixture loads ROM");
+  std::vector<std::uint8_t> flash_data(131072, 0xFF);
+  flash_data.at(0x10) = 0x9C;
+  flash_data.at(65536 + 0x10) = 0x34;
+  expect(flash_source->memory().import_game_pak_save(GamePakSaveType::flash128k, flash_data),
+         "Flash128K fixture seeds distinct banks");
+  const auto flash_command = [](MemoryBus& memory, std::uint8_t command) {
+    expect(memory.write8(0x0E005555, 0xAA), "flash unlock byte 1");
+    expect(memory.write8(0x0E002AAA, 0x55), "flash unlock byte 2");
+    expect(memory.write8(0x0E005555, command), "flash command byte");
+  };
+  flash_command(flash_source->memory(), 0xB0);
+  expect(flash_source->memory().write8(0x0E000000, 1), "select flash bank 1");
+  flash_command(flash_source->memory(), 0x90);
+  const auto flash_encoded = SaveStateCodec::encode(*flash_source);
+  auto flash_restored = std::make_unique<CoreSession>();
+  expect(SaveStateCodec::decode_into(*flash_restored, flash_encoded).status ==
+             SaveStateDecodeStatus::ok,
+         "Flash128K bank-1 ID-mode snapshot decodes");
+  expect(flash_restored->state_hash() == flash_source->state_hash() &&
+             flash_restored->memory().flash_protocol_status().bank == 1 &&
+             flash_restored->memory().flash_protocol_status().id_mode,
+         "Flash128K restores selected bank and ID mode");
+  expect(flash_restored->memory().write8(0x0E000100, 0xF0), "restored flash exits ID mode");
+  expect(flash_restored->memory().read8(0x0E000010).value_or(0) == 0x34,
+         "restored bank 1 exposes its data");
+  flash_command(flash_restored->memory(), 0xB0);
+  expect(flash_restored->memory().write8(0x0E000000, 0), "restored flash selects bank 0");
+  expect(flash_restored->memory().read8(0x0E000010).value_or(0) == 0x9C,
+         "restored bank 0 exposes distinct data");
+
+  expect(flash_source->memory().write8(0x0E000100, 0xF0), "source exits ID mode");
+  flash_command(flash_source->memory(), 0xA0);
+  expect(SaveStateCodec::decode_into(*flash_restored,
+                                    SaveStateCodec::encode(*flash_source)).status ==
+             SaveStateDecodeStatus::ok,
+         "pending flash program command decodes");
+  expect(flash_restored->memory().write8(0x0E000020, 0x56),
+         "restored flash completes pending program command");
+  expect(flash_source->memory().write8(0x0E000020, 0x56),
+         "source completes pending program command");
+  expect(flash_restored->state_hash() == flash_source->state_hash() &&
+             flash_restored->memory().export_game_pak_save().at(65536 + 0x20) == 0x56,
+         "pending program resumes deterministically in bank 1");
+
+  const std::size_t flash_len_offset = kRomLenOffset + 4 + rom.size();
+  const std::size_t flash_data_offset = flash_len_offset + 4;
+  const auto reject_flash = [&](const std::vector<std::uint8_t>& blob,
+                                SaveStateDecodeStatus status) {
+    expect(SaveStateCodec::decode_into(*victim, blob).status == status,
+           "malformed Flash128K snapshot is rejected");
+    expect(victim->state_hash() == victim_hash,
+           "Flash128K rejection leaves target untouched");
+  };
+  auto malformed_flash = flash_encoded;
+  write_word(malformed_flash, flash_len_offset, 131073);
+  reject_flash(malformed_flash, SaveStateDecodeStatus::corrupt_payload);
+  malformed_flash = flash_encoded;
+  malformed_flash.resize(flash_data_offset + 65536);
+  reject_flash(malformed_flash, SaveStateDecodeStatus::corrupt_payload);
+  malformed_flash = flash_encoded;
+  // A complete 64 KiB blob falsely declaring Flash128K must reach and fail
+  // protocol-size validation, rather than consuming subsequent state fields.
+  malformed_flash.erase(malformed_flash.begin() + flash_data_offset + 65536,
+                        malformed_flash.begin() + flash_data_offset + 131072);
+  write_word(malformed_flash, flash_len_offset, 65536);
+  reject_flash(malformed_flash, SaveStateDecodeStatus::restore_rejected);
+  malformed_flash = flash_encoded;
+  malformed_flash.at(flash_data_offset + 131071) ^= 1U;
+  reject_flash(malformed_flash, SaveStateDecodeStatus::state_hash_mismatch);
+
   std::cout << "save_state_codec_test: PASS\n";
   return 0;
 }
