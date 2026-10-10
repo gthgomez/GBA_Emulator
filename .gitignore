@@ -30,3 +30,11 @@ bios*.bin
 
 # Desktop host deps (pinned SDL3 fetched by tools/setup-desktop-deps.ps1)
 external/SDL3/
+
+# Portable packaging output (tools/package-windows-portable.ps1)
+dist/
+*.zip
+
+# Python caches from the synthetic-fixture / screenshot helper scripts
+__pycache__/
+*.pyc
