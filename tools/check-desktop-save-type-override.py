@@ -101,6 +101,19 @@ def main():
             "--save-state", state)
         run("--rom", idle, "--save-type", "sram32k", "--headless", "--frames", 1,
             "--load-state", state)
+
+        # A resumed SRAM-writing ROM must retain its written backup data.
+        written_state = root / "written-sram.state"
+        run("--rom", ambiguous, "--save-type", "sram32k", "--headless",
+            "--frames", 2, "--artifact", artifact)
+        uninterrupted_hash = json.loads(artifact.read_text())["state"]["final_hash"]
+        run("--rom", ambiguous, "--save-type", "sram32k", "--headless",
+            "--frames", 1, "--save-state", written_state)
+        run("--rom", ambiguous, "--save-type", "sram32k", "--headless",
+            "--frames", 1, "--load-state", written_state, "--artifact", artifact)
+        assert json.loads(artifact.read_text())["state"]["final_hash"] == uninterrupted_hash, (
+            "resuming with a save-type override changed the saved machine")
+
         run("--rom", idle, "--save-type", "eeprom8k", "--headless", "--frames", 1,
             "--load-state", state, code=3, message="different save type")
         run("--rom", eeprom, "--save-type", "sram32k", "--headless", "--frames", 1,
