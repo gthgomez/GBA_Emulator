@@ -67,12 +67,25 @@ int main() {
 
   // Same-ROM load commits the snapshot.
   std::unique_ptr<CoreSession> same_rom_live = make_session(rom_a);
+  expect(same_rom_live->memory().configure_game_pak_save(GamePakSaveType::sram32k),
+         "configure matching save protocol");
   std::unique_ptr<CoreSession> scratch = std::make_unique<CoreSession>();
   expect(load_save_state_for_session(*same_rom_live, blob, *scratch) ==
              SaveStateLoadStatus::ok,
          "same-ROM state loads");
   expect(same_rom_live->state_hash() == source_hash,
          "same-ROM load restores the captured machine");
+
+  // A state must not silently replace an explicitly selected backup protocol.
+  std::unique_ptr<CoreSession> different_save_live = make_session(rom_a);
+  expect(different_save_live->memory().configure_game_pak_save(GamePakSaveType::eeprom8k),
+         "configure different save protocol");
+  const std::uint64_t different_save_hash = different_save_live->state_hash();
+  expect(load_save_state_for_session(*different_save_live, blob, *scratch) ==
+             SaveStateLoadStatus::wrong_save_type,
+         "same-ROM state with different save type is refused");
+  expect(different_save_live->state_hash() == different_save_hash,
+         "save-type refusal leaves live session untouched");
 
   // Wrong-ROM load is refused and leaves the live session byte-identical.
   std::unique_ptr<CoreSession> wrong_rom_live = make_session(rom_b);

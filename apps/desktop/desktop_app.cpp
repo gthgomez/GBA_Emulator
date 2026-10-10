@@ -4,6 +4,7 @@
 
 #include "desktop_persistence.hpp"
 #include "save_state_guard.hpp"
+#include "save_type_selection.hpp"
 #include "stb_image_write.h"
 
 #include <algorithm>
@@ -62,21 +63,10 @@ const std::unordered_map<SDL_GamepadButton, KeypadButton> kPadBindings{
     {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, KeypadButton::r},
 };
 
-const char* save_kind_name(gba::core::GamePakSaveType type) {
-  switch (type) {
-    case gba::core::GamePakSaveType::none: return "none";
-    case gba::core::GamePakSaveType::sram32k: return "sram32k";
-    case gba::core::GamePakSaveType::flash64k: return "flash64k";
-    case gba::core::GamePakSaveType::flash128k: return "flash128k";
-    case gba::core::GamePakSaveType::eeprom512: return "eeprom512";
-    case gba::core::GamePakSaveType::eeprom8k: return "eeprom8k";
-    default: return "unknown";
-  }
-}
-
 }  // namespace
 
-DesktopApp::DesktopApp(HostOptions options) : options_(std::move(options)) {}
+DesktopApp::DesktopApp(HostOptions options)
+    : options_(std::move(options)), override_rom_path_(options_.rom_path) {}
 
 DesktopApp::~DesktopApp() {
   close_all_gamepads();
@@ -174,7 +164,10 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
     rollback = gba::core::SaveStateCodec::encode(runtime_.session());
   }
 
-  if (runtime_.load_rom(rom) != gba::core::EmulatorRuntimeStatus::ok) {
+  const auto selection = save_type_for_rom(
+      override_rom_path_, path, options_.save_type_override);
+  if (runtime_.load_rom(rom) != gba::core::EmulatorRuntimeStatus::ok ||
+      !apply_save_type(runtime_.session().memory(), selection)) {
     std::cerr << "gba-desktop: ROM rejected by engine: " << path << "\n";
     if (rollback.has_value()) {
       const auto restored =
@@ -200,13 +193,17 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
 
   options_.rom_path = path;
 
-  const auto detected = runtime_.session().memory().detect_game_pak_save_type();
-  stats_.cartridge_save_kind = detected ? save_kind_name(*detected) : "none";
+  const auto configured = runtime_.session().memory().game_pak_save_type();
+  stats_.cartridge_save_kind = save_kind_name(configured);
+  if (selection) {
+    std::cerr << "gba-desktop: cartridge save override (" << save_kind_name(configured)
+              << ") for " << path << "\n";
+  }
   stats_.cartridge_save_loaded = false;
   save_prefix_ = persistence::save_data_prefix(options_.rom_path, options_.save_directory);
   cartridge_save_path_ = persistence::cartridge_save_path(save_prefix_);
   cartridge_save_enabled_ =
-      detected.has_value() && *detected != gba::core::GamePakSaveType::none &&
+      configured != gba::core::GamePakSaveType::none &&
       runtime_.session().memory().has_game_pak_save();
   cartridge_save_snapshot_.clear();
   frames_since_save_flush_ = 0;
@@ -244,7 +241,7 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
     const std::vector<std::uint8_t> existing =
         persistence::read_binary_file(cartridge_save_path_);
     if (!existing.empty()) {
-      if (runtime_.session().memory().import_game_pak_save(*detected, existing)) {
+      if (runtime_.session().memory().import_game_pak_save(configured, existing)) {
         stats_.cartridge_save_loaded = true;
         std::cerr << "gba-desktop: loaded cartridge save (" << stats_.cartridge_save_kind
                   << ") from " << cartridge_save_path_ << "\n";
@@ -416,7 +413,10 @@ void DesktopApp::reset_runtime() {
   const std::vector<std::uint8_t> rollback =
       gba::core::SaveStateCodec::encode(runtime_.session());
 
-  if (runtime_.load_rom(rom) != gba::core::EmulatorRuntimeStatus::ok) {
+  const auto selection = save_type_for_rom(
+      override_rom_path_, options_.rom_path, options_.save_type_override);
+  if (runtime_.load_rom(rom) != gba::core::EmulatorRuntimeStatus::ok ||
+      !apply_save_type(runtime_.session().memory(), selection)) {
     const auto restored = gba::core::SaveStateCodec::decode_into(runtime_.session(), rollback);
     std::cerr << "gba-desktop: reset failed to reload ROM";
     if (restored.status == gba::core::SaveStateDecodeStatus::ok) {
@@ -523,6 +523,11 @@ bool DesktopApp::read_save_state(int slot) {
   if (status == SaveStateLoadStatus::wrong_rom) {
     std::cerr << "gba-desktop: save state " << slot
               << " belongs to a different ROM; refusing to load\n";
+    return false;
+  }
+  if (status == SaveStateLoadStatus::wrong_save_type) {
+    std::cerr << "gba-desktop: save state " << slot
+              << " uses a different save type; refusing to load\n";
     return false;
   }
   // The restored machine owns the cartridge save again; resync the dirty
