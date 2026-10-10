@@ -61,12 +61,23 @@ so no button stays stuck.
 
 ### Saves and data safety
 
+- `--save-type TYPE` overrides automatic detection for the starting ROM file.
+  Accepted values are `auto` (default), `none`, `sram32k`, `flash64k`, `flash128k`,
+  `eeprom512`, and `eeprom8k`. For example:
+  `gba-desktop --rom game.gba --save-type sram32k` enables SRAM when conflicting
+  ROM markers make automatic detection inconclusive. Select the known backup
+  hardware for that title. The override also works in headless lab mode and
+  requires an explicit ROM path. It survives reset and reopening the original
+  file; opening another ROM uses that ROM's automatic detection. `none` disables
+  cartridge saving. The selection is a launch option, not a persisted preference.
 - Cartridge saves persist to `<rom>.sav` next to the ROM (or in
   `--save-directory`), imported at boot, flushed on exit and every ~5 s of dirty
   frames. Games with no cartridge-backed save never create a `.sav`.
 - Save states are `<rom>.state1` etc. (core `SaveStateCodec` v3 format). Because
   the codec snapshot is self-contained, the host additionally refuses a state
-  that was captured from a different ROM.
+  that was captured from a different ROM or uses a different save type. Headless
+  `--load-state` also checks both identities when `--save-type` is explicit;
+  it never reinitializes backup memory over the restored save data.
 - All save writes are replace-in-place safe: a sibling temp file is written and
   renamed over the destination, so a failed or interrupted write cannot truncate
   a good save. (This is crash-safe, not a power-loss durability guarantee.)
@@ -115,7 +126,7 @@ sampled every 30 frames + final), `--audio-hash`, `--state-hash`,
 `--save-state`/`--load-state` (round-trip verified), `--artifact` (versioned JSON,
 schema_version 1).
 
-The artifact records engine commit + build type, ROM sha256/size, stop reason,
+The artifact records engine commit + build type, ROM sha256/size/save type, stop reason,
 unsupported-instruction/fetch-failure counters, framebuffer CRC32, audio
 sample count/hash/underruns, final state hash, and wall-clock timing
 (excluded from all hashes). Exit code is non-zero on unsupported/fetch/step
@@ -182,9 +193,10 @@ BIOS files, or private saves are used or committed.
 - `--save-directory` keys saves on the ROM *file name*, so two different ROMs with
   the same file name in a shared save directory would share (and overwrite) one
   `.sav`. Use a distinct directory per title, or the default (save next to ROM).
-- ROMs that contain more than one save-type marker (`detect_game_pak_save_type()`
+- ROMs with conflicting save-family markers (`detect_game_pak_save_type()`
   returns `nullopt`) are treated as having no cartridge save: the host neither
-  loads nor writes a `.sav` for them.
+  loads nor writes a `.sav` for them in automatic mode. Resolve conflicting
+  save-family markers with `--save-type` when the title's backup hardware is known.
 - A persistently failing save write is retried at most once per flush interval,
   not continuously; if the destination stays unwritable the save is not persisted
   and the failure is reported on stderr.

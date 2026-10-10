@@ -13,6 +13,7 @@
 
 #include "desktop_app.hpp"
 #include "desktop_persistence.hpp"
+#include "save_type_selection.hpp"
 #include "gba/core/save_state_codec.hpp"
 
 #include "stb_image_write.h"
@@ -69,6 +70,7 @@ struct CliOptions {
   std::string switch_to_path;
   std::string window_screenshot_path;
   std::string save_directory;
+  std::optional<gba::core::GamePakSaveType> save_type_override;
 };
 
 struct InputEvent {
@@ -84,6 +86,8 @@ struct InputEvent {
       "Play mode:\n"
       "  gba-desktop game.gba                 (interactive; SDL host)\n"
       "  gba-desktop                          (opens a ROM file dialog)\n"
+      "  --save-type TYPE                    initial ROM backup type (default auto)\n"
+      "    auto|none|sram32k|flash64k|flash128k|eeprom512|eeprom8k\n"
       "\n"
       "Headless lab mode:\n"
       "  --headless                          run deterministically without a window\n"
@@ -142,6 +146,12 @@ CliOptions parse_cli(int argc, char** argv) {
       rom_seen = true;
     } else if (arg == "--headless") {
       opts.headless = true;
+    } else if (arg == "--save-type") {
+      const std::string value = next_string();
+      if (!gba::desktop::parse_save_type(value, opts.save_type_override)) {
+        std::cerr << "gba-desktop: invalid save type: " << value << "\n";
+        usage(2);
+      }
     } else if (arg == "--quit-after") {
       opts.quit_after_frames = next_u32();
     } else if (arg == "--reset-after") {
@@ -192,6 +202,10 @@ CliOptions parse_cli(int argc, char** argv) {
   }
   if (!rom_seen && opts.headless) {
     std::cerr << "gba-desktop: --headless requires a ROM (--rom <path.gba>)\n";
+    usage(2);
+  }
+  if (!rom_seen && opts.save_type_override) {
+    std::cerr << "gba-desktop: --save-type requires a ROM (--rom <path.gba>)\n";
     usage(2);
   }
   std::sort(opts.screenshot_frames.begin(), opts.screenshot_frames.end());
@@ -638,9 +652,22 @@ int run_headless(const CliOptions& opts) {
                 << decoded.version << ")\n";
       return 3;
     }
+    if (opts.save_type_override && runtime.session().memory().export_game_pak_rom() != rom) {
+      std::cerr << "gba-desktop: save state belongs to a different ROM; refusing to load\n";
+      return 3;
+    }
+    if (opts.save_type_override &&
+        runtime.session().memory().game_pak_save_type() != *opts.save_type_override) {
+      std::cerr << "gba-desktop: save state uses a different save type; refusing to load\n";
+      return 3;
+    }
     std::cerr << "gba-desktop: loaded save state from " << opts.load_state_input << "\n";
   } else if (runtime.load_rom(rom) != AndroidRuntimeStatus::ok) {
     std::cerr << "gba-desktop: ROM rejected by engine: " << opts.rom_path << "\n";
+    return 3;
+  } else if (!gba::desktop::apply_save_type(
+                 runtime.session().memory(), opts.save_type_override)) {
+    std::cerr << "gba-desktop: cannot configure cartridge save type\n";
     return 3;
   }
 
@@ -736,6 +763,9 @@ int run_headless(const CliOptions& opts) {
   artifact += "  },\n";
   artifact += "  \"rom\": {\n";
   artifact += "    \"path\": \"" + json_escape(opts.rom_path) + "\",\n";
+  artifact += "    \"save_type\": \"" +
+              std::string(gba::desktop::save_kind_name(
+                  runtime.session().memory().game_pak_save_type())) + "\",\n";
   artifact += "    \"sha256\": \"" + rom_sha256 + "\",\n";
   artifact += "    \"size\": " + std::to_string(rom.size()) + "\n";
   artifact += "  },\n";
@@ -813,6 +843,7 @@ int main(int argc, char** argv) {
     host.switch_to_path = opts.switch_to_path;
     host.window_screenshot_path = opts.window_screenshot_path;
     host.save_directory = opts.save_directory;
+    host.save_type_override = opts.save_type_override;
     return gba::desktop::DesktopApp(host).run();
   }
   return run_headless(opts);
