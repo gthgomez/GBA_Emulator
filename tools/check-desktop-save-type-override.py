@@ -96,6 +96,39 @@ def main():
             "--artifact", artifact)
         assert json.loads(artifact.read_text())["rom"]["save_type"] == "sram32k"
 
+        # Exercise state save/resume for every explicit backup capacity, plus
+        # automatic Flash128K detection. The 64 KiB bus aperture is smaller
+        # than this protocol's two-bank snapshot storage.
+        flash_auto = fixture("flash-auto", markers=(b"FLASH1M_V",))
+        flash_seed = bytes([0x42]) + bytes(131070) + bytes([0x5A])
+        save(flash_auto).write_bytes(flash_seed)
+        oversized = root / "oversized.gba"
+        with oversized.open("wb") as output:
+            output.truncate(32 * 1024 * 1024 + 1)
+        run("--rom", flash_auto, "--switch-after", 2, "--switch-to", oversized,
+            "--quit-after", 4, message="previous session restored")
+        assert save(flash_auto).read_bytes() == flash_seed, (
+            "failed ROM switch damaged the Flash128K save")
+
+        roundtrip_cases = [(idle, kind) for kind in
+                           ("none", "sram32k", "flash64k", "flash128k",
+                            "eeprom512", "eeprom8k")]
+        roundtrip_cases.append((flash_auto, "auto"))
+        for path, kind in roundtrip_cases:
+            state_path = root / (kind + "-roundtrip.state")
+            run("--rom", path, "--save-type", kind, "--headless", "--frames", 2,
+                "--artifact", artifact)
+            reference = json.loads(artifact.read_text())["state"]["final_hash"]
+            run("--rom", path, "--save-type", kind, "--headless", "--frames", 1,
+                "--save-state", state_path)
+            run("--rom", path, "--save-type", kind, "--headless", "--frames", 1,
+                "--load-state", state_path, "--artifact", artifact)
+            resumed = json.loads(artifact.read_text())
+            expected_type = "flash128k" if kind == "auto" else kind
+            assert resumed["rom"]["save_type"] == expected_type
+            assert resumed["state"]["final_hash"] == reference, (
+                f"{kind} save/resume changed the machine")
+
         state = root / "sram.state"
         run("--rom", idle, "--save-type", "sram32k", "--headless", "--frames", 1,
             "--save-state", state)

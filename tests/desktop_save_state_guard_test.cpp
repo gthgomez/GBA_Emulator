@@ -111,6 +111,33 @@ int main() {
   expect(wrong_rom_live->state_hash() == wrong_rom_hash,
          "decode failure leaves the live session untouched");
 
+  // The play-mode guard must accept the full two-bank Flash128K snapshot,
+  // while retaining its type/ROM checks after successful core decoding.
+  auto flash_source = make_session(rom_a);
+  std::vector<std::uint8_t> flash_data(131072, 0xFF);
+  flash_data.back() = 0x5A;
+  expect(flash_source->memory().import_game_pak_save(GamePakSaveType::flash128k, flash_data),
+         "seed Flash128K state");
+  const auto flash_blob = SaveStateCodec::encode(*flash_source);
+  expect(same_rom_live->memory().configure_game_pak_save(GamePakSaveType::flash128k),
+         "select matching Flash128K protocol");
+  expect(load_save_state_for_session(*same_rom_live, flash_blob, *scratch) ==
+             SaveStateLoadStatus::ok,
+         "play-mode guard accepts matching Flash128K snapshot");
+  expect(same_rom_live->state_hash() == flash_source->state_hash() &&
+             same_rom_live->memory().export_game_pak_save() == flash_data,
+         "play-mode guard restores both flash banks");
+  expect(load_save_state_for_session(*different_save_live, flash_blob, *scratch) ==
+             SaveStateLoadStatus::wrong_save_type,
+         "decoded Flash128K state still rejects mismatched protocol");
+  expect(different_save_live->state_hash() == different_save_hash,
+         "Flash128K protocol refusal preserves live session");
+  expect(load_save_state_for_session(*wrong_rom_live, flash_blob, *scratch) ==
+             SaveStateLoadStatus::wrong_rom,
+         "decoded Flash128K state still rejects wrong ROM");
+  expect(wrong_rom_live->state_hash() == wrong_rom_hash,
+         "Flash128K ROM refusal preserves live session");
+
   std::cout << "desktop_save_state_guard_test: PASS\n";
   return 0;
 }

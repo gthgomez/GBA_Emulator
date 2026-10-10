@@ -78,6 +78,9 @@ so no button stays stuck.
   that was captured from a different ROM or uses a different save type. Headless
   `--load-state` also checks both identities when `--save-type` is explicit;
   it never reinitializes backup memory over the restored save data.
+  Snapshots support every selectable backup capacity, including both Flash128K
+  banks and their protocol state. The v3 format is unchanged; Flash128K states
+  written before the decoder fix can now be loaded.
 - All save writes are replace-in-place safe: a sibling temp file is written and
   renamed over the destination, so a failed or interrupted write cannot truncate
   a good save. (This is crash-safe, not a power-loss durability guarantee.)
