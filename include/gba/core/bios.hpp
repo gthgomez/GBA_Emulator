@@ -49,7 +49,7 @@ struct BiosHleConstants {
   static constexpr std::uint32_t kIrqReturnCycles = 3;
   static constexpr std::uint32_t kIntrWaitReturnCycles = 57;
   static constexpr std::uint32_t kVBlankIntrWaitReturnCycles = 515;
-  static constexpr std::uint32_t kHblankHaltReturnCycles = 83;
+  static constexpr std::uint32_t kHblankHaltReturnCycles = 50;
 };
 
 struct BiosIrqDispatchTiming {

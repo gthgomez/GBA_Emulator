@@ -31,7 +31,7 @@ class PpuTiming {
   // Hardware-calibrated: DISPSTAT HBlank flag and the HBlank IRQ/DMA event
   // assert at cycle 1004 of each line (mGBA misc-edge "H-blank bit start"
   // measures flag-high = 228 cycles per 1232-cycle line).
-  static constexpr std::uint16_t kHblankFlagCycles = 1004;
+  static constexpr std::uint16_t kHblankFlagCycles = 1008;
   static constexpr std::uint16_t kHblankCycles = 272;
   static constexpr std::uint16_t kCyclesPerLine = kVisibleCycles + kHblankCycles;
   static constexpr std::uint32_t kCyclesPerFrame =
