@@ -1,0 +1,17 @@
+diff --git a/src/misc-edge.c b/src/misc-edge.c
+index cacf800..f41622e 100644
+--- a/src/misc-edge.c
++++ b/src/misc-edge.c
+@@ -157,10 +157,10 @@ static void printResult(int offset, int line, const char* preface, u32 expected,
+ 
+ static void doResult(const char* preface, const char* testName, s32 value, s32 expected) {
+ 	if (value != expected) {
+-		debugprintf("FAIL: %s %s", testName, preface);
++		debugprintf("FAIL: %s %s got=0x%08lX want=0x%08lX", testName, preface, (unsigned long) expected, (unsigned long) value);
+ 		savprintf("%s: Got 0x%08lX vs 0x%08lX: FAIL", preface, value, expected);
+ 	} else {
+-		debugprintf("PASS: %s %s", testName, preface);
++		debugprintf("PASS: %s %s got=0x%08lX want=0x%08lX", testName, preface, (unsigned long) expected, (unsigned long) value);
+ 		++passes;
+ 	}
+ 	++totalResults;

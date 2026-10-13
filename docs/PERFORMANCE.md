@@ -244,10 +244,16 @@ non-sequential timing. It still does not model the full hardware prefetch disabl
 DMA bus stealing, or full mixed ARM/Thumb instruction coverage. The CPU now has selected
 pipeline-visible PC reads for ARM data-processing and Thumb high-register sources.
 
-The benchmark gate in `tools/check-core-benchmark.ps1` reruns the synthetic benchmark,
-checks every required row is present, verifies positive timing/throughput fields, and
-requires nonzero checksums. It is a local output-shape and measurement-integrity gate,
-not a hardware performance threshold.
+The benchmark gate in `tools/check-core-benchmark.ps1` reruns the synthetic benchmark
+(or checks a supplied output file via `-BenchmarkOutputPath`), checks every required row
+is present, verifies positive timing/throughput fields, and verifies each row's operation
+count and checksum against `tools/core-benchmark-baseline.json`. Because it compares only
+deterministic fields, a changed checksum or operation count is reported independently of
+wall-clock noise — the gate never needs a timing threshold to notice determinism drift.
+`tools/test-core-benchmark-gate.ps1` locks that contract (baseline-matching output is
+accepted; a drifted checksum, a changed operation count, or a missing row is rejected)
+without depending on wall-clock timing. It remains a local output-shape and
+measurement-integrity gate, not a hardware performance threshold.
 
 The performance regression gate in `tools/check-core-performance-regression.ps1` is a
 local guardrail over the same synthetic rows. It uses calibrated checked-in thresholds

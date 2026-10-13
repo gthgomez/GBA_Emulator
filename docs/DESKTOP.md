@@ -158,10 +158,8 @@ BIOS files, or private saves are used or committed.
 - The Pokemon Emerald uniform-black regression (issue #15) introduced by
   `6785fcc` was diagnosed in PR #14 and **fixed in PR #17** (PPU windowing
   bypass when no window is enabled). It is historical, not current.
-- A separate engine defect was found while building the interactive fixture: a
-  bare branch-to-self (`B #-8`) runs away instead of looping, while a
-  branch-to-previous-instruction loop works. It is recorded in
-  `docs/open-issues-status.md`; the synthetic fixtures use the working idiom.
+- A branch-to-self CPU defect (`B #-8` on ARM and `B #-4` on Thumb) was fixed in
+  PR #20 and is covered by `tests/branch_to_self_test.cpp`.
 - mGBA `misc-edge` and `timing` conformance gaps remain (see
   `docs/open-issues-status.md`); they do not block desktop play.
 

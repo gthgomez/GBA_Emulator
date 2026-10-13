@@ -1,7 +1,7 @@
 # Open Issues Status
 
-Status: 2026-09-29 reconciliation — post-#6 timer/timing state marked UNKNOWN (open PR #8); dimension statuses separated  
-Date: 2026-06-03 (updated 2026-09-29; prior updates 2026-08-15, 2026-09-12)
+Status: 2026-10-11 reconciliation — `misc-edge` re-measured 4/12, `timers` GREEN 936/936, `timing` 1956/2020, post-#6 PR #8 merge confirmed; dimension statuses separated  
+Date: 2026-06-03 (updated 2026-10-11; prior updates 2026-09-29, 2026-08-15, 2026-09-12)
 
 This document summarizes what is **closed** (verified with reproducible evidence) versus
 what **remains** for production and controlled beta. It does not replace per-suite logs in
@@ -48,17 +48,25 @@ first valid pwsh-7 run since June) reported `io-read` and `misc-edge` as RED and
 >   though its notes treat it as outside the baseline); the 7 oracle probes
 >   are verified separately via `tools/run-video-suite-all.ps1` and are GREEN.
 >
-> `misc-edge` remains the only genuinely measured regression (6/12, 2026-08-14). PR #6
-> ("misc-edge HBlank flag start-cycle", merged 2026-09-12) landed investigation + groundwork
-> only; no post-merge `misc-edge` rerun exists, so its current state is UNKNOWN.
+> `misc-edge` remains the only genuinely measured regression. The last committed
+> figure is **6/12 (2026-08-14)**; it is **re-measured at 4/12 on 2026-10-11**
+> (`main` `6eb935a`) with a locally built public suite ROM (source `aac98dca`, ROM
+> sha256 `9693913e8b9a41050122cf768c8157eea092d192a435c12d274173a810a38b1b`). PR #6
+> ("misc-edge HBlank flag start-cycle", merged 2026-09-12 as `9755c99`) moved
+> `kHblankFlagCycles` 1006→1004, against its own recorded warning that flipping the
+> constant without reworking the DISPSTAT sampler compensation rules regresses other
+> measurements, and no post-merge rerun was recorded. #6 is therefore a plausible
+> cause of the gap versus the 6/12 record, but the extra loss is not proven here. The
+> 2026-10-11 run also fails `DMA Prefetch` (`Break` two words long, `Read` reads 0
+> instead of `0xDEAD0000`).
 >
-> **Post-#6 timer/timing UNKNOWN (2026-09-29).** PR #6's scheduler/timer batching is merged
-> to `main`. Open PR #8 (`fix/timer-tick-regression`, head `e1e0f99`) reports it regressed
-> `timers` (576/936), `timer-irq` (69/90), `sio-timing` (0/4) and `timing` (1946/2020)
-> relative to the #6 parent. PR #8 is **not merged** and no rerun of these suites on current
-> `main` is on record, so the `GREEN` cells below for those suites are last-measured states
-> from before 2026-09-12 and must not be read as a certification of current `main`. Do not
-> label these regressions resolved until PR #8 merges or a fresh matrix run exists.
+> **Post-#6 timer/timing state RESOLVED by measurement (2026-10-11).** The "open PR #8"
+> note below is superseded: PR #8 (`fix/timer-tick-regression`) was **merged** to `main`
+> as `51890c4` ("recover 9fa5067 regressions (timers/timer-irq/sio-timing + Thumb MUL
+> timing)"). Re-running on `main` `6eb935a`: `timers` is **GREEN 936/936**; `timing` is
+> **1956/2020** (64 failures, all `Trivial DMA` / `Short DMA` timing rows, pre-existing on
+> `main`). `timer-irq` and `sio-timing` were **not** re-run on 2026-10-11 and have no
+> current measurement.
 
 | Target | Pass/total (2026-06-01 baseline) | Last measured |
 | --- | --- | --- |
@@ -69,15 +77,18 @@ first valid pwsh-7 run since June) reported `io-read` and `misc-edge` as RED and
 | `shifter` | 140/140 | GREEN |
 | `carry` | 93/93 | GREEN |
 | `multiply-long` | 72/72 | GREEN |
-| `timer-irq` | 90/90 | UNKNOWN on current main (open PR #8 reports 69/90 post-#6); last measured GREEN pre-2026-09-12 |
-| `timers` | 936/936 | UNKNOWN on current main (open PR #8 reports 576/936 post-#6); last measured GREEN pre-2026-09-12 |
-| `timing` | 2020/2020 | UNKNOWN on current main (open PR #8 reports 1946/2020 post-#6); last measured GREEN pre-2026-09-12 |
+| `timer-irq` | 90/90 | Not re-run 2026-10-11 (no current measurement); PR #8 merged as `51890c4`; last measured GREEN |
+| `timers` | 936/936 | **GREEN 936/936** (re-measured 2026-10-11, `main` `6eb935a`) |
+| `timing` | 2020/2020 | **1956/2020** (re-measured 2026-10-11, `main` `6eb935a`; 64 `Trivial/Short DMA` failures, pre-existing) |
 | `sio-read` | 90/90 | GREEN |
-| `sio-timing` | 4/4 (four SKIPPED no-peer multiplayer cases) | UNKNOWN on current main (open PR #8 reports 0/4 post-#6); last measured GREEN pre-2026-09-12 |
-| `misc-edge` | 12/12 | **RED 6/12** (H-blank bit start Hblank, 2026-08-14); PR #6 groundwork merged 2026-09-12, no rerun since — current state UNKNOWN |
+| `sio-timing` | 4/4 (four SKIPPED no-peer multiplayer cases) | Not re-run 2026-10-11 (no current measurement); PR #8 merged as `51890c4`; last measured GREEN |
+| `misc-edge` | 12/12 | **RED 4/12** (re-measured 2026-10-11, `main` `6eb935a`; `H-blank bit start` + `DMA Prefetch`); last committed figure was 6/12 on 2026-08-14 |
 
 Harness aliases (not in the regression baseline file, but green in the credibility matrix):
 `loadstore`, `ldmia`, `stmia`.
+
+The 2026-10-11 re-measurement commands, ROM provenance, and full per-subtest results
+are recorded in [`docs/evidence/2026-10-11-conformance-remeasure.md`](evidence/2026-10-11-conformance-remeasure.md).
 
 ### Video oracle evidence
 
@@ -137,7 +148,7 @@ artifacts exist — not merely synthetic self-test PASS.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Branch-to-self (`B #-8`, `0xEAFFFFFE`) | **OPEN — root-caused (2026-10-08)** | A branch whose target is the branch's own address (PC+8-8) runs away instead of looping; a branch-to-previous-instruction loop (`0xEAFFFFFD`) loops correctly. Reproduced deterministically on `main` for both ARM (`0xEAFFFFFE` — the scheduler forces the PC to fetch+4 each step) and Thumb (`0xE7FE`). Root cause: `CoreScheduler` decides "the instruction did not advance the PC" by comparing the PC to the fetch address, which a *taken* branch-to-self also satisfies, so the taken branch is rewritten into a fallthrough; the same comparison exists on both the ARM and Thumb step paths. Fix (routing a taken branch-to-self through the existing taken-branch/pipeline-refill machinery) is prepared as a separate core PR with a regression test. Real games use `b .` for idle loops, so this is a genuine CPU/scheduler correctness gap. The fixture avoids it for now. |
+| Branch-to-self (`B #-8`, `0xEAFFFFFE`) | **CLOSED — fixed in PR #20** | A taken branch whose target equals its own address now remains at that address on both ARM and Thumb paths. `tests/branch_to_self_test.cpp` covers ARM `0xEAFFFFFE` and Thumb `0xE7FE`; the verifier passes on the current upstream tree. |
 | Save-type detection with multiple markers | **OPEN — pre-existing** | `MemoryBus::detect_game_pak_save_type()` returns `nullopt` when a ROM contains more than one of `SRAM_V`/`FLASH*_V`/`EEPROM_V` (`memory_bus.cpp`), so the desktop host treats such a title as having no cartridge save and neither loads nor writes its `.sav`. |
 | Upstream `video` suite | Absent from matrix **by design** (reconciled 2026-09-12) | the default `-Suites` list in `tools/run-credibility-matrix.ps1` omits it (interactive video emits no `END pass=total`); the 7 oracle aliases are verified separately via `tools/run-video-suite-all.ps1` (last run 2026-06-05; no newer rerun on record) |
 | Additional video tests | Open | Beyond the seven oracle aliases |
