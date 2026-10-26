@@ -182,3 +182,47 @@ work frequency; sampled inclusive timings are not additive CPU percentages.
 Investigate cheaper equivalent memory classification before changing scheduling
 or instruction timing semantics. The requested sustained smooth 60 FPS remains
 unverified and unmet by the recorded release measurements.
+
+### Memory classification candidate
+
+The candidate dispatches by the address's high byte and makes that stateless
+calculation available to the CPU, DMA, bus and scheduler compiler. The existing
+out-of-line `MemoryBus::describe` symbol delegates to the same implementation,
+so callers using the earlier entry point retain it. The more detailed cartridge
+metadata path, including EEPROM candidacy, remains separate.
+
+VERIFIED: the candidate's classification matched the compiled pre-change
+implementation on 68,110,400 addresses, comparing region, offset, writable and
+mirrored fields. Coverage includes every high-byte bank through its first
+256 KiB, selected high offsets, and one million deterministic addresses across
+the 32-bit space. The existing public symbol was found in the built library.
+The 33 core verifiers passed and two independent read-only reviews found no
+blocking defect. Existing tests and this comparison establish equivalence to
+the prior implementation; they do not establish complete hardware accuracy.
+
+OBSERVED: two 600-frame release candidate runs measured 42.63 and 42.48 FPS,
+with p95 step times 28.41 and 28.25 ms. Execution counters, sampled frame
+hashes, audio and final state matched the earlier 600-frame workload. Earlier
+baseline runs measured 35.65–37.20 FPS with p95 32.20–35.09 ms. The runs were
+not interleaved and host load varied, so the practical speedup remains
+provisional until an alternating comparison is possible. Both candidate runs
+remain below 60 FPS and most frames exceeded the 16.67 ms step budget.
+
+### Checkpointed intro
+
+VERIFIED locally at `439ece4fe497`: the normal release candidate completed
+2,400 scripted frames through the title, clock warning and Birch introduction,
+then wrote a Flash128K checkpoint. It resumed that exact checkpoint for another
+1,800 frames through Birch dialogue and wrote a second checkpoint. Each segment
+reported zero unsupported instructions, fetch failures and engine audio
+underruns. The segments measured 36.38 and 38.29 FPS, respectively; neither is
+an interactive audio/presentation test or a complete playthrough. Screenshots,
+states, ROMs and JSON artifacts remain local in the task worktree's ignored
+`build/` directory.
+
+INFERRED, pending reproduction: the headless input script initializes its
+local button mask to zero even after loading a state. If a checkpoint contains
+a held button, the first later input event can replace the restored mask and
+release that button unintentionally. A useful regression is an uninterrupted
+script that holds one button across a checkpoint and presses/releases a second
+one after resumption; compare the final machine state with the split run.

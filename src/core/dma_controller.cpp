@@ -72,7 +72,7 @@ constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
 }
 
 [[nodiscard]] bool dma_source_uses_latch(std::uint32_t address) {
-  return MemoryBus::describe(address).region == Region::bios;
+  return MemoryBus::classify(address).region == Region::bios;
 }
 
 // Channels 1-3 whose source sits in Game Pak ROM step linearly through the
@@ -82,7 +82,7 @@ constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
 // programmed source control only governs the latch/fifo side of the stream.
 [[nodiscard]] bool dma_source_steps_as_game_pak_stream(std::size_t channel,
                                                        std::uint32_t address) {
-  return channel != 0 && MemoryBus::describe(address & 0x0FFFFFFFU).region ==
+  return channel != 0 && MemoryBus::classify(address & 0x0FFFFFFFU).region ==
                              Region::game_pak_rom;
 }
 
@@ -115,7 +115,7 @@ constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
                                               const WaitStateControl* waitcnt) {
   const MemoryAccessTiming timing = dma_timing(address, width, waitcnt);
   const bool external_waitcnt_access =
-      waitcnt != nullptr && game_pak_region(MemoryBus::describe(address).region);
+      waitcnt != nullptr && game_pak_region(MemoryBus::classify(address).region);
   if (width == AccessWidth::word && external_waitcnt_access) {
     return dma_access_phase_cycles(timing, sequential, true) +
            dma_access_phase_cycles(timing, true, true);
@@ -157,9 +157,9 @@ void apply_dma_bus_adjustment(std::uint32_t& bus_cycles, std::int32_t adjustment
   }
 
   const bool source_game_pak =
-      game_pak_region(MemoryBus::describe(source_address).region);
+      game_pak_region(MemoryBus::classify(source_address).region);
   const bool destination_game_pak =
-      game_pak_region(MemoryBus::describe(destination_address).region);
+      game_pak_region(MemoryBus::classify(destination_address).region);
   if (!source_game_pak && !destination_game_pak) {
     return 0;
   }

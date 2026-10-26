@@ -637,7 +637,7 @@ constexpr std::uint32_t kMirroredOamThumbPrefetchSlowRomCycles = 6;
     return false;
   }
 
-  const Region data_region = MemoryBus::describe(address).region;
+  const Region data_region = MemoryBus::classify(address).region;
   return data_region == Region::ewram || data_region == Region::iwram;
 }
 
@@ -692,7 +692,7 @@ mirrored_oam_cross_rom_block_load_elapsed_cycles(
     std::uint32_t data_address, std::uint32_t register_count,
     const WaitStateControl* waitcnt, bool waitcnt_prefetch_enabled,
     const MirroredOamTuning& tuning, std::uint32_t trailing_internal_cycles) {
-  const AddressInfo first = MemoryBus::describe(data_address);
+  const AddressInfo first = MemoryBus::classify(data_address);
   if (first.region != Region::oam || !first.mirrored ||
       data_address < kOamMirrorBankStart || data_address >= kGamePakRomStart) {
     return std::nullopt;
@@ -774,7 +774,7 @@ mirrored_oam_cross_rom_block_load_elapsed_cycles(
     return true;
   }
 
-  const Region region = MemoryBus::describe(address).region;
+  const Region region = MemoryBus::classify(address).region;
   if (region == Region::io && timing.nonsequential != 0 && timing.sequential != 0) {
     return true;
   }
@@ -806,7 +806,7 @@ mirrored_oam_cross_rom_block_load_elapsed_cycles(
     return 0;
   }
 
-  const Region data_region = MemoryBus::describe(data_address).region;
+  const Region data_region = MemoryBus::classify(data_address).region;
   if (data_region != Region::ewram && data_region != Region::iwram) {
     return 0;
   }
@@ -830,7 +830,7 @@ mirrored_oam_cross_rom_block_load_elapsed_cycles(
     return 0;
   }
 
-  const Region data_region = MemoryBus::describe(data_address).region;
+  const Region data_region = MemoryBus::classify(data_address).region;
   if (data_region != Region::ewram && data_region != Region::iwram) {
     return 0;
   }
@@ -857,13 +857,13 @@ mirrored_oam_cross_rom_block_load_elapsed_cycles(
   const bool load = ((instruction >> 20) & 0x1U) == 1;
   const bool byte_transfer = ((instruction >> 22) & 0x1U) == 1;
   return load && !byte_transfer &&
-         MemoryBus::describe(data_address).region == Region::game_pak_rom;
+         MemoryBus::classify(data_address).region == Region::game_pak_rom;
 }
 
 [[nodiscard]] bool thumb_word_load_from_game_pak_rom(
     const DecodedThumbMemoryTransferInstruction& decoded, std::uint32_t data_address) {
   return decoded.load && decoded.kind == ThumbMemoryTransferKind::word &&
-         MemoryBus::describe(data_address).region == Region::game_pak_rom;
+         MemoryBus::classify(data_address).region == Region::game_pak_rom;
 }
 
 [[nodiscard]] std::optional<std::uint32_t> read_arm_pipeline_open_bus_word(
@@ -3069,7 +3069,7 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
 
   switch (decoded.kind) {
     case ThumbMemoryTransferKind::word: {
-      const AddressInfo write_info = MemoryBus::describe(address);
+      const AddressInfo write_info = MemoryBus::classify(address);
       const std::uint32_t write_address =
           write_info.region == Region::game_pak_save || write_info.region == Region::io
               ? address
@@ -3079,7 +3079,7 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
                  : ExecuteStatus::unsupported;
     }
     case ThumbMemoryTransferKind::byte: {
-      const AddressInfo write_info = MemoryBus::describe(address);
+      const AddressInfo write_info = MemoryBus::classify(address);
       const std::uint32_t write_address =
           write_info.region == Region::game_pak_save || write_info.region == Region::io
               ? address
@@ -3089,7 +3089,7 @@ ExecuteStatus Arm7tdmi::execute_thumb_memory_transfer(
                  : ExecuteStatus::unsupported;
     }
     case ThumbMemoryTransferKind::halfword: {
-      const AddressInfo write_info = MemoryBus::describe(address);
+      const AddressInfo write_info = MemoryBus::classify(address);
       const std::uint32_t write_address =
           write_info.region == Region::game_pak_save || write_info.region == Region::io
               ? address
@@ -3580,7 +3580,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
       }
 
       const std::uint32_t halfword_address =
-          MemoryBus::describe(address).region == Region::game_pak_save ? address
+          MemoryBus::classify(address).region == Region::game_pak_save ? address
                                                                        : (address & ~0x1U);
       const std::optional<std::uint16_t> value =
           read16_or_arm_pipeline_open_bus(memory, halfword_address, registers_.at(kPc));
@@ -3603,7 +3603,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
       return ExecuteStatus::unsupported;
     }
 
-    if (!memory.write16(MemoryBus::describe(address).region == Region::game_pak_save
+    if (!memory.write16(MemoryBus::classify(address).region == Region::game_pak_save
                             ? address
                             : (address & ~0x1U),
                         static_cast<std::uint16_t>(registers_.at(decoded.rd) & 0xFFFFU))) {
@@ -3683,7 +3683,7 @@ ExecuteStatus Arm7tdmi::execute_arm(std::uint32_t instruction, MemoryBus& memory
   }
 
   {
-    const AddressInfo write_info = MemoryBus::describe(address);
+    const AddressInfo write_info = MemoryBus::classify(address);
     const std::uint32_t write_address =
         write_info.region == Region::game_pak_save || write_info.region == Region::io
             ? address

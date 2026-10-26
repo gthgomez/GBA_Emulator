@@ -182,6 +182,53 @@ class MemoryBus {
   MemoryBus();
 
   [[nodiscard]] static AddressInfo describe(std::uint32_t address);
+  // The same stateless classification, visible to the compiler in hot CPU,
+  // timing and bus paths. describe() remains an out-of-line compatibility
+  // entry point; both use this one mapping implementation.
+  [[nodiscard]] static constexpr AddressInfo classify(std::uint32_t address) {
+    const std::uint32_t offset = address & 0x00FFFFFFU;
+    switch (address >> 24U) {
+      case 0:
+      case 1:
+        return {Region::bios, address, false, address > 0x00003FFFU};
+      case 2:
+        return {Region::ewram, offset & static_cast<std::uint32_t>(kEwramSize - 1U),
+                true, offset >= kEwramSize};
+      case 3:
+        return {Region::iwram, offset & static_cast<std::uint32_t>(kIwramSize - 1U),
+                true, offset >= kIwramSize};
+      case 4:
+        return offset <= 0x3FEU ? AddressInfo{Region::io, offset, false, false}
+                                : AddressInfo{Region::unknown, 0, false, false};
+      case 5:
+        return {Region::palette, offset & static_cast<std::uint32_t>(kPaletteSize - 1U),
+                true, offset >= kPaletteSize};
+      case 6: {
+        const std::uint32_t bank = offset & 0x1FFFFU;
+        return {Region::vram, bank >= kVramSize ? bank - 0x8000U : bank,
+                true, offset >= kVramSize};
+      }
+      case 7:
+        return {Region::oam, offset & static_cast<std::uint32_t>(kOamSize - 1U),
+                true, offset >= kOamSize};
+      case 8:
+      case 9:
+      case 10:
+      case 11:
+      case 12:
+      case 13:
+        return {Region::game_pak_rom,
+                address & static_cast<std::uint32_t>(kGamePakRomWindowSize - 1U),
+                false, address >= 0x0A000000U};
+      case 14:
+      case 15:
+        return {Region::game_pak_save,
+                offset & static_cast<std::uint32_t>(kGamePakSaveWindowSize - 1U),
+                false, address >= 0x0F000000U || offset >= kGamePakSaveWindowSize};
+      default:
+        return {Region::unknown, 0, false, false};
+    }
+  }
   [[nodiscard]] static MemoryReadPolicy read_policy(std::uint32_t address);
   [[nodiscard]] static VideoAccessPolicy video_access_policy(std::uint32_t address);
   [[nodiscard]] static CartridgeAddressInfo describe_cartridge(std::uint32_t address);

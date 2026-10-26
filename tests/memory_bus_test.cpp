@@ -124,6 +124,39 @@ int main() {
   using gba::core::VideoAccessWindow;
   using gba::core::WaitStateControl;
 
+  // Check boundaries most easily lost when dispatching by the high byte:
+  // protected BIOS spans bank 01, IO ends before byte 3FF, and bank 09 is
+  // still the first 32 MiB ROM window. Expected values are explicit so this
+  // does not merely compare two entry points sharing an implementation.
+  struct ClassificationCase {
+    std::uint32_t address;
+    Region region;
+    std::uint32_t offset;
+    bool writable;
+    bool mirrored;
+  };
+  constexpr ClassificationCase classification_cases[] = {
+      {0x00003FFF, Region::bios, 0x3FFF, false, false},
+      {0x00004000, Region::bios, 0x4000, false, true},
+      {0x01FFFFFF, Region::bios, 0x01FFFFFF, false, true},
+      {0x040003FE, Region::io, 0x3FE, false, false},
+      {0x040003FF, Region::unknown, 0, false, false},
+      {0x04010000, Region::unknown, 0, false, false},
+      {0x06FFFFFF, Region::vram, 0x17FFF, true, true},
+      {0x09FFFFFF, Region::game_pak_rom, 0x1FFFFFF, false, false},
+      {0x0BFFFFFF, Region::game_pak_rom, 0x1FFFFFF, false, true},
+      {0x0EFFFFFF, Region::game_pak_save, 0xFFFF, false, true},
+      {0x0FFFFFFF, Region::game_pak_save, 0xFFFF, false, true},
+      {0x10000000, Region::unknown, 0, false, false},
+      {0xFFFFFFFF, Region::unknown, 0, false, false},
+  };
+  static_assert(MemoryBus::classify(0x06018000).offset == 0x10000,
+                "stateless VRAM classification is available at compile time");
+  for (const auto& test : classification_cases) {
+    expect_address(MemoryBus::classify(test.address), test.region, test.offset,
+                   test.writable, test.mirrored, "inline classification boundary");
+  }
+
   expect(MemoryBus::describe(0x02000000).region == Region::ewram, "EWRAM start maps");
   expect(MemoryBus::describe(0x0203FFFF).region == Region::ewram, "EWRAM end maps");
   expect(MemoryBus::describe(0x03000000).region == Region::iwram, "IWRAM start maps");

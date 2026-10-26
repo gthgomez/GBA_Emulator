@@ -41,7 +41,7 @@ constexpr std::uint8_t kAutoIrqLatencyCycles = 5;  // trace-fitted (a729e69, 202
 constexpr std::uint32_t kMaxDmaDrainIterations = 16;
 
 [[nodiscard]] bool cpu_thumb_misfetch_region(std::uint32_t pc) {
-  const Region region = MemoryBus::describe(pc).region;
+  const Region region = MemoryBus::classify(pc).region;
   return region == Region::game_pak_rom || region == Region::iwram ||
          region == Region::ewram;
 }
@@ -145,7 +145,7 @@ enum class HleSwiProfileKind : std::uint8_t {
       10, 19, 8, 14, 9, 21, 7, 16};
 
   const bool thumb = call.source == BiosSwiSource::thumb;
-  const Region region = MemoryBus::describe(fetch_address).region;
+  const Region region = MemoryBus::classify(fetch_address).region;
   if (region == Region::iwram) {
     return 0;
   }
@@ -671,13 +671,13 @@ dispstat_hblank_clear_timer_load_pre_access_cycles(
 
 [[nodiscard]] bool non_word_game_pak_data_access(std::uint32_t address,
                                                  AccessWidth width) {
-  const Region region = MemoryBus::describe(address).region;
+  const Region region = MemoryBus::classify(address).region;
   return (region == Region::game_pak_rom || region == Region::game_pak_save) &&
          width != AccessWidth::word;
 }
 
 [[nodiscard]] bool game_pak_data_access(std::uint32_t address) {
-  const Region region = MemoryBus::describe(address).region;
+  const Region region = MemoryBus::classify(address).region;
   return region == Region::game_pak_rom || region == Region::game_pak_save;
 }
 
@@ -887,7 +887,7 @@ bool should_overlap_thumb_internal_data_load(
     std::uint32_t fetch_address, const WaitStateControl* waitcnt,
     const Arm7tdmi& cpu, std::uint16_t instruction, std::uint32_t fetch_cycles) {
   if (waitcnt == nullptr || !waitcnt->prefetch_enabled() || fetch_cycles == 0 ||
-      MemoryBus::describe(fetch_address).region != Region::game_pak_rom) {
+      MemoryBus::classify(fetch_address).region != Region::game_pak_rom) {
     return false;
   }
 
@@ -897,7 +897,7 @@ bool should_overlap_thumb_internal_data_load(
     return false;
   }
 
-  const Region data_region = MemoryBus::describe(data_access->address).region;
+  const Region data_region = MemoryBus::classify(data_access->address).region;
   return data_region == Region::ewram || data_region == Region::iwram;
 }
 
@@ -909,11 +909,11 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
       fetch_cycles != 0 || !pc_advanced ||
       step.cpu_step.status != ExecuteStatus::executed ||
       !step.data_access.has_value() || !step.data_access->load ||
-      MemoryBus::describe(fetch_address).region != Region::game_pak_rom) {
+      MemoryBus::classify(fetch_address).region != Region::game_pak_rom) {
     return false;
   }
 
-  const Region data_region = MemoryBus::describe(step.data_access->address).region;
+  const Region data_region = MemoryBus::classify(step.data_access->address).region;
   return data_region == Region::ewram || data_region == Region::iwram;
 }
 
@@ -975,7 +975,7 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
     const Arm7tdmi& cpu, std::uint32_t instruction, std::uint32_t fetch_address,
     const WaitStateControl* waitcnt) {
   if (waitcnt == nullptr ||
-      MemoryBus::describe(fetch_address).region != Region::game_pak_rom) {
+      MemoryBus::classify(fetch_address).region != Region::game_pak_rom) {
     return std::nullopt;
   }
 
@@ -1020,7 +1020,7 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
     const Arm7tdmi& cpu, std::uint16_t instruction, std::uint32_t fetch_address,
     const WaitStateControl* waitcnt) {
   if (waitcnt == nullptr ||
-      MemoryBus::describe(fetch_address).region != Region::game_pak_rom ||
+      MemoryBus::classify(fetch_address).region != Region::game_pak_rom ||
       !Arm7tdmi::can_decode_thumb_alu(instruction)) {
     return std::nullopt;
   }
@@ -1066,7 +1066,7 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
 
 [[nodiscard]] std::uint32_t arm_branch_refill_cycles(
     std::uint32_t target_address, const WaitStateControl* waitcnt) {
-  const Region target_region = MemoryBus::describe(target_address).region;
+  const Region target_region = MemoryBus::classify(target_address).region;
   if (target_region == Region::iwram) {
     return 0;
   }
@@ -1088,7 +1088,7 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
 
 [[nodiscard]] std::uint32_t thumb_branch_refill_cycles(
     std::uint32_t target_address, const WaitStateControl* waitcnt) {
-  const Region target_region = MemoryBus::describe(target_address).region;
+  const Region target_region = MemoryBus::classify(target_address).region;
   if (target_region == Region::iwram) {
     return 2;
   }
@@ -1107,8 +1107,8 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
 [[nodiscard]] std::uint32_t arm_branch_exchange_refill_cycles(
     std::uint32_t fetch_address, std::uint32_t target_address,
     const WaitStateControl* waitcnt) {
-  const Region source_region = MemoryBus::describe(fetch_address).region;
-  const Region target_region = MemoryBus::describe(target_address).region;
+  const Region source_region = MemoryBus::classify(fetch_address).region;
+  const Region target_region = MemoryBus::classify(target_address).region;
   if (source_region == Region::iwram &&
       target_region == Region::game_pak_rom && waitcnt != nullptr &&
       !waitcnt->prefetch_enabled()) {
@@ -1135,8 +1135,8 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
 [[nodiscard]] std::uint32_t thumb_branch_exchange_refill_cycles(
     std::uint32_t fetch_address, std::uint32_t target_address,
     const WaitStateControl* waitcnt) {
-  const Region source_region = MemoryBus::describe(fetch_address).region;
-  const Region target_region = MemoryBus::describe(target_address).region;
+  const Region source_region = MemoryBus::classify(fetch_address).region;
+  const Region target_region = MemoryBus::classify(target_address).region;
   if (source_region == Region::game_pak_rom && target_region == Region::ewram &&
       (waitcnt == nullptr || !waitcnt->prefetch_enabled())) {
     return 1;
@@ -1161,8 +1161,8 @@ bool should_suppress_next_thumb_prefetch_execute_bubble(
     std::uint32_t fetch_address, std::uint32_t target_address,
     const WaitStateControl* waitcnt) {
   if (waitcnt == nullptr || !waitcnt->prefetch_enabled() ||
-      MemoryBus::describe(fetch_address).region != Region::game_pak_rom ||
-      MemoryBus::describe(target_address).region != Region::game_pak_rom ||
+      MemoryBus::classify(fetch_address).region != Region::game_pak_rom ||
+      MemoryBus::classify(target_address).region != Region::game_pak_rom ||
       target_address >= fetch_address) {
     return false;
   }
@@ -2220,7 +2220,7 @@ std::uint32_t CoreScheduler::apply_fetch_timing(std::uint32_t fetch_address,
     last_waitcnt_control_ = waitcnt_control;
   }
 
-  const AddressInfo address = MemoryBus::describe(fetch_address);
+  const AddressInfo address = MemoryBus::classify(fetch_address);
   const CartridgeAddressInfo cartridge = MemoryBus::describe_cartridge(fetch_address);
   if (address.region == Region::ewram) {
     reset_fetch_timing_sequence();
@@ -2324,7 +2324,7 @@ void CoreScheduler::refill_prefetch_after_step(std::uint32_t fetch_address,
     return;
   }
 
-  const AddressInfo address = MemoryBus::describe(fetch_address);
+  const AddressInfo address = MemoryBus::classify(fetch_address);
   if (address.region != Region::game_pak_rom) {
     prefetch_buffer_halfwords_ = 0;
     return;
@@ -2889,10 +2889,10 @@ std::optional<std::uint32_t> CoreScheduler::hle_cpu_set(bool fast) {
   if (word) {
     std::optional<std::uint32_t> fill_value = std::nullopt;
     const auto read_word = [&](std::uint32_t address) {
-      if (MemoryBus::describe(address).region == Region::bios) {
+      if (MemoryBus::classify(address).region == Region::bios) {
         return std::optional<std::uint32_t>{0};
       }
-      return memory_.read32(MemoryBus::describe(address).region == Region::game_pak_save
+      return memory_.read32(MemoryBus::classify(address).region == Region::game_pak_save
                                 ? address
                                 : (address & ~0x3U));
     };
@@ -2902,14 +2902,14 @@ std::optional<std::uint32_t> CoreScheduler::hle_cpu_set(bool fast) {
                : read_word(source + index * 4U);
       const std::uint32_t write_address = dest + index * 4U;
       const std::uint32_t effective_write_address =
-          MemoryBus::describe(write_address).region == Region::game_pak_save
+          MemoryBus::classify(write_address).region == Region::game_pak_save
               ? write_address
               : (write_address & ~0x3U);
       if (!value.has_value()) {
         return std::nullopt;
       }
       if (!memory_.write32(effective_write_address, value.value())) {
-        const Region region = MemoryBus::describe(effective_write_address).region;
+        const Region region = MemoryBus::classify(effective_write_address).region;
         if (region != Region::bios && region != Region::game_pak_rom) {
           return std::nullopt;
         }
@@ -2922,7 +2922,7 @@ std::optional<std::uint32_t> CoreScheduler::hle_cpu_set(bool fast) {
 
   std::optional<std::uint16_t> fill_value = std::nullopt;
   const auto read_halfword = [&](std::uint32_t address) -> std::optional<std::uint16_t> {
-    if (MemoryBus::describe(address).region == Region::bios) {
+    if (MemoryBus::classify(address).region == Region::bios) {
       return 0;
     }
     if ((address & 0x1U) == 0) {
@@ -2943,7 +2943,7 @@ std::optional<std::uint32_t> CoreScheduler::hle_cpu_set(bool fast) {
     }
     const std::uint32_t write_address = dest + index * 2U;
     if (!memory_.write16(write_address, value.value())) {
-      const Region region = MemoryBus::describe(write_address).region;
+      const Region region = MemoryBus::classify(write_address).region;
       if (region != Region::bios && region != Region::game_pak_rom) {
         return std::nullopt;
       }
@@ -3122,7 +3122,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
   }
   if (step.cpu_step.status == ExecuteStatus::skipped_condition &&
       Arm7tdmi::can_decode_branch(instruction.value()) && prefetch_enabled &&
-      MemoryBus::describe(fetch_address).region == Region::game_pak_rom) {
+      MemoryBus::classify(fetch_address).region == Region::game_pak_rom) {
     const CoreDeviceTickResult skipped_branch = advance_devices(1);
     merge_device_ticks(step.devices, skipped_branch);
     ++step.cpu_step.elapsed_cycles;
@@ -3290,8 +3290,8 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
               : cpu_.register_value(decoded.rb);
       const std::uint32_t offset =
           decoded.offset_is_register ? cpu_.register_value(decoded.offset) : decoded.offset;
-      const Region fetch_region = MemoryBus::describe(fetch_address).region;
-      const Region data_region = MemoryBus::describe(base + offset).region;
+      const Region fetch_region = MemoryBus::classify(fetch_address).region;
+      const Region data_region = MemoryBus::classify(base + offset).region;
       if ((fetch_region == Region::iwram || fetch_region == Region::ewram) &&
           (data_region == Region::iwram || data_region == Region::ewram)) {
         const MemoryAccessTiming timing =
@@ -3335,7 +3335,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
             ? thumb_branch_exchange_refill_cycles(
                   fetch_address, branch_target, waitcnt_)
             : thumb_branch_refill_cycles(branch_target, waitcnt_);
-    const Region branch_fetch_region = MemoryBus::describe(fetch_address).region;
+    const Region branch_fetch_region = MemoryBus::classify(fetch_address).region;
     const bool internal_code_branch =
         branch_fetch_region == Region::iwram || branch_fetch_region == Region::ewram;
     const bool hblank_status_sensitive =
@@ -3386,7 +3386,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
       fetch_cycles == 0 && has_waitcnt && waitcnt_->prefetch_enabled() &&
       step.data_access.has_value() && step.data_access->load &&
       step.data_access->width_bytes == 4 &&
-      MemoryBus::describe(step.data_access->address).region ==
+      MemoryBus::classify(step.data_access->address).region ==
           Region::game_pak_rom) {
     const MemoryAccessTiming timing =
         MemoryBus::timing(fetch_address, AccessWidth::halfword, *waitcnt_);
@@ -3425,7 +3425,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
         has_waitcnt && waitcnt_->prefetch_enabled() &&
         step.data_access.has_value() && step.data_access->load) {
       const Region data_region =
-          MemoryBus::describe(step.data_access->address).region;
+          MemoryBus::classify(step.data_access->address).region;
       if (data_region == Region::ewram || data_region == Region::iwram) {
         extra_refill_cycles = 1;
       }
@@ -3435,7 +3435,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
       const MemoryAccessTiming timing =
           MemoryBus::timing(fetch_address, AccessWidth::halfword, *waitcnt_);
       const Region data_region =
-          MemoryBus::describe(step.data_access->address).region;
+          MemoryBus::classify(step.data_access->address).region;
       if (timing.sequential > 1U &&
           (data_region == Region::ewram || data_region == Region::iwram)) {
         extra_refill_cycles = 1;
@@ -3451,7 +3451,7 @@ CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
   previous_thumb_internal_load_ = false;
   if (should_advance_pc && step.cpu_step.status == ExecuteStatus::executed &&
       step.data_access.has_value() && step.data_access->load) {
-    const Region data_region = MemoryBus::describe(step.data_access->address).region;
+    const Region data_region = MemoryBus::classify(step.data_access->address).region;
     previous_thumb_internal_load_ =
         data_region == Region::ewram || data_region == Region::iwram;
   }
