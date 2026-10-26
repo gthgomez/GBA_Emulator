@@ -550,7 +550,8 @@ std::vector<InputEvent> parse_input_script(const std::string& text) {
 }
 
 // ---------------------------------------------------------------------------
-// Screenshots: RGB565 framebuffer -> PNG (RGB888).
+// Screenshots: native GBA color (red bits 0-4, green 5-9, blue 10-14)
+// to PNG (RGB888). Keep the engine framebuffer and its hashes native.
 // ---------------------------------------------------------------------------
 
 bool write_screenshot(const std::string& dir, std::uint32_t frame,
@@ -560,9 +561,9 @@ bool write_screenshot(const std::string& dir, std::uint32_t frame,
   std::vector<std::uint8_t> rgb(static_cast<std::size_t>(kWidth * kHeight * 3));
   for (std::size_t i = 0; i < rgb.size() / 3; ++i) {
     const std::uint16_t px = fb[i];
-    rgb[i * 3 + 0] = static_cast<std::uint8_t>(((px >> 10) & 0x1F) * 255 / 31);
+    rgb[i * 3 + 0] = static_cast<std::uint8_t>((px & 0x1F) * 255 / 31);
     rgb[i * 3 + 1] = static_cast<std::uint8_t>(((px >> 5) & 0x1F) * 255 / 31);
-    rgb[i * 3 + 2] = static_cast<std::uint8_t>((px & 0x1F) * 255 / 31);
+    rgb[i * 3 + 2] = static_cast<std::uint8_t>(((px >> 10) & 0x1F) * 255 / 31);
   }
   std::error_code ec;
   // dir arrives as UTF-8; note stbi_write_png ultimately uses narrow fopen,
@@ -623,7 +624,9 @@ int run_headless(const CliOptions& opts) {
   const std::string rom_sha256 = hex_fixed(sha.digest().data(), 32);
 
   EmulatorRuntime runtime;
-  runtime.set_state_hash_enabled(true);
+  // The lab records the final machine hash below. Per-frame runtime hashing
+  // would also scan the entire cartridge on every frame (16 MiB for Emerald),
+  // even though none of those intermediate hashes are consumed here.
 
   if (!opts.load_state_input.empty()) {
     const auto blob = read_file(opts.load_state_input);
@@ -656,6 +659,8 @@ int run_headless(const CliOptions& opts) {
   std::uint32_t abnormal_frame = 0;
   gba::core::AndroidRuntimeUnsupportedDump dump{};
   std::vector<std::uint64_t> frame_hashes;
+  std::vector<double> frame_times_ms;
+  bool frame_budget_exhausted = false;
 
   const auto started = std::chrono::steady_clock::now();
   std::uint16_t input_mask = 0;
@@ -667,7 +672,10 @@ int run_headless(const CliOptions& opts) {
                               : static_cast<std::uint16_t>(input_mask & ~bit);
       (void)runtime.session().set_input_mask(input_mask);
     }
+    const auto frame_started = std::chrono::steady_clock::now();
     const auto result = runtime.step_frame_with_fetch_trace(opts.max_steps_per_frame, &dump);
+    frame_times_ms.push_back(std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - frame_started).count());
     if (result.status != AndroidRuntimeStatus::ok) {
       std::cerr << "gba-desktop: frame " << frame << " step failed with status "
                 << static_cast<int>(result.status) << "\n";
@@ -700,6 +708,11 @@ int run_headless(const CliOptions& opts) {
       const auto& fb = runtime.framebuffer();
       frame_hashes.push_back(framebuffer_crc32(fb.data(), fb.size()));
     }
+    if (!result.frame_complete) {
+      frame_budget_exhausted = !abnormal_seen;
+      abnormal_frame = frame;
+      break;
+    }
     if (std::binary_search(opts.screenshot_frames.begin(), opts.screenshot_frames.end(),
                            frame) &&
         !opts.screenshot_dir.empty()) {
@@ -711,6 +724,21 @@ int run_headless(const CliOptions& opts) {
   }
   const auto ended = std::chrono::steady_clock::now();
   const double elapsed_ms = std::chrono::duration<double, std::milli>(ended - started).count();
+
+  double step_ms = 0.0;
+  std::size_t frames_over_budget = 0;
+  constexpr double kFrameBudgetMs = 1000.0 / 60.0;
+  for (double ms : frame_times_ms) {
+    step_ms += ms;
+    frames_over_budget += ms > kFrameBudgetMs ? 1U : 0U;
+  }
+  std::sort(frame_times_ms.begin(), frame_times_ms.end());
+  const auto percentile = [&](std::size_t percent) {
+    if (frame_times_ms.empty()) {
+      return 0.0;
+    }
+    return frame_times_ms[(frame_times_ms.size() * percent + 99U) / 100U - 1U];
+  };
 
   const std::uint64_t final_state_hash = runtime.session().state_hash();
 
@@ -746,10 +774,12 @@ int run_headless(const CliOptions& opts) {
   artifact += "    \"scheduler_cycles\": " +
               std::to_string(runtime.session().scheduler().scheduler_cycles()) + ",\n";
   artifact += "    \"stop_reason\": \"" +
-              std::string(abnormal_seen ? stop_reason_name(abnormal_reason) : "completed") +
+              std::string(abnormal_seen ? stop_reason_name(abnormal_reason) :
+                          frame_budget_exhausted ? "frame_budget_exhausted" : "completed") +
               "\",\n";
   artifact += "    \"stop_frame\": " + std::to_string(abnormal_frame) + ",\n";
-  artifact += "    \"final_pc\": " + std::to_string(dump.final_pc) + ",\n";
+  artifact += "    \"final_pc\": " + std::to_string(
+      runtime.session().cpu().register_value(gba::core::Arm7tdmi::kPc)) + ",\n";
   artifact += "    \"unsupported_instructions\": " + std::to_string(unsupported_instructions) +
               ",\n";
   artifact += "    \"fetch_failures\": " + std::to_string(fetch_failures) + "\n";
@@ -771,7 +801,16 @@ int run_headless(const CliOptions& opts) {
   artifact += "    \"final_hash\": \"" + hex64(final_state_hash) + "\"\n";
   artifact += "  },\n";
   artifact += "  \"performance\": {\n";
-  artifact += "    \"elapsed_ms\": " + std::to_string(elapsed_ms) + "\n";
+  artifact += "    \"elapsed_ms\": " + std::to_string(elapsed_ms) + ",\n";
+  artifact += "    \"completed_fps\": " + std::to_string(
+      elapsed_ms > 0.0 ? completed_frames * 1000.0 / elapsed_ms : 0.0) + ",\n";
+  artifact += "    \"step_total_ms\": " + std::to_string(step_ms) + ",\n";
+  artifact += "    \"step_p50_ms\": " + std::to_string(percentile(50)) + ",\n";
+  artifact += "    \"step_p95_ms\": " + std::to_string(percentile(95)) + ",\n";
+  artifact += "    \"step_p99_ms\": " + std::to_string(percentile(99)) + ",\n";
+  artifact += "    \"step_max_ms\": " + std::to_string(percentile(100)) + ",\n";
+  artifact += "    \"step_frames_over_60fps_budget\": " +
+              std::to_string(frames_over_budget) + "\n";
   artifact += "  }\n";
   artifact += "}\n";
 
@@ -793,7 +832,8 @@ int run_headless(const CliOptions& opts) {
   }
 
   // Genuine execution failures exit non-zero so scripts can gate on them.
-  if (unsupported_instructions != 0 || fetch_failures != 0 || abnormal_seen) {
+  if (unsupported_instructions != 0 || fetch_failures != 0 || abnormal_seen ||
+      frame_budget_exhausted) {
     return 1;
   }
   return 0;

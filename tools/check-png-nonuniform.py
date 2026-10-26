@@ -113,6 +113,8 @@ def main():
     )
     parser.add_argument("--min-width", type=int, default=1)
     parser.add_argument("--min-height", type=int, default=1)
+    parser.add_argument("--gba-test-bars", action="store_true",
+                        help="check synthetic-video's alternating red/blue GBA pixels")
     args = parser.parse_args()
 
     try:
@@ -127,6 +129,20 @@ def main():
             f"{args.min_width}x{args.min_height})"
         )
         return 1
+
+    if args.gba_test_bars:
+        # Sample the centers of the first two source pixels after nearest
+        # scaling. The fixture writes GBA 0x001F (red), then 0x7C00 (blue).
+        # Checking ordered colors catches both 555/565 confusion and an R/B
+        # swap, which a generic nonuniformity assertion cannot detect.
+        for source_x, expected in ((0, (255, 0, 0)), (1, (0, 0, 255))):
+            x = (2 * source_x + 1) * width // 480
+            offset = ((height // 2) * width + x) * channels
+            actual = tuple(pixels[offset:offset + 3])
+            if actual != expected:
+                print(f"check-png-nonuniform: FAIL (GBA pixel {source_x}: "
+                      f"{actual}, expected {expected})")
+                return 1
 
     total = width * height
     counts = {}

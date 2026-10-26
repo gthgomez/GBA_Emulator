@@ -44,6 +44,10 @@ if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-smoke: FAIL (run1 exit $LASTE
     --artifact (Join-Path $labDir "run2.json")
 if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-smoke: FAIL (run2 exit $LASTEXITCODE)"; exit 1 }
 
+& $exe --headless --rom $romPath --frames 3 --max-steps-per-frame 1 `
+    --artifact (Join-Path $labDir "incomplete.json")
+if ($LASTEXITCODE -ne 1) { Write-Host "run-desktop-smoke: FAIL (incomplete run must exit 1)"; exit 1 }
+
 $check = @'
 import json, sys
 runs = [json.load(open(p)) for p in sys.argv[1:4]]
@@ -52,11 +56,22 @@ assert r["run"]["completed_frames"] == 120, r["run"]
 assert r["run"]["stop_reason"] == "completed", r["run"]
 assert r["run"]["unsupported_instructions"] == 0, r["run"]
 assert r["run"]["fetch_failures"] == 0, r["run"]
+assert 0x08000000 <= r["run"]["final_pc"] < 0x08000100, r["run"]
+p = r["performance"]
+assert p["completed_fps"] > 0, p
+assert 0 < p["step_total_ms"] <= p["elapsed_ms"], p
+assert 0 <= p["step_p50_ms"] <= p["step_p95_ms"] <= p["step_p99_ms"] <= p["step_max_ms"], p
+assert 0 <= p["step_frames_over_60fps_budget"] <= 120, p
+incomplete = json.load(open(sys.argv[3]))
+assert incomplete["run"]["completed_frames"] == 0, incomplete
+assert incomplete["run"]["stop_reason"] == "frame_budget_exhausted", incomplete
+assert incomplete["run"]["stop_frame"] == 0, incomplete
+assert incomplete["performance"]["completed_fps"] == 0, incomplete
 assert r["video"]["frame_hashes"] == runs[1]["video"]["frame_hashes"], "nondeterministic frame hashes"
 assert r["state"]["final_hash"] == runs[1]["state"]["final_hash"], "nondeterministic state hash"
 print("run-desktop-smoke: PASS (120 frames, deterministic, engine", r["engine"]["commit"] + ")")
 '@
 $checkPath = Join-Path $labDir "check.py"
 Set-Content -LiteralPath $checkPath -Value $check -Encoding UTF8
-python $checkPath (Join-Path $labDir "run1.json") (Join-Path $labDir "run2.json") (Join-Path $labDir "run1.json")
+python $checkPath (Join-Path $labDir "run1.json") (Join-Path $labDir "run2.json") (Join-Path $labDir "incomplete.json")
 if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-smoke: FAIL (assertions)"; exit 1 }
