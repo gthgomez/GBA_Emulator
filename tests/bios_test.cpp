@@ -99,6 +99,15 @@ int main() {
          "SWI Div HLE denominator-zero negative numerator saturates quotient");
   expect(BiosController::hle_sqrt(16) == 4, "SWI Sqrt HLE returns integer root");
 
+  const auto identity = BiosController::hle_affine_matrix(0x0100, 0x0100, 0);
+  expect(identity.pa == 0x0100 && identity.pb == 0 && identity.pc == 0 &&
+             identity.pd == 0x0100,
+         "affine identity retains 8.8 fixed-point scale");
+  const auto quarter_turn = BiosController::hle_affine_matrix(0x0100, 0x0080, 0x4000);
+  expect(quarter_turn.pa == 0 && quarter_turn.pb == -0x0100 &&
+             quarter_turn.pc == 0x0080 && quarter_turn.pd == 0,
+         "affine quarter turn preserves fixed-point scale and signs");
+
   std::int32_t arc_scratch_r1 = 0;
   std::int32_t arc_scratch_r3 = 0;
   expect(BiosController::hle_arc_tan(0, &arc_scratch_r1, &arc_scratch_r3) == 0,

@@ -249,18 +249,28 @@ headless throughput under varying host load, not a presentation or audible
 smoothness measurement. The final segment's p95 step time was 38.39 ms and all
 600 frames exceeded the 16.67 ms step budget.
 
-OBSERVED, unresolved: the frame-9600 screenshot shows the visible house interior
-in the upper-left portion with black surrounding it and dialogue below. Compare
-against a trusted reference at the same point before deciding whether this is
-expected framing or a rendering defect. Local screenshots, input scripts,
-artifacts and the frame-9600 checkpoint are retained under ignored `build/`.
+OBSERVED: the frame-9600 screenshot shows the visible house interior in the
+upper-left portion with black surrounding it and dialogue below. Local
+screenshots, input scripts, artifacts and the frame-9600 checkpoint are retained
+under ignored `build/`.
 The scheduler candidate continued to frame 10200 at 39.30 FPS with zero reported
 unsupported instructions, fetch failures and engine audio underruns. The black
 area persisted. Its saved display state has WIN0 enabled with horizontal and
 vertical bounds `0x00FF`; the current renderer treats that window as covering
 the screen. A [published house screenshot](https://multiplayer.it/soluzioni/la-soluzione-completa-di-pokemon-smeraldo.html)
 shows the same room at a different camera position and does not resolve the
-comparison; capture the same game state in a reference emulator.
+comparison.
+
+VERIFIED against the local mGBA libretro reference (0.11-212-7a12d6d, DLL
+SHA-256 `5cac11c643d7f8dfa50c68855f2f2240ff7cc0b4cd0312dd9e17a639c85667e4`):
+replaying the recorded inputs produced matching screenshots at frames 6600,
+8400, 9600, 10800, 12000, 13800, 15600 and 16800 after quantizing both RGB
+images to five bits per channel. All 38,400 pixels matched at each of those
+frames, including the black house boundary. Raw 8-bit RGB values differ by up
+to five due to the two frontends' pixel-format conversion. The frame-2400 and
+frame-4200 captures differed in dialogue progression; these comparisons do
+not prove full emulation accuracy. Reference screenshots and replay code are
+local in ignored `build/reference-mgba/`.
 
 ### Instruction sampling and accessor experiments
 
@@ -319,6 +329,13 @@ The latest segment ran at 44.75 FPS with a 23.79 ms p95 step. Screenshots,
 scripts, state checkpoints and artifacts remain under ignored `build/`.
 Two further 600-frame segments reached frame 16800 in the bedroom, at 44.84 and
 43.63 FPS, again with no reported unsupported instructions or fetch failures.
+The character then returned downstairs, left the house and reached the north
+edge of Littleroot at frame 23400. Across the 22 candidate segments starting at
+frame 10200, all 600-frame segments completed with zero reported unsupported
+instructions, fetch failures and engine audio underruns; segment throughput
+ranged from 43.27 to 45.44 FPS. The exploratory directory named
+`emerald-continued-22800` starts from frame 21000 and is not part of that chain;
+`emerald-continued-22800-correct` contains the actual frame-22800 continuation.
 
 OBSERVED: an isolated scheduler experiment skipped a timer pre-access probe when
 its input was already zero. Alternating 600-frame boot runs measured 46.67/46.46
@@ -336,6 +353,17 @@ masks measured 46.82/46.52 FPS versus 45.96/47.67 FPS for the baseline in
 alternating 600-frame boot runs, with matching recorded identities. No useful
 gain was established, so the experiment remains outside the core.
 
+OBSERVED: skipping the serial-device tick when no transfer is active measured
+48.88/48.57 FPS versus 47.84/47.55 FPS in alternating 600-frame boot runs,
+with matching recorded identities. Longer 1,200-frame runs measured 45.77/46.45
+FPS versus 45.17/45.65 FPS with matching identities. The ranges overlap, so no
+clear gain was established and the experiment remains outside the core.
+
+OBSERVED: a sprite video-read experiment measured 48.42/47.76 FPS versus
+47.53/47.24 FPS in alternating 600-frame boot runs, with matching recorded
+identities. The ranges nearly overlap and host load varied; the experiment
+remains outside the core pending stronger evidence.
+
 ### Scanline background decoding
 
 OBSERVED: an isolated experiment decoded each background's control once per
@@ -348,3 +376,30 @@ VERIFIED: the complete candidate passed all 33 core verifiers and the benchmark
 checksum suite. One 600-frame house checkpoint run per build had matching run,
 video, audio and state artifacts; 43.52 FPS baseline versus 43.64 FPS candidate
 does not demonstrate a meaningful house-scene throughput gain.
+
+### Affine BIOS and introduction rendering
+
+OBSERVED: an independent replay using the mGBA libretro core (version
+`0.11-212-7a12d6d`) matched all 38,400 pixels at each of eight sampled house and
+bedroom frames after converting both images to five-bit color channels. The dark
+surrounding area in those scenes also appears in the reference. The reference
+core and replay artifacts are local to ignored `build/`; game data is not
+included in the repository.
+
+OBSERVED: at introduction frame 240, the original Game Freak logo contained
+rectangular sprite blocks. The reference and candidate had identical VRAM and
+palette contents at that point, but their OAM affine matrix values differed.
+The HLE affine calculation divided the already fixed-point scale by 256. After
+correcting that calculation, the frame-240 difference against the reference
+fell from 1,121 to 297 pixels (five-bit channel comparison). Other animation
+frames still differ, so this does not establish complete rendering fidelity.
+
+VERIFIED: focused regression cases failed before their respective corrections
+and passed afterward for 8.8 affine scale, object matrix destination stride,
+and background affine record layout and translated reference coordinates. The
+object routine now advances padded eight-byte inputs and spaces each output
+component by the supplied stride; the background routine reads 20-byte inputs
+and writes 16-byte results. The existing floating-point trigonometry has not been
+established as bit-exact to the BIOS lookup table. The reference implementation
+is available at https://github.com/mgba-emu/mgba/blob/master/src/gba/bios.c.
+VERIFIED: the affine candidate passed all 33 native core verifiers and the core benchmark checksum suite. The optional ROM video smoke was not included in the core test invocation.

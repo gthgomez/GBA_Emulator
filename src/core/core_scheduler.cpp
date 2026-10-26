@@ -3525,21 +3525,33 @@ bool CoreScheduler::hle_bg_affine_set() {
   }
 
   for (std::int32_t index = 0; index < count; ++index) {
-    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 6U;
+    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 20U;
     const std::uint32_t dst = dest + static_cast<std::uint32_t>(index) * 16U;
-    const std::optional<std::uint16_t> scale_x = memory_.read16(src);
-    const std::optional<std::uint16_t> scale_y = memory_.read16(src + 2U);
-    const std::optional<std::uint16_t> rotation = memory_.read16(src + 4U);
-    if (!scale_x.has_value() || !scale_y.has_value() || !rotation.has_value()) {
+    const std::optional<std::uint32_t> origin_x = memory_.read32(src);
+    const std::optional<std::uint32_t> origin_y = memory_.read32(src + 4U);
+    const std::optional<std::uint16_t> center_x = memory_.read16(src + 8U);
+    const std::optional<std::uint16_t> center_y = memory_.read16(src + 10U);
+    const std::optional<std::uint16_t> scale_x = memory_.read16(src + 12U);
+    const std::optional<std::uint16_t> scale_y = memory_.read16(src + 14U);
+    const std::optional<std::uint16_t> rotation = memory_.read16(src + 16U);
+    if (!origin_x || !origin_y || !center_x || !center_y || !scale_x || !scale_y || !rotation) {
       return false;
     }
     const BiosController::AffineMatrix matrix = BiosController::hle_affine_matrix(
         static_cast<std::int16_t>(scale_x.value()),
         static_cast<std::int16_t>(scale_y.value()), rotation.value());
+    const std::int64_t x = static_cast<std::int16_t>(center_x.value());
+    const std::int64_t y = static_cast<std::int16_t>(center_y.value());
+    const std::uint32_t reference_x = origin_x.value() -
+        static_cast<std::uint32_t>(matrix.pa * x + matrix.pb * y);
+    const std::uint32_t reference_y = origin_y.value() -
+        static_cast<std::uint32_t>(matrix.pc * x + matrix.pd * y);
     if (!memory_.write16(dst, static_cast<std::uint16_t>(matrix.pa)) ||
         !memory_.write16(dst + 2U, static_cast<std::uint16_t>(matrix.pb)) ||
         !memory_.write16(dst + 4U, static_cast<std::uint16_t>(matrix.pc)) ||
-        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd))) {
+        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd)) ||
+        !memory_.write32(dst + 8U, reference_x) ||
+        !memory_.write32(dst + 12U, reference_y)) {
       return false;
     }
   }
@@ -3556,9 +3568,9 @@ bool CoreScheduler::hle_obj_affine_set() {
   }
 
   for (std::int32_t index = 0; index < count; ++index) {
-    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 6U;
-    const std::uint32_t dst =
-        dest + static_cast<std::uint32_t>(index) * static_cast<std::uint32_t>(offset);
+    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 8U;
+    const std::uint32_t stride = static_cast<std::uint32_t>(offset);
+    const std::uint32_t dst = dest + static_cast<std::uint32_t>(index) * stride * 4U;
     const std::optional<std::uint16_t> scale_x = memory_.read16(src);
     const std::optional<std::uint16_t> scale_y = memory_.read16(src + 2U);
     const std::optional<std::uint16_t> rotation = memory_.read16(src + 4U);
@@ -3569,9 +3581,9 @@ bool CoreScheduler::hle_obj_affine_set() {
         static_cast<std::int16_t>(scale_x.value()),
         static_cast<std::int16_t>(scale_y.value()), rotation.value());
     if (!memory_.write16(dst, static_cast<std::uint16_t>(matrix.pa)) ||
-        !memory_.write16(dst + 2U, static_cast<std::uint16_t>(matrix.pb)) ||
-        !memory_.write16(dst + 4U, static_cast<std::uint16_t>(matrix.pc)) ||
-        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd))) {
+        !memory_.write16(dst + stride, static_cast<std::uint16_t>(matrix.pb)) ||
+        !memory_.write16(dst + stride * 2U, static_cast<std::uint16_t>(matrix.pc)) ||
+        !memory_.write16(dst + stride * 3U, static_cast<std::uint16_t>(matrix.pd))) {
       return false;
     }
   }
