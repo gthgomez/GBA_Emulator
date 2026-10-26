@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,8 @@ struct HostOptions {
   std::string rom_path;
   // When empty, cartridge saves live next to the ROM as <rom>.sav.
   std::string save_directory;
+  // Applies only to the initial ROM file; other ROMs use automatic detection.
+  std::optional<gba::core::GamePakSaveType> save_type_override;
   int initial_scale = 3;
   bool start_fullscreen = false;
   // Automation hooks: quit after N presented frames (CI smoke), and capture
@@ -110,6 +113,7 @@ class DesktopApp {
   void open_rom_dialog();
 
   HostOptions options_;
+  const std::string override_rom_path_;
   gba::core::EmulatorRuntime runtime_;
   HostStats stats_{};
 

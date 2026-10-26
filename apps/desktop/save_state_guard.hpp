@@ -5,7 +5,8 @@
 // The core SaveStateCodec is a complete-machine snapshot: a blob carries its
 // own ROM bytes, so decode_into() happily materializes a state captured from a
 // *different* ROM into any session. The desktop host always has a specific ROM
-// loaded, so it must additionally refuse a state that belongs to another game.
+// loaded, so it must additionally refuse a state that belongs to another game
+// or changes the selected cartridge-save protocol.
 //
 // SDL-free on purpose so tests/desktop_save_state_guard_test.cpp can verify
 // the policy headlessly with core sources only.
@@ -22,10 +23,11 @@ enum class SaveStateLoadStatus : std::uint8_t {
   ok,
   decode_failed,  // corrupt payload, bad magic, unsupported version, hash mismatch
   wrong_rom,      // valid state, but captured from a different ROM
+  wrong_save_type,  // would replace the host's selected backup protocol
 };
 
 // Decodes `blob` into `scratch` and commits it into `live` only when it both
-// decodes successfully and was captured from the same ROM as `live`.
+// decodes successfully and matches the ROM and save type of `live`.
 //
 // `live` is never mutated on failure: decode_into() itself is transactional,
 // and the ROM-identity check runs against `scratch` before any commit.
@@ -40,6 +42,9 @@ inline SaveStateLoadStatus load_save_state_for_session(
   if (scratch.memory().export_game_pak_rom() !=
       live.memory().export_game_pak_rom()) {
     return SaveStateLoadStatus::wrong_rom;
+  }
+  if (scratch.memory().game_pak_save_type() != live.memory().game_pak_save_type()) {
+    return SaveStateLoadStatus::wrong_save_type;
   }
   live.load_state(scratch.save_state());
   return SaveStateLoadStatus::ok;

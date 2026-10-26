@@ -521,9 +521,11 @@ bool parse_memory_state(Reader& reader, MemoryBus::State& memory) {
       !reader.read_fixed(memory.oam.data(), memory.oam.size())) {
     return false;
   }
+  // Flash128K stores two 64 KiB banks behind a single 64 KiB bus aperture.
+  // Bound storage here; MemoryBus::load_state validates each protocol's size.
   if (!reader.read_blob(memory.game_pak_rom, MemoryBus::kGamePakRomWindowSize) ||
       !reader.read_blob(memory.game_pak_save,
-                        MemoryBus::kGamePakSaveWindowSize)) {
+                        MemoryBus::kFlash128kSize)) {
     return false;
   }
   std::uint8_t save_type = 0;
