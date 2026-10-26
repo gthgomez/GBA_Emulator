@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 #include "test_helpers.hpp"
@@ -23,21 +24,25 @@ int main() {
   expect(interrupts.interrupt_flags() == 0, "IF resets clear");
   expect(!interrupts.master_enabled(), "IME resets disabled");
   expect(!interrupts.irq_line(), "IRQ line starts low");
+  expect(!interrupts.irq_line_active(), "inline IRQ line starts low");
   interrupts.request(InterruptSource::timer0);
   expect(interrupts.requested(InterruptSource::timer0), "timer0 request sets IF bit");
   expect(!interrupts.irq_line(), "IF alone does not raise IRQ line");
   interrupts.write_interrupt_enable(timer0_irq);
   expect(interrupts.enabled(InterruptSource::timer0), "IE enables timer0");
   expect(!interrupts.irq_line(), "IE and IF need IME");
+  expect(!interrupts.irq_line_active(), "inline IRQ line respects IME");
   interrupts.write_ime(1);
   expect(interrupts.master_enabled(), "IME enables master interrupt gate");
   expect(interrupts.pending_mask() == timer0_irq, "pending mask combines IE and IF");
   expect(interrupts.irq_line(), "IE plus IF plus IME raises IRQ line");
+  expect(interrupts.irq_line_active(), "inline IRQ line reports pending enabled interrupt");
   interrupts.write_interrupt_flags(timer1_irq);
   expect(interrupts.requested(InterruptSource::timer0), "acknowledging unrelated IF bit is ignored");
   interrupts.write_interrupt_flags(timer0_irq);
   expect(!interrupts.requested(InterruptSource::timer0), "writing one acknowledges IF bit");
   expect(!interrupts.irq_line(), "acknowledged IF lowers IRQ line");
+  expect(!interrupts.irq_line_active(), "inline IRQ line clears after acknowledgement");
 
   Timers timers;
   expect(timers.counter(0) == 0, "timer0 counter resets");
@@ -63,6 +68,15 @@ int main() {
   expect(interrupts.requested(InterruptSource::timer0), "timer0 overflow requests IRQ");
   expect(timers.overflow_count(0) == 1,
          "timer0 overflow count records scheduler-visible event");
+  expect(timers.overflow_count_at(0) == timers.overflow_count(0),
+         "inline overflow count matches the existing accessor");
+  bool rejected_timer_index = false;
+  try {
+    (void)timers.overflow_count_at(Timers::kTimerCount);
+  } catch (const std::out_of_range& error) {
+    rejected_timer_index = std::string_view(error.what()) == "timer index out of range";
+  }
+  expect(rejected_timer_index, "inline overflow accessor preserves invalid-index failure");
 
   timers.reset();
   interrupts.reset();

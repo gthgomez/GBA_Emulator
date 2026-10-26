@@ -73,7 +73,7 @@ std::uint16_t InterruptController::pending_mask() const {
 }
 
 bool InterruptController::irq_line() const {
-  return master_enabled_ && pending_mask() != 0;
+  return irq_line_active();
 }
 
 bool InterruptController::service_pending_irq(Arm7tdmi& cpu) const {

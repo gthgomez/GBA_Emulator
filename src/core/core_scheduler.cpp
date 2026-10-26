@@ -1458,7 +1458,7 @@ void CoreScheduler::halt_until_interrupt() {
 }
 
 bool CoreScheduler::wake_from_halt_if_irq_pending() {
-  if (!halted_ || !interrupts_.irq_line()) {
+  if (!halted_ || !interrupts_.irq_line_active()) {
     return false;
   }
   halted_ = false;
@@ -1478,10 +1478,10 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
     return {0, std::nullopt, 0, {}, {}};
   }
 
-  const std::uint64_t timer0_overflows_before = timers_.overflow_count(0);
-  const std::uint64_t timer1_overflows_before = timers_.overflow_count(1);
+  const std::uint64_t timer0_overflows_before = timers_.overflow_count_at(0);
+  const std::uint64_t timer1_overflows_before = timers_.overflow_count_at(1);
   const bool irq_line_active_before =
-      interrupts_.irq_line() && !cpu_.irq_disabled();
+      interrupts_.irq_line_active() && !cpu_.irq_disabled();
   const Timers::TickResult timer_tick = timers_.tick(cycles, interrupts_);
   if (io_ != nullptr) {
     io_->tick(cycles);
@@ -1525,9 +1525,9 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
     }
   };
   consume_direct_sound_timer(
-      0, timers_.overflow_count(0) - timer0_overflows_before);
+      0, timers_.overflow_count_at(0) - timer0_overflows_before);
   consume_direct_sound_timer(
-      1, timers_.overflow_count(1) - timer1_overflows_before);
+      1, timers_.overflow_count_at(1) - timer1_overflows_before);
 
   // Iterative event/DMA drain loop.
   // DMA bus_cycles may generate new PPU events (HBlank/VBlank) or timer
@@ -1553,8 +1553,8 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
         total_dma_result.unsupported_request || triggered_dma.unsupported_request;
     triggered_dma = {0, 0, false, 0};
 
-    const std::uint64_t iter_timer0_before = timers_.overflow_count(0);
-    const std::uint64_t iter_timer1_before = timers_.overflow_count(1);
+    const std::uint64_t iter_timer0_before = timers_.overflow_count_at(0);
+    const std::uint64_t iter_timer1_before = timers_.overflow_count_at(1);
     const Timers::TickResult dma_timer_tick =
         timers_.tick(pending_dma, interrupts_);
     if (io_ != nullptr) {
@@ -1605,9 +1605,9 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
       }
     };
     consume_dma_direct_sound(
-        0, timers_.overflow_count(0) - iter_timer0_before);
+        0, timers_.overflow_count_at(0) - iter_timer0_before);
     consume_dma_direct_sound(
-        1, timers_.overflow_count(1) - iter_timer1_before);
+        1, timers_.overflow_count_at(1) - iter_timer1_before);
 
     total_dma_result.bus_cycles += pending_dma;
     dma_time_base += pending_dma;
@@ -1624,7 +1624,7 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
             : timer_io_access_gap_cycles_ + total_visible_cycles;
   }
   const bool irq_line_active_after =
-      interrupts_.irq_line() && !cpu_.irq_disabled();
+      interrupts_.irq_line_active() && !cpu_.irq_disabled();
   // Combine IRQ cycle information from both the CPU interval and DMA time
   const bool any_timer_irq =
       timer_tick.first_irq_cycle.has_value() || dma_first_irq_cycle.has_value();
@@ -2377,7 +2377,7 @@ void CoreScheduler::reset_fetch_timing_sequence() {
 }
 
 void CoreScheduler::update_auto_irq_latency(std::uint32_t elapsed_cycles) {
-  const bool line_active = interrupts_.irq_line() && !cpu_.irq_disabled();
+  const bool line_active = interrupts_.irq_line_active() && !cpu_.irq_disabled();
   if (!line_active) {
     reset_auto_irq_latency();
     return;
@@ -2398,7 +2398,7 @@ void CoreScheduler::update_auto_irq_latency(std::uint32_t elapsed_cycles) {
 }
 
 bool CoreScheduler::auto_irq_ready() const {
-  return interrupts_.irq_line() && !cpu_.irq_disabled() &&
+  return interrupts_.irq_line_active() && !cpu_.irq_disabled() &&
          auto_irq_line_high_ && auto_irq_latency_cycles_ == 0;
 }
 
@@ -2523,7 +2523,7 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_return(
       status == ExecuteStatus::executed ? advance_devices(cpu_step.elapsed_cycles)
                                         : CoreDeviceTickResult{};
   bool irq_serviced = false;
-  if (status == ExecuteStatus::executed && interrupts_.irq_line() &&
+  if (status == ExecuteStatus::executed && interrupts_.irq_line_active() &&
       !cpu_.irq_disabled()) {
     irq_serviced = service_pending_irq();
     if (irq_serviced) {
@@ -2832,7 +2832,7 @@ bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old
   // the legacy per-cycle polling loop.
   for (std::uint32_t cycles = 0; cycles < kMaxBiosWaitCycles;) {
     if ((interrupts_.interrupt_flags() & mask) != 0) {
-      if (interrupts_.irq_line() && !cpu_.irq_disabled()) {
+      if (interrupts_.irq_line_active() && !cpu_.irq_disabled()) {
         auto_irq_line_high_ = true;
         auto_irq_latency_cycles_ = 0;
       }
@@ -2844,7 +2844,7 @@ bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old
     cycles += batch;
   }
   const bool matched = (interrupts_.interrupt_flags() & mask) != 0;
-  if (matched && interrupts_.irq_line() && !cpu_.irq_disabled()) {
+  if (matched && interrupts_.irq_line_active() && !cpu_.irq_disabled()) {
     auto_irq_line_high_ = true;
     auto_irq_latency_cycles_ = 0;
   }

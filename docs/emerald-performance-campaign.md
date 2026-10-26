@@ -236,3 +236,49 @@ state to an uninterrupted script. It failed on the original host and passed
 after initializing the mask from the restored keypad. The fix merged in PR
 [#26](https://github.com/gthgomez/GBA_Emulator/pull/26), with desktop smoke
 verification on Windows and Linux.
+
+### Littleroot continuation
+
+OBSERVED: the Windows CI Release build containing both the input-resume fix and
+memory classification change resumed the frame-4200 checkpoint in nine
+600-frame segments. The character left the truck, spoke with their mother and
+entered the house by frame 9000. Each segment completed and saved the next
+checkpoint, reporting zero unsupported instructions, fetch failures and engine
+audio underruns. Segment throughput ranged from 33.07 to 40.57 FPS; this is
+headless throughput under varying host load, not a presentation or audible
+smoothness measurement. The final segment's p95 step time was 38.39 ms and all
+600 frames exceeded the 16.67 ms step budget.
+
+OBSERVED, unresolved: the frame-9600 screenshot shows the visible house interior
+in the upper-left portion with black surrounding it and dialogue below. Compare
+against a trusted reference at the same point before deciding whether this is
+expected framing or a rendering defect. Local screenshots, input scripts,
+artifacts and the frame-9600 checkpoint are retained under ignored `build/`.
+
+### Instruction sampling and accessor experiments
+
+OBSERVED: process-local Windows instruction sampling on the merged Release build
+collected 1,374 samples during boot and 1,494 at the saved house scene. The most
+frequently named location was `MemoryBus::read16` (189 and 200 samples), followed
+by scheduler stepping and device advancement. Sampling suspends the owned thread
+briefly, identifies only its current instruction, and may be biased by sampling
+interval and instruction timing. It is a guide to investigate, not a precise
+breakdown of inclusive CPU time. Raw samples and sampler are in `build/profile/`.
+
+OBSERVED: an isolated aligned-ROM-read shortcut preserved sampled video, audio
+and state identities, but alternating 600-frame runs measured 41.56/41.24 FPS
+for the baseline and 41.37/41.32 FPS for the experiment. No useful gain was
+established and the shortcut was not added to the core.
+
+OBSERVED: an isolated scheduler accessor experiment measured 44.02/44.11 FPS
+against 41.29/41.31 FPS for the baseline in alternating 600-frame runs. Sampled
+video, audio and final state identities matched. These are boot measurements on
+one host and do not establish sustained 60 FPS or interactive smoothness.
+
+VERIFIED: the full accessor candidate passed all 33 core verifiers and the
+core benchmark checksum suite. Its Release build completed alternating 600-frame
+boot runs at 43.98/44.01 FPS, versus 41.15/41.09 FPS for the preserved baseline;
+sampled video, audio and final state hashes matched. At the frame-9600 house
+checkpoint, one 600-frame run per build also matched run, video, audio and state
+artifacts: 37.67 FPS baseline and 39.48 FPS candidate. The single house pair and
+variable host load limit the precision of any performance comparison.
