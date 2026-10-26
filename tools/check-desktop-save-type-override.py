@@ -147,6 +147,32 @@ def main():
         assert json.loads(artifact.read_text())["state"]["final_hash"] == uninterrupted_hash, (
             "resuming with a save-type override changed the saved machine")
 
+        # A scripted event after restoring a checkpoint must preserve buttons
+        # that were already held when the checkpoint was saved.
+        def input_script(name, events):
+            path = root / (name + ".json")
+            path.write_text(json.dumps({"events": events}))
+            return path
+
+        right_down = {"frame": 0, "button": "RIGHT", "state": "down"}
+        a_down = {"frame": 1, "button": "A", "state": "down"}
+        a_up = {"frame": 2, "button": "A", "state": "up"}
+        uninterrupted = input_script("uninterrupted-input", [right_down, a_down, a_up])
+        first = input_script("first-input", [right_down])
+        resumed_input = input_script("resumed-input", [
+            dict(a_down, frame=0), dict(a_up, frame=1)])
+        input_state = root / "held-input.state"
+        run("--rom", idle, "--save-type", "none", "--headless", "--frames", 3,
+            "--input-script", uninterrupted, "--artifact", artifact)
+        input_reference = json.loads(artifact.read_text())["state"]["final_hash"]
+        run("--rom", idle, "--save-type", "none", "--headless", "--frames", 1,
+            "--input-script", first, "--save-state", input_state)
+        run("--rom", idle, "--save-type", "none", "--headless", "--frames", 2,
+            "--input-script", resumed_input, "--load-state", input_state,
+            "--artifact", artifact)
+        assert json.loads(artifact.read_text())["state"]["final_hash"] == input_reference, (
+            "resuming scripted input released a button held in the checkpoint")
+
         run("--rom", idle, "--save-type", "eeprom8k", "--headless", "--frames", 1,
             "--load-state", state, code=3, message="different save type")
         run("--rom", eeprom, "--save-type", "sram32k", "--headless", "--frames", 1,
