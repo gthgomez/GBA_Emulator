@@ -208,6 +208,15 @@ not interleaved and host load varied, so the practical speedup remains
 provisional until an alternating comparison is possible. Both candidate runs
 remain below 60 FPS and most frames exceeded the 16.67 ms step budget.
 
+OBSERVED: an alternating baseline/candidate/candidate/baseline comparison of
+600 boot frames used Windows CI Release packages built with GNU 15.2.0 and the
+same SDL library. Baseline FPS was 28.68 and 32.30 (p95 54.61 and 42.17 ms);
+candidate FPS was 31.84 and 36.06 (p95 44.91 and 35.64 ms). Sampled video,
+audio and final state hashes matched across all four runs. Host load and memory
+pressure varied, so this small comparison suggests an improvement without
+establishing a precise speedup. Neither build met the headless target. Raw
+artifacts remain in ignored `build/paired-ci-run-*` directories.
+
 ### Checkpointed intro
 
 VERIFIED locally at `439ece4fe497`: the normal release candidate completed
@@ -220,9 +229,10 @@ an interactive audio/presentation test or a complete playthrough. Screenshots,
 states, ROMs and JSON artifacts remain local in the task worktree's ignored
 `build/` directory.
 
-INFERRED, pending reproduction: the headless input script initializes its
-local button mask to zero even after loading a state. If a checkpoint contains
-a held button, the first later input event can replace the restored mask and
-release that button unintentionally. A useful regression is an uninterrupted
-script that holds one button across a checkpoint and presses/releases a second
-one after resumption; compare the final machine state with the split run.
+VERIFIED: the headless input script used to initialize its local button mask to
+zero after loading a state. The new regression holds one button across a
+checkpoint and presses/releases a second after resumption, comparing the final
+state to an uninterrupted script. It failed on the original host and passed
+after initializing the mask from the restored keypad. The fix merged in PR
+[#26](https://github.com/gthgomez/GBA_Emulator/pull/26), with desktop smoke
+verification on Windows and Linux.
