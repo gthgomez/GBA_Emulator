@@ -45,6 +45,83 @@ int main() {
          "RegisterRamReset clears EWRAM");
   expect(session.memory().read8(0x08000000).has_value(), "ROM still mapped after reset");
 
+  {
+    CoreSession affine;
+    std::vector<std::uint8_t> affine_rom(16);
+    write_word(affine_rom, 0, 0xEF0F0000U);
+    expect(affine.memory().load_game_pak_rom(affine_rom), "ObjAffineSet ROM loads");
+    affine.configure_for_game_boot();
+    constexpr std::uint32_t source = 0x02000000U;
+    constexpr std::uint32_t destination = 0x02000100U;
+    expect(affine.memory().write16(source, 0x0100), "first affine X scale");
+    expect(affine.memory().write16(source + 2, 0x0080), "first affine Y scale");
+    expect(affine.memory().write16(source + 4, 0), "first affine angle");
+    expect(affine.memory().write16(source + 6, 0x7777), "source alignment padding");
+    expect(affine.memory().write16(source + 8, 0x0200), "second affine X scale");
+    expect(affine.memory().write16(source + 10, 0x0100), "second affine Y scale");
+    expect(affine.memory().write16(source + 12, 0), "second affine angle");
+    for (std::uint32_t offset = 0; offset < 64; offset += 2) {
+      expect(affine.memory().write16(destination + offset, 0x5555), "seed affine destination");
+    }
+    affine.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+    affine.cpu().set_register(0, source);
+    affine.cpu().set_register(1, destination);
+    affine.cpu().set_register(2, 2);
+    affine.cpu().set_register(3, 8);
+    const auto result = affine.step();
+    expect(result.step.has_value() && result.step->cpu_step.status == ExecuteStatus::executed,
+           "ObjAffineSet handles two entries");
+    constexpr std::uint16_t expected[] = {0x0100, 0, 0, 0x0080, 0x0200, 0, 0, 0x0100};
+    for (std::uint32_t index = 0; index < 8; ++index) {
+      expect(affine.memory().read16(destination + index * 8).value_or(0xFFFF) == expected[index],
+             "ObjAffineSet writes each component at its configured stride");
+      expect(affine.memory().read16(destination + index * 8 + 2).value_or(0) == 0x5555,
+             "ObjAffineSet preserves gaps between components");
+    }
+  }
+
+  {
+    CoreSession affine;
+    std::vector<std::uint8_t> affine_rom(16);
+    write_word(affine_rom, 0, 0xEF0E0000U);
+    expect(affine.memory().load_game_pak_rom(affine_rom), "BgAffineSet ROM loads");
+    affine.configure_for_game_boot();
+    constexpr std::uint32_t source = 0x02000000U;
+    constexpr std::uint32_t destination = 0x02000100U;
+    expect(affine.memory().write32(source, 100U << 8), "background origin X");
+    expect(affine.memory().write32(source + 4, 200U << 8), "background origin Y");
+    expect(affine.memory().write16(source + 8, 10), "background center X");
+    expect(affine.memory().write16(source + 10, 20), "background center Y");
+    expect(affine.memory().write16(source + 12, 0x0100), "background X scale");
+    expect(affine.memory().write16(source + 14, 0x0100), "background Y scale");
+    expect(affine.memory().write16(source + 16, 0), "background angle");
+    expect(affine.memory().write32(source + 20, 0xFFFFCE00U), "second background origin X");
+    expect(affine.memory().write32(source + 24, 0x00003200U), "second background origin Y");
+    expect(affine.memory().write16(source + 28, 0), "second background center X");
+    expect(affine.memory().write16(source + 30, 0), "second background center Y");
+    expect(affine.memory().write16(source + 32, 0x0080), "second background X scale");
+    expect(affine.memory().write16(source + 34, 0x0100), "second background Y scale");
+    expect(affine.memory().write16(source + 36, 0), "second background angle");
+    affine.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+    affine.cpu().set_register(0, source);
+    affine.cpu().set_register(1, destination);
+    affine.cpu().set_register(2, 2);
+    const auto result = affine.step();
+    expect(result.step.has_value() && result.step->cpu_step.status == ExecuteStatus::executed,
+           "BgAffineSet handles two entries");
+    expect(affine.memory().read16(destination).value_or(0) == 0x0100 &&
+               affine.memory().read16(destination + 6).value_or(0) == 0x0100,
+           "BgAffineSet stores identity matrix");
+    expect(affine.memory().read32(destination + 8).value_or(0) == (90U << 8) &&
+               affine.memory().read32(destination + 12).value_or(0) == (180U << 8),
+           "BgAffineSet calculates translated reference point");
+    expect(affine.memory().read16(destination + 16).value_or(0) == 0x0080 &&
+               affine.memory().read16(destination + 22).value_or(0) == 0x0100 &&
+               affine.memory().read32(destination + 24).value_or(0) == 0xFFFFCE00U &&
+               affine.memory().read32(destination + 28).value_or(0) == 0x00003200U,
+           "BgAffineSet advances 20-byte source and 16-byte destination entries");
+  }
+
   std::cout << "hle_swi_boot_test: PASS\n";
   return 0;
 }

@@ -288,10 +288,10 @@ BiosController::AffineMatrix BiosController::hle_affine_matrix(
   const double sx = static_cast<double>(scale_x);
   const double sy = static_cast<double>(scale_y);
   AffineMatrix matrix{};
-  matrix.pa = static_cast<std::int16_t>(std::lround((sx * cos_t) / 256.0));
-  matrix.pb = static_cast<std::int16_t>(std::lround(-(sx * sin_t) / 256.0));
-  matrix.pc = static_cast<std::int16_t>(std::lround((sy * sin_t) / 256.0));
-  matrix.pd = static_cast<std::int16_t>(std::lround((sy * cos_t) / 256.0));
+  matrix.pa = static_cast<std::int16_t>(std::lround(sx * cos_t));
+  matrix.pb = static_cast<std::int16_t>(std::lround(-(sx * sin_t)));
+  matrix.pc = static_cast<std::int16_t>(std::lround(sy * sin_t));
+  matrix.pd = static_cast<std::int16_t>(std::lround(sy * cos_t));
   return matrix;
 }
 
