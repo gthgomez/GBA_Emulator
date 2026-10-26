@@ -83,7 +83,7 @@ std::optional<BgPixel> PpuBackgroundFetcher::fetch_text_pixel(
   const std::uint16_t block_tile_y = tile_y % 32U;
   const std::uint32_t map_entry_address =
       screenblock_base(block) + ((block_tile_y * 32U + block_tile_x) * 2U);
-  const std::optional<std::uint16_t> map_entry = memory.read16(map_entry_address);
+  const std::optional<std::uint16_t> map_entry = memory.read_video16(map_entry_address);
   if (!map_entry.has_value()) {
     return std::nullopt;
   }
@@ -114,7 +114,7 @@ std::optional<BgPixel> PpuBackgroundFetcher::fetch_text_pixel(
       kPaletteBase + (bpp8 ? static_cast<std::uint32_t>(color_index) * 2U
                            : (static_cast<std::uint32_t>(palette_bank) * 32U +
                               static_cast<std::uint32_t>(color_index) * 2U));
-  const std::optional<std::uint16_t> color = memory.read16(palette_address);
+  const std::optional<std::uint16_t> color = memory.read_video16(palette_address);
   if (!color.has_value()) {
     return std::nullopt;
   }
@@ -163,7 +163,7 @@ std::optional<AffinePixel> PpuBackgroundFetcher::fetch_affine_pixel(
   }
   const std::uint8_t color_index = packed_pixel.value();
   const std::optional<std::uint16_t> color =
-      memory.read16(kPaletteBase + static_cast<std::uint32_t>(color_index) * 2U);
+      memory.read_video16(kPaletteBase + static_cast<std::uint32_t>(color_index) * 2U);
   if (!color.has_value()) {
     return std::nullopt;
   }

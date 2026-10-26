@@ -237,6 +237,21 @@ class MemoryBus {
                                                  const WaitStateControl& waitcnt);
   [[nodiscard]] std::optional<std::uint8_t> read8(std::uint32_t address) const;
   [[nodiscard]] std::optional<std::uint16_t> read16(std::uint32_t address) const;
+  // Renderer hot path; retain read16 behavior for unaligned and other regions.
+  [[nodiscard]] std::optional<std::uint16_t> read_video16(std::uint32_t address) const {
+    if ((address & 1U) == 0) {
+      const AddressInfo info = classify(address);
+      if (info.region == Region::vram) {
+        return static_cast<std::uint16_t>(vram_[info.offset]) |
+               static_cast<std::uint16_t>(vram_[info.offset + 1U] << 8);
+      }
+      if (info.region == Region::palette) {
+        return static_cast<std::uint16_t>(palette_[info.offset]) |
+               static_cast<std::uint16_t>(palette_[info.offset + 1U] << 8);
+      }
+    }
+    return read16(address);
+  }
   [[nodiscard]] std::optional<std::uint32_t> read32(std::uint32_t address) const;
   void drive_open_bus(std::uint32_t value);
   void clear_open_bus_latch();

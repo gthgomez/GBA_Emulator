@@ -254,6 +254,13 @@ in the upper-left portion with black surrounding it and dialogue below. Compare
 against a trusted reference at the same point before deciding whether this is
 expected framing or a rendering defect. Local screenshots, input scripts,
 artifacts and the frame-9600 checkpoint are retained under ignored `build/`.
+The scheduler candidate continued to frame 10200 at 39.30 FPS with zero reported
+unsupported instructions, fetch failures and engine audio underruns. The black
+area persisted. Its saved display state has WIN0 enabled with horizontal and
+vertical bounds `0x00FF`; the current renderer treats that window as covering
+the screen. A [published house screenshot](https://multiplayer.it/soluzioni/la-soluzione-completa-di-pokemon-smeraldo.html)
+shows the same room at a different camera position and does not resolve the
+comparison; capture the same game state in a reference emulator.
 
 ### Instruction sampling and accessor experiments
 
@@ -282,3 +289,22 @@ sampled video, audio and final state hashes matched. At the frame-9600 house
 checkpoint, one 600-frame run per build also matched run, video, audio and state
 artifacts: 37.67 FPS baseline and 39.48 FPS candidate. The single house pair and
 variable host load limit the precision of any performance comparison.
+
+### Background video-read candidate
+
+OBSERVED: a follow-up instruction sample at the house checkpoint identified
+background pixel fetching as the caller for 92 of 130 sampled returns from one
+hot `read16` return site. This is a sampled subset, not a count of all reads.
+The candidate makes aligned VRAM and palette halfword reads available inline to
+the background fetcher and falls back to the original bus operation elsewhere.
+The focused memory-bus and background tests passed; the memory-bus test seeds
+video data and compares mirrors, alignment and fallback cases.
+
+OBSERVED: alternating 600-frame boot runs of the full Release candidate measured
+46.73/46.94 FPS versus 43.36/43.59 FPS for its scheduler-optimized baseline.
+Sampled video, audio and final state hashes matched. These short runs on a single
+host show a workload-specific improvement, not 60 FPS or interactive smoothness.
+VERIFIED: all 33 core verifiers and the core benchmark checksum suite passed.
+From the frame-10200 house checkpoint, one 600-frame run per build produced
+matching run, video, audio and state artifacts; baseline measured 39.95 FPS and
+the candidate 43.52 FPS. A single pair cannot establish a precise speedup.
