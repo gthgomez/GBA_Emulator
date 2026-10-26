@@ -9,21 +9,7 @@
 namespace gba::core {
 namespace {
 
-constexpr std::uint32_t kBiosStart = 0x00000000;
 constexpr std::uint32_t kBiosEnd = 0x00003FFF;
-constexpr std::uint32_t kBiosProtectedEnd = 0x01FFFFFF;
-constexpr std::uint32_t kEwramStart = 0x02000000;
-constexpr std::uint32_t kEwramEnd = 0x0203FFFF;
-constexpr std::uint32_t kIwramStart = 0x03000000;
-constexpr std::uint32_t kIwramEnd = 0x03007FFF;
-constexpr std::uint32_t kIoStart = 0x04000000;
-constexpr std::uint32_t kIoEnd = 0x040003FE;
-constexpr std::uint32_t kPaletteStart = 0x05000000;
-constexpr std::uint32_t kPaletteEnd = 0x050003FF;
-constexpr std::uint32_t kVramStart = 0x06000000;
-constexpr std::uint32_t kVramEnd = 0x06017FFF;
-constexpr std::uint32_t kOamStart = 0x07000000;
-constexpr std::uint32_t kOamEnd = 0x070003FF;
 constexpr std::uint32_t kGamePakRomWait0Start = 0x08000000;
 constexpr std::uint32_t kGamePakRomWait0End = 0x09FFFFFF;
 constexpr std::uint32_t kGamePakRomWait1Start = 0x0A000000;
@@ -48,11 +34,7 @@ constexpr std::uint32_t kNoCashGbaDebugIdStart = 0x04FFFA00;
 constexpr std::string_view kNoCashGbaDebugId = "no$gba ";
 constexpr std::uint32_t kNoCashGbaDebugOut = 0x04FFFA10;
 constexpr std::uint32_t kNoCashGbaDebugChar = 0x04FFFA1C;
-constexpr std::uint32_t kBankMask = 0xFF000000;
 constexpr std::uint32_t kBankOffsetMask = 0x00FFFFFF;
-constexpr std::uint32_t kVramMirrorStep = 128 * 1024;
-constexpr std::uint32_t kVramObjMirrorStart = 96 * 1024;
-constexpr std::uint32_t kVramObjMirrorDelta = 32 * 1024;
 constexpr std::uint8_t kGamePakRomBusWidthBits = 16;
 constexpr std::uint8_t kGamePakSaveBusWidthBits = 8;
 constexpr std::uint8_t kGamePakEepromBusWidthBits = 1;
@@ -94,10 +76,6 @@ constexpr std::array<std::uint8_t, 16> kHleBiosVectorBytes{
   return address & kBankOffsetMask;
 }
 
-[[nodiscard]] bool bank_matches(std::uint32_t address, std::uint32_t start) {
-  return (address & kBankMask) == (start & kBankMask);
-}
-
 [[nodiscard]] std::uint32_t align_word(std::uint32_t address) {
   return address & ~0x3U;
 }
@@ -133,18 +111,6 @@ constexpr std::array<std::uint8_t, 16> kHleBiosVectorBytes{
 [[nodiscard]] std::uint32_t game_pak_open_bus_word(std::uint32_t address) {
   const std::uint32_t aligned_value = game_pak_open_bus_aligned_word(address);
   return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
-}
-
-[[nodiscard]] std::uint32_t mirrored_offset(std::uint32_t address, std::uint32_t size) {
-  return bank_offset(address) % size;
-}
-
-[[nodiscard]] std::uint32_t vram_offset(std::uint32_t address) {
-  std::uint32_t offset = bank_offset(address) % kVramMirrorStep;
-  if (offset >= kVramObjMirrorStart) {
-    offset -= kVramObjMirrorDelta;
-  }
-  return offset;
 }
 
 [[nodiscard]] CartridgeAddressInfo cartridge_none() {
@@ -192,49 +158,11 @@ MemoryBus::MemoryBus()
 }
 
 AddressInfo MemoryBus::describe(std::uint32_t address) {
-  if (in_range(address, kBiosStart, kBiosEnd)) {
-    return {Region::bios, address - kBiosStart, false, false};
-  }
-  if (address <= kBiosProtectedEnd) {
-    return {Region::bios, address - kBiosStart, false, true};
-  }
-  if (bank_matches(address, kEwramStart)) {
-    return {Region::ewram, mirrored_offset(address, kEwramSize), true,
-            !in_range(address, kEwramStart, kEwramEnd)};
-  }
-  if (bank_matches(address, kIwramStart)) {
-    return {Region::iwram, mirrored_offset(address, kIwramSize), true,
-            !in_range(address, kIwramStart, kIwramEnd)};
-  }
-  if (in_range(address, kIoStart, kIoEnd)) {
-    return {Region::io, address - kIoStart, false, false};
-  }
-  if (bank_matches(address, kPaletteStart)) {
-    return {Region::palette, mirrored_offset(address, kPaletteSize), true,
-            !in_range(address, kPaletteStart, kPaletteEnd)};
-  }
-  if (bank_matches(address, kVramStart)) {
-    return {Region::vram, vram_offset(address), true,
-            !in_range(address, kVramStart, kVramEnd)};
-  }
-  if (bank_matches(address, kOamStart)) {
-    return {Region::oam, mirrored_offset(address, kOamSize), true,
-            !in_range(address, kOamStart, kOamEnd)};
-  }
-  const CartridgeAddressInfo cartridge = describe_cartridge(address);
-  if (cartridge.window == CartridgeWindow::rom_wait0 ||
-      cartridge.window == CartridgeWindow::rom_wait1 ||
-      cartridge.window == CartridgeWindow::rom_wait2) {
-    return {Region::game_pak_rom, cartridge.offset, false, cartridge.mirrored};
-  }
-  if (cartridge.window == CartridgeWindow::save) {
-    return {Region::game_pak_save, cartridge.offset, false, cartridge.mirrored};
-  }
-  return {Region::unknown, 0, false, false};
+  return classify(address);
 }
 
 MemoryReadPolicy MemoryBus::read_policy(std::uint32_t address) {
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   switch (info.region) {
     case Region::ewram:
     case Region::iwram:
@@ -258,7 +186,7 @@ MemoryReadPolicy MemoryBus::read_policy(std::uint32_t address) {
 }
 
 VideoAccessPolicy MemoryBus::video_access_policy(std::uint32_t address) {
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   switch (info.region) {
     case Region::palette:
     case Region::vram:
@@ -306,7 +234,7 @@ CartridgeAddressInfo MemoryBus::describe_cartridge(std::uint32_t address) {
 }
 
 MemoryAccessTiming MemoryBus::timing(std::uint32_t address, AccessWidth width) {
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   switch (info.region) {
     case Region::bios:
       return {1, 1, info.offset <= kBiosEnd, false};
@@ -332,7 +260,7 @@ MemoryAccessTiming MemoryBus::timing(std::uint32_t address, AccessWidth width) {
 
 MemoryAccessTiming MemoryBus::timing(std::uint32_t address, AccessWidth width,
                                      const WaitStateControl& waitcnt) {
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   if (info.region == Region::game_pak_rom) {
     const CartridgeAddressInfo cartridge = describe_cartridge(address);
     const GamePakWaitStates wait_states = waitcnt.rom_wait_states(cartridge.window);
@@ -355,7 +283,7 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
     return mgba_debug_string_.at(address - kMgbaDebugStringStart);
   }
 
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   switch (info.region) {
     case Region::ewram:
       return ewram_[info.offset];
@@ -404,7 +332,7 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
 }
 
 std::optional<std::uint16_t> MemoryBus::read16(std::uint32_t address) const {
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   if (info.region == Region::game_pak_save) {
     const std::optional<std::uint8_t> byte = read_game_pak_save_byte(info.offset);
     if (!byte.has_value()) {
@@ -466,7 +394,7 @@ std::optional<std::uint16_t> MemoryBus::read16(std::uint32_t address) const {
 }
 
 std::optional<std::uint32_t> MemoryBus::read32(std::uint32_t address) const {
-  const AddressInfo direct_info = describe(address);
+  const AddressInfo direct_info = classify(address);
   if (direct_info.region == Region::game_pak_save) {
     const std::optional<std::uint8_t> byte = read_game_pak_save_byte(direct_info.offset);
     if (!byte.has_value()) {
@@ -486,7 +414,7 @@ std::optional<std::uint32_t> MemoryBus::read32(std::uint32_t address) const {
   }
 
   const std::uint32_t aligned_address = align_word(address);
-  const AddressInfo info = (aligned_address == address) ? direct_info : describe(aligned_address);
+  const AddressInfo info = (aligned_address == address) ? direct_info : classify(aligned_address);
 
   // Fast paths for 32-bit reads
   switch (info.region) {
@@ -867,7 +795,7 @@ bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
     return true;
   }
 
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   if (info.region == Region::unknown) {
     return true;
   }
@@ -935,7 +863,7 @@ bool MemoryBus::write8(std::uint32_t address, std::uint8_t value) {
 }
 
 bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
-  const AddressInfo direct_info = describe(address);
+  const AddressInfo direct_info = classify(address);
   if (direct_info.region == Region::game_pak_rom) {
     return has_game_pak_rom();
   }
@@ -947,7 +875,7 @@ bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
     return true;
   }
 
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   if (info.region == Region::io && io_callbacks_.write16 != nullptr) {
     const std::uint32_t rotate = (address & 0x1U) * 8U;
     const std::uint32_t aligned = address & ~0x1U;
@@ -972,8 +900,8 @@ bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
     return true;
   }
 
-  const AddressInfo b0 = describe(address);
-  const AddressInfo b1 = describe(address + 1);
+  const AddressInfo b0 = classify(address);
+  const AddressInfo b1 = classify(address + 1);
   if (!b0.writable || !b1.writable) {
     return false;
   }
@@ -999,7 +927,7 @@ bool MemoryBus::write16(std::uint32_t address, std::uint16_t value) {
 }
 
 bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
-  const AddressInfo direct_info = describe(address);
+  const AddressInfo direct_info = classify(address);
   if (direct_info.region == Region::game_pak_rom) {
     return has_game_pak_rom();
   }
@@ -1011,7 +939,7 @@ bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
     return true;
   }
 
-  const AddressInfo info = describe(address);
+  const AddressInfo info = classify(address);
   if (info.region == Region::io && io_callbacks_.write32 != nullptr) {
     const std::uint32_t rotate = (address & 0x3U) * 8U;
     const std::uint32_t aligned = address & ~0x3U;
@@ -1039,10 +967,10 @@ bool MemoryBus::write32(std::uint32_t address, std::uint32_t value) {
     return true;
   }
 
-  const AddressInfo b0 = describe(address);
-  const AddressInfo b1 = describe(address + 1);
-  const AddressInfo b2 = describe(address + 2);
-  const AddressInfo b3 = describe(address + 3);
+  const AddressInfo b0 = classify(address);
+  const AddressInfo b1 = classify(address + 1);
+  const AddressInfo b2 = classify(address + 2);
+  const AddressInfo b3 = classify(address + 3);
   if (!b0.writable || !b1.writable || !b2.writable || !b3.writable) {
     return false;
   }
