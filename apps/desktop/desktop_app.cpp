@@ -131,9 +131,9 @@ bool DesktopApp::init_window() {
     std::cerr << "gba-desktop: SDL_CreateRenderer failed: " << SDL_GetError() << "\n";
     return false;
   }
-  // The engine framebuffer is already RGB565; upload it directly and let the
-  // GPU do nearest-neighbor scaling (SDL_ScaleModeNearest).
-  texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGB565,
+  // Native GBA pixels have five bits per channel, with red in bits 0-4.
+  // SDL's XBGR1555 matches that layout, including the unused high bit.
+  texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_XBGR1555,
                                SDL_TEXTUREACCESS_STREAMING, 240, 160);
   if (texture_ == nullptr) {
     std::cerr << "gba-desktop: SDL_CreateTexture failed: " << SDL_GetError() << "\n";

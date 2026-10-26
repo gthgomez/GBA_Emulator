@@ -33,7 +33,11 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
     "$exe" --rom "$romPath" --quit-after 30 --window-screenshot "$screenshot"
 
 python3 "$repoRoot/tools/check-png-nonuniform.py" "$screenshot" --min-unique 2 \
-    --min-second-share 0.2 --min-width 240 --min-height 160
+    --min-second-share 0.2 --min-width 240 --min-height 160 --gba-test-bars
+
+"$exe" --headless --rom "$romPath" --frames 30 --screenshot-frame 29 \
+    --screenshot-output "$labDir" --artifact "$labDir/headless.json"
+python3 "$repoRoot/tools/check-png-nonuniform.py" "$labDir/frame-0029.png" --gba-test-bars
 
 # Execution errors must surface as a non-zero exit code from the interactive
 # host (not only the headless lab): an undefined instruction stops the engine.

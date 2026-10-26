@@ -34,7 +34,16 @@ exe="$repoRoot/build/desktop/apps/desktop/gba-desktop"
 "$exe" --headless --rom "$romPath" --frames 120 --frame-hash --audio-hash --state-hash \
     --artifact "$labDir/run2.json"
 
-python3 - "$labDir/run1.json" "$labDir/run2.json" <<'PY'
+if "$exe" --headless --rom "$romPath" --frames 3 --max-steps-per-frame 1 \
+    --artifact "$labDir/incomplete.json"; then
+    echo "run-desktop-smoke: FAIL (incomplete run exited 0)" >&2
+    exit 1
+else
+    status=$?
+    [ "$status" -eq 1 ] || exit "$status"
+fi
+
+python3 - "$labDir/run1.json" "$labDir/run2.json" "$labDir/incomplete.json" <<'PY'
 import json, sys
 runs = [json.load(open(p)) for p in sys.argv[1:3]]
 r = runs[0]
@@ -42,6 +51,17 @@ assert r["run"]["completed_frames"] == 120, r["run"]
 assert r["run"]["stop_reason"] == "completed", r["run"]
 assert r["run"]["unsupported_instructions"] == 0, r["run"]
 assert r["run"]["fetch_failures"] == 0, r["run"]
+assert 0x08000000 <= r["run"]["final_pc"] < 0x08000100, r["run"]
+p = r["performance"]
+assert p["completed_fps"] > 0, p
+assert 0 < p["step_total_ms"] <= p["elapsed_ms"], p
+assert 0 <= p["step_p50_ms"] <= p["step_p95_ms"] <= p["step_p99_ms"] <= p["step_max_ms"], p
+assert 0 <= p["step_frames_over_60fps_budget"] <= 120, p
+incomplete = json.load(open(sys.argv[3]))
+assert incomplete["run"]["completed_frames"] == 0, incomplete
+assert incomplete["run"]["stop_reason"] == "frame_budget_exhausted", incomplete
+assert incomplete["run"]["stop_frame"] == 0, incomplete
+assert incomplete["performance"]["completed_fps"] == 0, incomplete
 assert r["video"]["frame_hashes"] == runs[1]["video"]["frame_hashes"], "nondeterministic frame hashes"
 assert r["state"]["final_hash"] == runs[1]["state"]["final_hash"], "nondeterministic state hash"
 print("run-desktop-smoke: PASS (120 frames, deterministic, engine", r["engine"]["commit"] + ")")

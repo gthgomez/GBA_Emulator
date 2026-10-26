@@ -94,8 +94,8 @@ def build_video_code():
         add_imm(1, 1, 0x3),       # add      r1, r1, #3       (mode 3)
         strh_imm(1, 0, 0),        # strh     r1, [r0]        (DISPCNT)
         0xE3A02406,               # mov      r2, #0x06000000  (VRAM base)
-        mov_imm(3, 0x001F),       # mov      r3, #0x001F      (blue)
-        mov_imm(4, 0x7C00),       # mov      r4, #0x7C00      (red)
+        mov_imm(3, 0x001F),       # mov      r3, #0x001F      (GBA red)
+        mov_imm(4, 0x7C00),       # mov      r4, #0x7C00      (GBA blue)
         0xE3A05000,               # mov      r5, #0           (byte counter)
     ]
     loop_index = len(code)

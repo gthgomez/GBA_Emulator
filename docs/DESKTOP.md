@@ -121,6 +121,22 @@ sample count/hash/underruns, final state hash, and wall-clock timing
 (excluded from all hashes). Exit code is non-zero on unsupported/fetch/step
 failures, so scripts and CI can gate on it.
 
+Incomplete frame budgets stop at the first unfinished frame, report
+`frame_budget_exhausted`, and exit 1. The final PC always comes from the CPU.
+The performance object includes completed FPS and p50/p95/p99/maximum frame
+step durations, plus the number of steps over 16.67 ms. Step timing excludes
+host hashing and PNG output; total elapsed time includes them. Intermediate
+full-machine hashes are not computed; the final hash is retained.
+
+Both SDL presentation and PNG capture interpret the core's native GBA 15-bit
+color layout (red in bits 0–4), preserving framebuffer hashes in that layout.
+
+For repeated local scripted runs with resource samples, input/binary provenance
+and determinism checks, use `tools/run-rom-playthrough.ps1 -RomPath <path>`.
+See [the Emerald campaign](emerald-performance-campaign.md) for the measurement
+protocol and current results. A headless timing result does not verify SDL
+presentation or audio smoothness.
+
 Input script format:
 
 ```json

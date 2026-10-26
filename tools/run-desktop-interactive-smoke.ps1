@@ -43,8 +43,14 @@ try {
         Write-Host "run-desktop-interactive-smoke: FAIL (interactive run exit $LASTEXITCODE)"
         exit 1
     }
-    python (Join-Path $repoRoot "tools\check-png-nonuniform.py") $screenshot --min-unique 2 --min-second-share 0.2 --min-width 240 --min-height 160
+    python (Join-Path $repoRoot "tools\check-png-nonuniform.py") $screenshot --min-unique 2 --min-second-share 0.2 --min-width 240 --min-height 160 --gba-test-bars
     if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-interactive-smoke: FAIL (screenshot uniformly blank)"; exit 1 }
+
+    & $exe --headless --rom $romPath --frames 30 --screenshot-frame 29 `
+        --screenshot-output $labDir --artifact (Join-Path $labDir 'headless.json')
+    if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-interactive-smoke: FAIL (headless color run)"; exit 1 }
+    python (Join-Path $repoRoot 'tools/check-png-nonuniform.py') (Join-Path $labDir 'frame-0029.png') --gba-test-bars
+    if ($LASTEXITCODE -ne 0) { Write-Host "run-desktop-interactive-smoke: FAIL (headless color conversion)"; exit 1 }
 
     $badRom = Join-Path $labDir "synthetic-bad.gba"
     python (Join-Path $repoRoot "tools\make-synthetic-rom.py") --kind bad --output $badRom
