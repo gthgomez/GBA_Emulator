@@ -690,7 +690,7 @@ int run_headless(const CliOptions& opts) {
   bool frame_budget_exhausted = false;
 
   const auto started = std::chrono::steady_clock::now();
-  std::uint16_t input_mask = 0;
+  std::uint16_t input_mask = runtime.session().keypad().pressed_mask();
   for (std::uint32_t frame = 0; frame < opts.frames; ++frame) {
     while (next_event < events.size() && events[next_event].frame == frame) {
       const InputEvent& event = events[next_event++];
