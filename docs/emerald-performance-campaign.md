@@ -308,3 +308,16 @@ VERIFIED: all 33 core verifiers and the core benchmark checksum suite passed.
 From the frame-10200 house checkpoint, one 600-frame run per build produced
 matching run, video, audio and state artifacts; baseline measured 39.95 FPS and
 the candidate 43.52 FPS. A single pair cannot establish a precise speedup.
+
+### Scanline background decoding
+
+OBSERVED: an isolated experiment decoded each background's control once per
+scanline instead of once per pixel. Alternating 1,200-frame boot runs measured
+46.06/46.08 FPS versus 44.24/44.90 FPS for the baseline, with matching sampled
+video, audio and final state hashes. This is a small comparison on one host;
+neither side meets the 60 FPS target. A renderer test verifies changed BG
+registers take effect on the next render call.
+VERIFIED: the complete candidate passed all 33 core verifiers and the benchmark
+checksum suite. One 600-frame house checkpoint run per build had matching run,
+video, audio and state artifacts; 43.52 FPS baseline versus 43.64 FPS candidate
+does not demonstrate a meaningful house-scene throughput gain.
