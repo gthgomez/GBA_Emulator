@@ -143,3 +143,42 @@ crashed at save-state encoding without writing a final artifact. It is not a
 completed verification run. LTO is not enabled in the project. Any future LTO
 work must first address snapshot temporaries/inlining stack use and validate
 save-state lifecycle; raw throughput from this experiment is not shippable.
+
+## Checkpoint iteration
+
+VERIFIED: PR [#23](https://github.com/gthgomez/GBA_Emulator/pull/23) merged as
+`de45d47b0b25` after all four Windows/Linux CI jobs passed. The campaign continues;
+that merge does not establish the 60 FPS goal.
+
+The next candidate integrates existing save-type selection (#21) and Flash128K
+restoration (#22) with the lab/color fixes. No wire-format change is required:
+the parser now bounds backup storage by the largest supported capacity rather
+than the 64 KiB bus aperture; exact type-size validation and transactional hash
+verification remain. VERIFIED locally: the exact Emerald state that previously
+failed to load now loads successfully. All 33 core verifiers and the extended
+save lifecycle smoke pass on the integrated candidate, including every backup
+capacity, bank/ID/pending-command restoration, wrong-size/hash rejection,
+rollback and automatic/explicit resume paths.
+
+Independent review found another preexisting provenance error: headless
+automatic state restoration could execute the embedded ROM while recording
+another caller-supplied ROM's hash/path. VERIFIED: the new synthetic regression
+failed before the repair (`exit 0`, expected 3); it passes with unconditional
+restored-ROM identity verification, including explicit `--save-type auto`.
+No misleading artifact is produced on rejection. Two fresh read-only reviews
+covered the integrated restoration behavior and refreshed this repair.
+
+### Further performance probes
+
+OBSERVED: replacing power-of-two timer divisions with shifts/masks preserved
+execution/video/audio/state identities but measured 35.31 and 35.60 FPS, within
+the existing range/noise. No gain was demonstrated, so the experiment remains
+outside the product source.
+
+OBSERVED: temporary sampled instrumentation counted 55,967,071 scheduler fetch
+steps and 692,380,821 memory-map descriptions in 600 Emerald boot frames.
+Sampling overhead distorts tiny function durations, so these counts identify
+work frequency; sampled inclusive timings are not additive CPU percentages.
+Investigate cheaper equivalent memory classification before changing scheduling
+or instruction timing semantics. The requested sustained smooth 60 FPS remains
+unverified and unmet by the recorded release measurements.

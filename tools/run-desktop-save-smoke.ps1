@@ -265,7 +265,10 @@ finally {
     Remove-Item Env:SDL_AUDIODRIVER -ErrorAction SilentlyContinue
 }
 
-Write-Host "run-desktop-save-smoke: PASS (persistence, reset, no-spurious-save, rejected-save preservation, switch refusal, defective switch, crash-orphan recovery)"
+python (Join-Path $repoRoot "tools\check-desktop-save-type-override.py") --exe $exe
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host "run-desktop-save-smoke: PASS (persistence, reset, no-spurious-save, rejected-save preservation, switch refusal, defective switch, crash-orphan recovery, save-type override)"
 # Explicit terminal exit code so the step's success does not depend on the
 # last native command's $LASTEXITCODE.
 exit 0

@@ -254,5 +254,7 @@ assert_sav "$orphan_rom.sav" 32768 0x43
 }
 echo "  assert ok: crash-orphan save restored, imported, and superseded"
 
-echo "run-desktop-save-smoke: PASS (persistence, reset, no-spurious-save, rejected-save preservation, save-directory, switch refusal, defective switch, crash-orphan recovery)"
+python3 "$repoRoot/tools/check-desktop-save-type-override.py" --exe "$exe"
+
+echo "run-desktop-save-smoke: PASS (persistence, reset, no-spurious-save, rejected-save preservation, save-directory, switch refusal, defective switch, crash-orphan recovery, save-type override)"
 exit 0
