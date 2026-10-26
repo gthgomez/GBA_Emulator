@@ -309,6 +309,33 @@ From the frame-10200 house checkpoint, one 600-frame run per build produced
 matching run, video, audio and state artifacts; baseline measured 39.95 FPS and
 the candidate 43.52 FPS. A single pair cannot establish a precise speedup.
 
+### Later playthrough and rejected scheduler probe
+
+OBSERVED: with the three pending optimizations, the scripted playthrough reached
+the upstairs bedroom at frame 13800 and confirmed the clock by frame 15600.
+The six 600-frame segments from frame 12000 through 15600 all completed with zero
+reported unsupported instructions, fetch failures and engine audio underruns.
+The latest segment ran at 44.75 FPS with a 23.79 ms p95 step. Screenshots,
+scripts, state checkpoints and artifacts remain under ignored `build/`.
+Two further 600-frame segments reached frame 16800 in the bedroom, at 44.84 and
+43.63 FPS, again with no reported unsupported instructions or fetch failures.
+
+OBSERVED: an isolated scheduler experiment skipped a timer pre-access probe when
+its input was already zero. Alternating 600-frame boot runs measured 46.67/46.46
+FPS versus 48.02/47.29 FPS for the baseline; recorded video, audio and state
+hashes matched. The probe showed no performance benefit and was not added to the
+core.
+
+OBSERVED: a separate inline byte-read experiment for background video memory
+measured 48.43/48.66 FPS against 47.73/48.07 FPS in alternating 600-frame boot
+runs, with matching recorded video, audio and state hashes. The small difference
+overlaps observed run variation; the extra bus path remains experimental.
+
+OBSERVED: replacing background coordinate modulo with equivalent power-of-two
+masks measured 46.82/46.52 FPS versus 45.96/47.67 FPS for the baseline in
+alternating 600-frame boot runs, with matching recorded identities. No useful
+gain was established, so the experiment remains outside the core.
+
 ### Scanline background decoding
 
 OBSERVED: an isolated experiment decoded each background's control once per
