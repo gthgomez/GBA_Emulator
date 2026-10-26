@@ -296,6 +296,13 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   const std::uint16_t obj_mosaic_h =
       static_cast<std::uint16_t>(((control.mosaic >> 12) & 0xFU) + 1U);
 
+  // Background control registers are constant for this scanline. Decode them
+  // once rather than repeating the same work for every visible pixel.
+  std::array<BgControl, 4> decoded_bg{};
+  for (std::size_t index = 0; index < decoded_bg.size(); ++index) {
+    decoded_bg[index] = PpuBackgroundFetcher::decode_control(control.bg_control[index]);
+  }
+
   std::array<AffineParams, 4> affine_params{};
   if (mode == 1 || mode == 2) {
     for (std::uint8_t bg_index = 2; bg_index < 4; ++bg_index) {
@@ -355,8 +362,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
               (layer_mask & static_cast<std::uint16_t>(1U << bg_index)) == 0) {
             continue;
           }
-          const BgControl bg = PpuBackgroundFetcher::decode_control(
-              control.bg_control.at(bg_index));
+          const BgControl& bg = decoded_bg.at(bg_index);
           std::uint16_t sample_x = x;
           std::uint16_t sample_y = scanline;
           if ((bg.raw & kBgMosaicEnable) != 0) {
@@ -387,8 +393,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
               (layer_mask & static_cast<std::uint16_t>(1U << bg_index)) == 0) {
             continue;
           }
-          const BgControl bg = PpuBackgroundFetcher::decode_control(
-              control.bg_control.at(bg_index));
+          const BgControl& bg = decoded_bg.at(bg_index);
           // GBATEK rot/scale model (8.8 fixed point): reference point plus
           // matrix rows scaled by screen position, shifted back to integer.
           std::int64_t dx = x;

@@ -141,6 +141,15 @@ int main() {
   (void)multi_bg_stats;
   expect(renderer.pixel(0, 0) == kBgBlue, "higher-priority BG1 overlays BG0");
 
+  // Register changes between scanline renders must select the current map;
+  // decoded background controls cannot be retained from a previous call.
+  auto changed_map = control(kBg0Enable, static_cast<std::uint16_t>(9U << 8));
+  (void)renderer.render_scanline(memory, changed_map, 0);
+  expect(renderer.pixel(0, 0) == kBgBlue, "updated BG map selects blue pixel");
+  changed_map.bg_control[0] = static_cast<std::uint16_t>(8U << 8);
+  (void)renderer.render_scanline(memory, changed_map, 0);
+  expect(renderer.pixel(0, 0) == kBgGreen, "subsequent render uses changed BG map");
+
   gba::core::PpuRenderControl window_control =
       control(static_cast<std::uint16_t>(kBg0Enable | 0x2000U),
               static_cast<std::uint16_t>(8U << 8));
