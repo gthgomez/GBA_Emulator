@@ -35,6 +35,11 @@ does), then `cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release` and
 ```
 
 Launching with no arguments opens a file picker instead of printing usage.
+To resume a checkpoint at launch, pass both the ROM and `--load-state`, for
+example `gba-desktop --rom game.gba --load-state checkpoint.state`. The host
+rejects states for a different ROM or save type; keep checkpoints and cartridge
+saves outside the repository.
+
 Paths containing spaces are fine (quote them in the shell as usual). The window
 shows the engine framebuffer (nearest-neighbor, letterboxed, resizable, F11
 fullscreen). Controls:

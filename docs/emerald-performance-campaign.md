@@ -638,3 +638,100 @@ The interactive session summary now also prints average FPS across the host
 loop, in addition to its existing last-window rate. This average excludes ROM
 loading and window/audio initialization; the external wall-clock measurement
 above includes them.
+
+### Reproducing the Windows GCC profile-guided experiment
+
+This procedure is for a local experiment with Windows CMake, Ninja, MinGW GCC,
+and the SDL3 development package already installed. It uses the same build and
+profile directories for both compilation stages. It does not enable profile
+guidance in the default build or establish correctness on another machine.
+Choose a fresh profile directory with no spaces in its path. Set the ROM,
+checkpoint, SDL3 prefix, Windows CMake, Ninja, MinGW compiler and profile paths
+below before running the commands; keep ROMs and states private.
+
+```powershell
+# Run from the repository root in PowerShell 7.3 or newer.
+$ErrorActionPreference = 'Stop'
+$rom = 'D:/path/to/game.gba'
+$checkpoint = 'D:/path/to/checkpoint.state'
+$sdlPrefix = 'D:/path/to/SDL3/x86_64-w64-mingw32'
+$cmake = 'D:/path/to/windows-cmake/bin/cmake.exe'
+$ninja = 'D:/path/to/ninja.exe'
+$cxx = 'C:/msys64/mingw64/bin/g++.exe'
+$windres = 'C:/msys64/mingw64/bin/windres.exe'
+$profileDir = 'D:/path-without-spaces/gba-pgo-profile'
+$buildDir = Join-Path (Get-Location) 'build/pgo-desktop-example'
+if ((Test-Path -LiteralPath $buildDir) -or (Test-Path -LiteralPath $profileDir)) {
+    throw 'Choose new build and profile directories to preserve existing data.'
+}
+foreach ($path in @($rom, $checkpoint, $sdlPrefix, $cmake, $ninja, $cxx, $windres)) {
+    if (-not (Test-Path -LiteralPath $path)) { throw "Missing input: $path" }
+}
+if ($profileDir -match '\s') { throw 'Use a profile directory path without spaces.' }
+$sdlDll = Join-Path $sdlPrefix 'bin/SDL3.dll'
+if (-not (Test-Path -LiteralPath $sdlDll -PathType Leaf)) { throw 'SDL3.dll is missing.' }
+New-Item -ItemType Directory -Path $profileDir | Out-Null
+$generateFlags = "-O3 -DNDEBUG -flto=1 -fprofile-generate=$profileDir"
+$generateLink = "-flto=1 -fprofile-generate=$profileDir"
+& $cmake -S . -B $buildDir -G Ninja -DCMAKE_BUILD_TYPE=Release `
+    "-DCMAKE_MAKE_PROGRAM=$ninja" "-DCMAKE_CXX_COMPILER=$cxx" "-DCMAKE_RC_COMPILER=$windres" `
+    "-DCMAKE_PREFIX_PATH=$sdlPrefix" "-DCMAKE_CXX_FLAGS_RELEASE=$generateFlags" `
+    "-DCMAKE_EXE_LINKER_FLAGS=$generateLink"
+if ($LASTEXITCODE -ne 0) { throw 'Instrumented configure failed.' }
+& $cmake --build $buildDir --target gba-desktop --parallel 1
+if ($LASTEXITCODE -ne 0) { throw 'Instrumented build failed.' }
+$exe = Join-Path $buildDir 'apps/desktop/gba-desktop.exe'
+Copy-Item -LiteralPath $sdlDll -Destination (Join-Path (Split-Path $exe) 'SDL3.dll')
+
+# Train boot and a distinct checkpoint; the artifacts stay in the build directory.
+& $exe --headless --rom $rom --frames 600 --frame-hash --audio-hash --state-hash `
+    --artifact (Join-Path $buildDir 'training-boot.json')
+if ($LASTEXITCODE -ne 0) { throw 'Boot training failed.' }
+& $exe --headless --rom $rom --load-state $checkpoint --frames 600 `
+    --frame-hash --audio-hash --state-hash `
+    --artifact (Join-Path $buildDir 'training-checkpoint.json')
+if ($LASTEXITCODE -ne 0) { throw 'Checkpoint training failed.' }
+foreach ($name in @('training-boot.json', 'training-checkpoint.json')) {
+    $artifact = Get-Content -LiteralPath (Join-Path $buildDir $name) -Raw | ConvertFrom-Json
+    if ($artifact.run.completed_frames -ne 600 -or $artifact.run.stop_reason -ne 'completed' -or
+        $artifact.run.unsupported_instructions -ne 0 -or $artifact.run.fetch_failures -ne 0 -or
+        $artifact.audio.underruns -ne 0) {
+        throw "Incomplete training workload: $name"
+    }
+}
+if (-not (Get-ChildItem -LiteralPath $profileDir -Recurse -Filter '*.gcda' | Select-Object -First 1)) {
+    throw 'No GCC profile data was written.'
+}
+
+# Reconfigure the same build directory to consume that profile.
+$useFlags = "-O3 -DNDEBUG -flto=1 -fprofile-use=$profileDir -fprofile-correction"
+$useLink = "-flto=1 -fprofile-use=$profileDir -fprofile-correction"
+& $cmake -S . -B $buildDir "-DCMAKE_CXX_FLAGS_RELEASE=$useFlags" `
+    "-DCMAKE_EXE_LINKER_FLAGS=$useLink"
+if ($LASTEXITCODE -ne 0) { throw 'Profile-use configure failed.' }
+& $cmake --build $buildDir --target gba-desktop --parallel 1
+if ($LASTEXITCODE -ne 0) { throw 'Profile-use build failed.' }
+Get-FileHash -LiteralPath $exe -Algorithm SHA256
+```
+
+The final desktop audio experiment also included a 600-frame interactive boot
+training run with `--quit-after 600` and a separate `--save-directory`. The
+instrumented binary ran slowly; its timing is not a performance result. Review
+compiler warnings: this campaign saw missing-profile warnings for four
+unexercised translation units. Do not suppress profile mismatch warnings or
+assume untrained paths are optimized correctly.
+
+Measure a separate workload after building, for example with
+`tools/run-rom-playthrough.ps1 -RomPath $rom -ExePath $exe -Frames 1200 -Runs 2`.
+That helper starts at boot; it does not resume `$checkpoint`. For a checkpoint
+comparison, pass `--load-state $checkpoint` to the headless executable, capture
+artifacts for both builds, and compare completion, run, video, audio and final
+state identities before comparing FPS and frame times. Headless throughput is
+not a substitute for a real desktop audio and presentation soak. On the tested
+MinGW toolchain, linking also required process-local `TMP` and `TEMP` pointing
+to an existing writable path with forward slashes; restore those variables
+after the build if changing them in a persistent shell.
+
+The recipe above was assembled from the commands used for the local experiment;
+its standalone form has only been syntax-checked and checked for missing-input
+refusal. A complete fresh-directory replay of the recipe remains to be run.
