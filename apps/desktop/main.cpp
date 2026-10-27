@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -637,7 +638,10 @@ int run_headless(const CliOptions& opts) {
   sha.update(rom.data(), rom.size());
   const std::string rom_sha256 = hex_fixed(sha.digest().data(), 32);
 
-  EmulatorRuntime runtime;
+  // Keep the large runtime off the host stack; save-state encoding also needs
+  // substantial temporary space, especially with cross-module optimization.
+  auto runtime_owner = std::make_unique<EmulatorRuntime>();
+  auto& runtime = *runtime_owner;
   // The lab records the final machine hash below. Per-frame runtime hashing
   // would also scan the entire cartridge on every frame (16 MiB for Emerald),
   // even though none of those intermediate hashes are consumed here.

@@ -506,3 +506,24 @@ the host-specific build remains experimental. A separate experiment disabling
 the headless runner's unused fetch trace measured 50.37/50.40 FPS versus
 50.74/50.19 FPS with the existing trace, with matching artifacts. Its ranges
 also overlap, so that change was not added to the core or host.
+
+### LTO save-state stack overflow
+
+OBSERVED: the original LTO binary crashed with Windows status `0xC00000FD`
+while saving a state after loading frame 38420. A one-frame synthetic ROM run
+also reproduced the crash; the same one-frame LTO run without saving completed.
+A debugger stopped in `___chkstk_ms` during save-state encoding. Reserving a
+4 MiB executable stack made the original LTO binary save successfully, providing
+evidence of stack exhaustion rather than a game-specific failure.
+
+VERIFIED: moving the headless runtime to the heap allowed the synthetic LTO
+save-state case to pass with the original 2 MiB stack reservation, and the
+existing desktop save-type and state checks passed against the LTO build. An
+800-frame replay from the post-battle checkpoint completed, reached Birch's lab,
+and wrote a state byte-identical to the ordinary Release replay. Run, video,
+audio and final-state artifacts matched. The final LTO candidate measured
+51.51 FPS and 20.16 ms p95 in this single replay; the ordinary build measured
+44.84 FPS in its earlier paired replay. Host load varied and these individual
+runs do not establish a precise speedup or interactive smoothness. All 33 core
+verifiers and the benchmark checksum suite passed; optional ROM video smoke was
+not included. LTO remains a locally tested configuration, not a default.
