@@ -112,9 +112,18 @@ so no button stays stuck.
 | Flag | Effect |
 | --- | --- |
 | `--quit-after N` | quit after N presented frames |
+| `--frame-timing` | report intervals between SDL presentation calls at exit |
 | `--reset-after N` | perform a full reset after N presented frames |
 | `--switch-after N` + `--switch-to PATH` | switch to another ROM after N presented frames |
 | `--window-screenshot PATH` | capture the presented window to a PNG |
+
+With `--frame-timing`, the host reports the interval count, p95 and p99 upper
+bounds rounded up to whole milliseconds, the maximum, and the number longer
+than 25 ms. The first presentation has no interval; paused or unloaded periods
+are excluded. Intervals are measured after `SDL_RenderPresent` returns and do
+not prove the display's physical scanout timing. The histogram has fixed memory;
+for a percentile in its 1,000 ms overflow bucket, the maximum is the reported
+upper bound. This option is for play mode and cannot be used with `--headless`.
 
 ## Headless lab mode (primary verification surface)
 

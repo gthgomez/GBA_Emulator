@@ -36,6 +36,8 @@ struct HostOptions {
   // Automation hooks: quit after N presented frames (CI smoke), and capture
   // the presented framebuffer via SDL_RenderReadPixels (no screen capture).
   std::uint32_t quit_after_frames = 0;
+  // Optional fixed-memory presentation interval diagnostics.
+  bool frame_timing = false;
   // Automation hook: perform a full reset after N presented frames (lifecycle
   // testing of cartridge-save preservation across reset).
   std::uint32_t reset_after_frames = 0;
