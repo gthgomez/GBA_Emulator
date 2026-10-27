@@ -78,14 +78,15 @@ so no button stays stuck.
 - Cartridge saves persist to `<rom>.sav` next to the ROM (or in
   `--save-directory`), imported at boot, flushed on exit and every ~5 s of dirty
   frames. Games with no cartridge-backed save never create a `.sav`.
-- Save states are `<rom>.state1` etc. (core `SaveStateCodec` v3 format). Because
+- Save states are `<rom>.state1` etc. (core `SaveStateCodec` v4 format). Because
   the codec snapshot is self-contained, the host additionally refuses a state
   that was captured from a different ROM or uses a different save type. Headless
   `--load-state` also checks both identities when `--save-type` is explicit;
   it never reinitializes backup memory over the restored save data.
   Snapshots support every selectable backup capacity, including both Flash128K
-  banks and their protocol state. The v3 format is unchanged; Flash128K states
-  written before the decoder fix can now be loaded.
+  banks and their protocol state. The decoder still accepts v3 states, including
+  Flash128K states written before the decoder fix. Older emulator builds cannot
+  read newly written v4 states.
 - All save writes are replace-in-place safe: a sibling temp file is written and
   renamed over the destination, so a failed or interrupted write cannot truncate
   a good save. (This is crash-safe, not a power-loss durability guarantee.)

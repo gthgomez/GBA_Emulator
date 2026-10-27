@@ -86,6 +86,13 @@ struct CoreSchedulerRunResult {
   std::uint64_t scheduler_cycles;
 };
 
+struct HleIrqFrame {
+  std::uint32_t return_lr = 0;
+  std::optional<std::array<std::uint32_t, 13>> saved_registers;
+  bool long_timer_return_pending = false;
+  bool slow_timer0_return_pending = false;
+};
+
 struct CoreSchedulerState {
   std::uint64_t scheduler_cycles = 0;
   bool halted = false;
@@ -115,6 +122,7 @@ struct CoreSchedulerState {
   std::uint8_t auto_irq_latency_cycles = 0;
   std::uint32_t timer_io_access_gap_cycles = 0;
   std::uint32_t thumb_misfetch_recovery_count = 0;
+  std::vector<HleIrqFrame> hle_irq_outer_frames;
 };
 
 class CoreScheduler {
@@ -185,6 +193,7 @@ class CoreScheduler {
   bool previous_thumb_internal_load_;
   std::optional<std::uint32_t> hle_irq_return_lr_;
   std::optional<std::array<std::uint32_t, 13>> hle_irq_saved_registers_;
+  std::vector<HleIrqFrame> hle_irq_outer_frames_;
   bool hle_irq_reentry_dispatch_pending_;
   bool hle_irq_return_latency_pending_;
   bool hle_irq_post_return_latency_armed_;

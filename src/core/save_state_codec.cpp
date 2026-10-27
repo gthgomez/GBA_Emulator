@@ -311,6 +311,16 @@ void write_scheduler_state(std::vector<std::uint8_t>& out,
   write_u8(out, scheduler.auto_irq_latency_cycles);
   write_u32(out, scheduler.timer_io_access_gap_cycles);
   write_u32(out, scheduler.thumb_misfetch_recovery_count);
+  write_u32(out, static_cast<std::uint32_t>(scheduler.hle_irq_outer_frames.size()));
+  for (const auto& frame : scheduler.hle_irq_outer_frames) {
+    write_u32(out, frame.return_lr);
+    write_bool(out, frame.saved_registers.has_value());
+    if (frame.saved_registers) {
+      for (const auto value : *frame.saved_registers) write_u32(out, value);
+    }
+    write_bool(out, frame.long_timer_return_pending);
+    write_bool(out, frame.slow_timer0_return_pending);
+  }
 }
 
 void write_io_state(std::vector<std::uint8_t>& out, const IoRegistersState& io) {
@@ -324,6 +334,8 @@ void write_io_state(std::vector<std::uint8_t>& out, const IoRegistersState& io) 
 class Reader {
  public:
   explicit Reader(const std::vector<std::uint8_t>& bytes) : bytes_(bytes) {}
+
+  [[nodiscard]] std::size_t remaining() const { return bytes_.size() - offset_; }
 
   [[nodiscard]] bool read_u8(std::uint8_t& value) {
     if (offset_ >= bytes_.size()) {
@@ -702,7 +714,8 @@ bool parse_apu_state(Reader& reader, Apu::State& apu) {
   return apu.frame_step < Apu::kFrameSequencerSteps;
 }
 
-bool parse_scheduler_state(Reader& reader, CoreSchedulerState& scheduler) {
+bool parse_scheduler_state(Reader& reader, CoreSchedulerState& scheduler,
+                           std::uint32_t version) {
   if (!reader.read_u64(scheduler.scheduler_cycles) ||
       !reader.read_bool(scheduler.halted) ||
       !reader.read_optional_u32(scheduler.last_fetch_address) ||
@@ -750,6 +763,26 @@ bool parse_scheduler_state(Reader& reader, CoreSchedulerState& scheduler) {
       !reader.read_u32(scheduler.timer_io_access_gap_cycles) ||
       !reader.read_u32(scheduler.thumb_misfetch_recovery_count)) {
     return false;
+  }
+  if (version >= 4) {
+    std::uint32_t count = 0;
+    // Each frame needs a return address and three boolean bytes.
+    if (!reader.read_u32(count) || count > reader.remaining() / 7) return false;
+    scheduler.hle_irq_outer_frames.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+      HleIrqFrame frame;
+      bool present = false;
+      if (!reader.read_u32(frame.return_lr) || !reader.read_bool(present)) return false;
+      if (present) {
+        std::array<std::uint32_t, 13> saved{};
+        for (auto& value : saved) if (!reader.read_u32(value)) return false;
+        frame.saved_registers = saved;
+      }
+      if (!reader.read_bool(frame.long_timer_return_pending) ||
+          !reader.read_bool(frame.slow_timer0_return_pending)) return false;
+      scheduler.hle_irq_outer_frames.push_back(frame);
+    }
+    if (count && !scheduler.hle_irq_return_lr) return false;
   }
   return true;
 }
@@ -853,7 +886,7 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
   if (!reader.read_u32(version)) {
     return {SaveStateDecodeStatus::corrupt_payload, version, encoded_hash};
   }
-  if (version != kVersion) {
+  if (version != 3 && version != kVersion) {
     // Includes every pre-v3 layout (e.g. v2 partial snapshots).
     return {SaveStateDecodeStatus::unsupported_version, version, encoded_hash};
   }
@@ -889,7 +922,7 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
       !reader.read_u16(waitcnt) || !reader.read_u8(bios_mode) ||
       bios_mode > static_cast<std::uint8_t>(BiosExecutionMode::hle) ||
       !parse_io_state(reader, io) ||
-      !parse_scheduler_state(reader, scheduler) || !reader.at_end()) {
+      !parse_scheduler_state(reader, scheduler, version) || !reader.at_end()) {
     return {SaveStateDecodeStatus::corrupt_payload, version, encoded_hash};
   }
 

@@ -1318,6 +1318,7 @@ void CoreScheduler::reset_scheduler_cycles() {
   halted_ = false;
   hle_irq_return_lr_.reset();
   hle_irq_saved_registers_.reset();
+  hle_irq_outer_frames_.clear();
   hle_irq_reentry_dispatch_pending_ = false;
   hle_irq_return_latency_pending_ = false;
   hle_irq_post_return_latency_armed_ = false;
@@ -1357,7 +1358,7 @@ CoreSchedulerState CoreScheduler::save_state() const {
           hle_irq_post_return_chain_active_,
           hle_irq_chained_spaced_data_service_count_, auto_irq_line_high_,
           auto_irq_latency_cycles_, timer_io_access_gap_cycles_,
-          thumb_misfetch_recovery_count_};
+          thumb_misfetch_recovery_count_, hle_irq_outer_frames_};
 }
 
 void CoreScheduler::load_state(const CoreSchedulerState& state) {
@@ -1374,6 +1375,7 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
   last_waitcnt_control_ = state.last_waitcnt_control;
   hle_irq_return_lr_ = state.hle_irq_return_lr;
   hle_irq_saved_registers_ = state.hle_irq_saved_registers;
+  hle_irq_outer_frames_ = state.hle_irq_outer_frames;
   hle_irq_reentry_dispatch_pending_ = state.hle_irq_reentry_dispatch_pending;
   hle_irq_return_latency_pending_ = state.hle_irq_return_latency_pending;
   hle_irq_post_return_latency_armed_ = state.hle_irq_post_return_latency_armed;
@@ -1446,6 +1448,18 @@ std::uint64_t CoreScheduler::state_hash() const {
   hasher.add_u8(auto_irq_latency_cycles_);
   hasher.add_u32(timer_io_access_gap_cycles_);
   hasher.add_u32(thumb_misfetch_recovery_count_);
+  // Empty nesting preserves version 3 checkpoint hashes.
+  if (!hle_irq_outer_frames_.empty()) {
+    hasher.add_u32(0x4952514EU);
+    hasher.add_u64(hle_irq_outer_frames_.size());
+    for (const auto& frame : hle_irq_outer_frames_) {
+      hasher.add_u32(frame.return_lr);
+      hasher.add_bool(frame.saved_registers.has_value());
+      if (frame.saved_registers) hasher.add_bytes(*frame.saved_registers);
+      hasher.add_bool(frame.long_timer_return_pending);
+      hasher.add_bool(frame.slow_timer0_return_pending);
+    }
+  }
   return hasher.value();
 }
 
@@ -2445,6 +2459,14 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
   const bool long_timer_chained_post_return_dispatch =
       irq_timing.chained_post_return && irq_timing.timer0_interrupt_requested &&
       irq_timing.timer0_reload <= 0xFF80U;
+  const std::uint32_t irq_link = cpu_.register_value(Arm7tdmi::kLinkRegister);
+  const bool nested = hle_irq_return_lr_.has_value() &&
+                      irq_link != BiosHleConstants::kIrqReturnSentinelPc;
+  if (nested) {
+    hle_irq_outer_frames_.push_back({*hle_irq_return_lr_, hle_irq_saved_registers_,
+                                     hle_irq_long_timer_chained_return_pending_,
+                                     hle_irq_slow_timer0_return_pending_});
+  }
   hle_irq_reentry_dispatch_pending_ = false;
   hle_irq_post_return_dispatch_pending_ = false;
   hle_irq_chained_post_return_dispatch_pending_ = false;
@@ -2455,11 +2477,9 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
   hle_irq_slow_timer0_return_pending_ =
       interrupts_.requested(InterruptSource::timer0) &&
       timers_.prescaler_divisor(0) > 1U;
-  const std::uint32_t irq_link = cpu_.register_value(Arm7tdmi::kLinkRegister);
-  if (!hle_irq_return_lr_.has_value() &&
-      irq_link != BiosHleConstants::kIrqReturnSentinelPc) {
+  if (irq_link != BiosHleConstants::kIrqReturnSentinelPc) {
     hle_irq_return_lr_ = irq_link;
-    (void)memory_.write32(0x03007FF8U, irq_link);
+    if (!nested) (void)memory_.write32(0x03007FF8U, irq_link);
   }
   std::array<std::uint32_t, 13> saved_registers{};
   for (std::uint8_t reg = 0; reg < saved_registers.size(); ++reg) {
@@ -2517,6 +2537,14 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_return(
       hle_irq_long_timer_chained_return_pending_, slow_timer0_active_return);
   hle_irq_long_timer_chained_return_pending_ = false;
   hle_irq_slow_timer0_return_pending_ = false;
+  if (!hle_irq_outer_frames_.empty()) {
+    const auto frame = hle_irq_outer_frames_.back();
+    hle_irq_outer_frames_.pop_back();
+    hle_irq_return_lr_ = frame.return_lr;
+    hle_irq_saved_registers_ = frame.saved_registers;
+    hle_irq_long_timer_chained_return_pending_ = frame.long_timer_return_pending;
+    hle_irq_slow_timer0_return_pending_ = frame.slow_timer0_return_pending;
+  }
   const ArmStepResult cpu_step{status, return_cycles, cpu_.elapsed_cycles(), false,
                                false};
   const CoreDeviceTickResult devices =
