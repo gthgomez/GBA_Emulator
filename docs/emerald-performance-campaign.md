@@ -564,3 +564,53 @@ fetch failures or engine audio underruns. Host load and build/link layout varied
 between experiments. The full candidate passed all 33 core verifiers and the
 benchmark checksum suite, but the speedup was not repeatable; the timer change
 and its experimental test were removed from the proposed core.
+
+### Profile-guided build and desktop audio
+
+OBSERVED: an experimental GCC 12.2 build used `-O3 -DNDEBUG -flto=1` with
+`-fprofile-generate=<profile-directory>` for training and
+`-fprofile-use=<profile-directory> -fprofile-correction` for the rebuild. Boot
+and the first battle were used for training; the lab checkpoint was held out.
+Alternating 600-frame battle runs measured 52.87/52.89 FPS with ordinary LTO and
+81.60/81.81 FPS with profile guidance. Alternating 1,200-frame lab runs measured
+55.64/55.46 FPS with LTO and 85.53/85.96 FPS with profile guidance. The guided
+lab runs had 12.72/12.64 ms p95 steps and two frames above 16.67 ms in each run.
+Run, video, audio and final-state artifacts matched within each comparison; all
+runs completed with zero reported unsupported instructions, fetch failures and
+engine audio underruns. These measurements establish headless throughput above
+60 FPS for these workloads on this host; they do not establish smooth interactive
+play across the game or other machines.
+
+The profile-guided build is experimental and is not the default configuration.
+Its compiler reported missing profile data for four unexercised translation
+units. Profile data and the user's ROM remain outside the repository. Training
+and profile use must use the same build directory and profile directory; use a
+fresh directory for a new training set. Validate any other compiler, platform,
+training data and release configuration independently.
+
+OBSERVED: with the original audio startup, three 1,200-frame real desktop boot
+runs ended at 59.23 to 59.80 FPS in the host's last reporting window and recorded
+11 to 14 empty-queue events. A separate 2,048-sample silence priming experiment
+recorded zero in three runs. In a later alternating two-pair comparison of the
+final profile-guided candidate and baseline, the baseline recorded 18/13 events
+and the candidate zero/zero; last-window presentation rates were 59.09/59.71 and
+59.97/59.87 FPS respectively. The candidate's profile also included a desktop
+training run, so these builds differ in both profile data and audio initialization.
+The priming adds approximately 62.5 ms of initial audio buffering. The counter
+is a queue-empty proxy, not a direct measurement of audible glitches; these
+short boot runs do not prove smooth play throughout the game.
+
+DOCUMENTED: SDL reports `SDL_GetAudioStreamAvailable` in converted output bytes,
+which can be affected by resampling and internal buffering; see the [SDL API
+reference](https://wiki.libsdl.org/SDL3/SDL_GetAudioStreamAvailable). The host's
+existing underrun counter is therefore not a precise input-queue or audible
+underrun measurement. Reset, mute and long-session behavior need further testing.
+
+VERIFIED: the final audio candidate's profile-guided build completed two
+1,200-frame runs from the held-out lab checkpoint at 76.27/77.32 headless FPS,
+with 14.13/13.93 ms p95 steps and 6/0 frames over the 16.67 ms budget. Run,
+video, audio and final-state artifacts matched, with no reported unsupported
+instructions, fetch failures or engine audio underruns. The desktop save-type
+and state checks passed, as did the desktop rendering/error smoke using dummy
+SDL drivers. All 33 native core verifiers and the benchmark checksum suite
+passed; the optional ROM video smoke was not included.

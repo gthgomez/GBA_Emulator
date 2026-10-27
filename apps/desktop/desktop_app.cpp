@@ -8,6 +8,7 @@
 #include "stb_image_write.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -145,6 +146,13 @@ bool DesktopApp::init_audio() {
     std::cerr << "gba-desktop: audio device unavailable (" << SDL_GetError()
               << "); continuing without sound\n";
     return false;
+  }
+  // Start with about 62.5 ms of silence so normal frame scheduling jitter
+  // does not immediately drain an otherwise empty playback queue.
+  const std::array<gba::core::ApuMixedSample, 2048> initial_silence{};
+  if (!SDL_PutAudioStreamData(audio_stream_, initial_silence.data(),
+                              static_cast<int>(sizeof(initial_silence)))) {
+    std::cerr << "gba-desktop: cannot prime audio queue (" << SDL_GetError() << ")\n";
   }
   SDL_ResumeAudioStreamDevice(audio_stream_);
   return true;
