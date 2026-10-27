@@ -281,6 +281,35 @@ int main() {
   expect(renderer.pixel(0, 0) == 0x6044,
          "semi-transparent OBJ blends against selected backdrop");
 
+  expect(memory.write16(0x07000008, 0), "seed overlapping OBJ attr0");
+  expect(memory.write16(0x0700000A, 0), "seed overlapping OBJ attr1");
+  expect(memory.write16(0x0700000C, 10), "seed overlapping OBJ attr2");
+  semi_control.bldcnt = 0x3000;
+  [[maybe_unused]] const auto overlapping_obj_stats =
+      renderer.render_scanline(memory, semi_control, 0);
+  expect(renderer.pixel(0, 0) == 0x6044,
+         "overlapping OBJs blend with the backdrop, not each other");
+  expect(memory.write16(0x05000200 + 8U * 2U, kBgBlue),
+         "seed alternate OBJ palette color");
+  expect(memory.write16(0x06010000U + 11U * 32U, 0x8888),
+         "seed alternate OBJ tile");
+  expect(memory.write16(0x07000004, static_cast<std::uint16_t>(10U | (3U << 10))),
+         "set lower-numbered OBJ to lower BG priority");
+  expect(memory.write16(0x0700000C, 11), "select alternate higher-numbered OBJ tile");
+  semi_control.bldcnt = 0;
+  [[maybe_unused]] const auto obj_priority_stats =
+      renderer.render_scanline(memory, semi_control, 0);
+  expect(renderer.pixel(0, 0) == kObjRed,
+         "lower-numbered OBJ wins overlap regardless of BG priority");
+  gba::core::PpuRenderControl obj_behind_bg =
+      control(static_cast<std::uint16_t>(kBg0Enable | kObjEnable),
+              static_cast<std::uint16_t>(8U << 8));
+  [[maybe_unused]] const auto obj_behind_bg_stats =
+      renderer.render_scanline(memory, obj_behind_bg, 0);
+  expect(renderer.pixel(0, 0) == kBgGreen,
+         "OBJ behind BG still masks a higher-numbered OBJ in front of BG");
+  expect(memory.write16(0x07000008, 0x0200), "disable overlapping OBJ");
+
   gba::core::PpuRenderControl affine_bg_control =
       control(static_cast<std::uint16_t>(2U | 0x0400U), 0);
   affine_bg_control.bg_control.at(2) = static_cast<std::uint16_t>(30U << 8);

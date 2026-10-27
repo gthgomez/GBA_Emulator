@@ -445,6 +445,17 @@ frames 414 and 444 respectively. Candidate frames 480 and 510 still differed
 by 66 and 133 pixels from reference frames 474 and 504. This is a sampled
 comparison, not a complete intro fidelity result.
 
+OBSERVED: at candidate frame 480 and reference frame 474, VRAM, palette and
+OAM dumps were byte-identical, and sampled display and blend registers matched.
+The renderer had been considering overlapping OBJ pixels as separate layers,
+allowing OBJ-to-OBJ blending. Resolving the visible OBJ before mixing layers
+removes that path. A focused overlapping-sprite regression failed before this
+change and passed afterward, and a second case checks OAM ordering when OBJ
+priorities relative to backgrounds differ. The corrected Release build matched
+the reference after five-bit conversion at sampled candidate frames 420, 450,
+480, 510, 540, 570 and 600 (reference frames 414, 444, 474, 504, 534, 570 and
+594). This does not explain the animation phase offset or prove all frames match.
+
 OBSERVED: the affine candidate continued from the prior frame-25800 checkpoint
 into the neighbor's house, completed the downstairs conversation and reached
 the upstairs room by frame 28320. Nine resumed segments completed by frame 28620
