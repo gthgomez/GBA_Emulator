@@ -3597,7 +3597,7 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
   const std::optional<std::uint8_t> size1 = memory_.read8(source++);
   const std::optional<std::uint8_t> size2 = memory_.read8(source++);
   if (!header_type.has_value() || !size0.has_value() || !size1.has_value() ||
-      !size2.has_value() || header_type.value() != 0x10U) {
+      !size2.has_value()) {
     return false;
   }
 
@@ -3606,6 +3606,14 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
       (static_cast<std::uint32_t>(size1.value()) << 8U) |
       (static_cast<std::uint32_t>(size2.value()) << 16U);
   output.clear();
+  // The BIOS accepts a zero-length header without consulting the type byte.
+  // Emerald invokes this on an uncompressed, zero-prefixed trainer sprite.
+  if (decompressed_size == 0) {
+    return true;
+  }
+  if (header_type.value() != 0x10U) {
+    return false;
+  }
   output.reserve(decompressed_size);
 
   while (output.size() < decompressed_size) {
