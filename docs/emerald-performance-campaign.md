@@ -772,9 +772,20 @@ MinGW toolchain, linking also required process-local `TMP` and `TEMP` pointing
 to an existing writable path with forward slashes; restore those variables
 after the build if changing them in a persistent shell.
 
-The recipe above was assembled from the commands used for the local experiment;
-its standalone form has only been syntax-checked and checked for missing-input
-refusal. A complete fresh-directory replay of the recipe remains to be run.
+OBSERVED: the standalone recipe completed in fresh build and profile
+directories using the corrected renderer candidate `a7fd4019bf89`, with boot
+and Oldale checkpoint training. Four translation units reported missing profile
+data. Two 1,200-frame no-input holdout runs from frame 47240 completed with
+matching identities and measured 86.45 and 86.41 headless FPS; p95 step times
+were 12.31 and 12.48 ms, with 10 and zero steps respectively over 16.67 ms.
+Neither run reported unsupported instructions, fetch failures or engine audio
+underruns. The profile and all ROM-derived data remain local.
+
+OBSERVED: the resulting desktop executable loaded the Oldale checkpoint and
+completed a 1,800-frame no-input run in 32.39 seconds including startup. It
+reported 59.70 FPS averaged over the host loop, 59.56 FPS in the last window,
+and zero audio queue-empty proxy events. This single run does not establish
+audible audio quality or sustained smoothness during active gameplay.
 
 ### Repeatable checkpoint experiments
 
@@ -812,3 +823,40 @@ exceeded 16.67 ms. All reported zero unsupported instructions, fetch failures
 and engine audio underruns. The local helper output retains input scripts,
 checkpoint hashes, artifacts and screenshots for each segment. These short
 headless runs do not verify sustained interactive presentation or audible audio.
+
+OBSERVED: a further 300-frame scripted segment from frame 48940 was replayed
+twice with the ordinary Release executable rebuilt with the two renderer fixes.
+Both runs completed with matching identities, no reported unsupported
+instructions, fetch failures or engine audio underruns, and reached frame 49240
+near the route ledge. They measured 41.95 and 43.20 headless FPS, with all 300
+steps in each run above 16.67 ms. Screenshots were enabled, so these figures are
+not directly comparable to screenshot-free runs. The existing CMake directory
+retained its older embedded commit label despite rebuilding the changed source;
+the helper records the actual executable hash in the local summary. This run
+predates the fresh profile-guided build and desktop measurement described above.
+Another repeated 300-frame input segment completed deterministically at frame
+49540 with zero reported instruction, fetch or engine-audio failures. It
+measured 46.55 and 47.16 headless FPS with all steps over budget; the character
+remained near the ledge, so the attempted route did not reach a new scene.
+Three additional repeated segments continued to frame 50580 but also remained
+near the ledge. These six runs completed with matching identities per segment,
+no reported unsupported instructions, fetch failures or engine audio underruns,
+and measured 44.75–48.61 headless FPS; all 2,080 frame steps exceeded 16.67 ms.
+Screenshots were enabled. The input scripts and checkpoints remain local.
+A further repeated 600-frame segment reached frame 51180 but remained near the
+ledge; it completed deterministically at 47.22 and 48.33 headless FPS, with all
+steps over budget and no reported instruction, fetch or engine-audio failures.
+Four more repeated segments traversed the eastern grass and reached Oldale at
+frame 53180. All completed deterministically with zero reported instruction,
+fetch or engine-audio failures. These screenshot-enabled Release runs measured
+47.09–48.25 headless FPS; 3,998 of 4,000 steps exceeded 16.67 ms.
+
+OBSERVED: seven further repeated segments with the freshly rebuilt profile-guided
+candidate advanced from frame 53180 to 60080, crossed Route 103, and completed
+the rival battle; screenshots show Torchic reaching level 6 and the victory
+message. Each pair had matching identities and no reported unsupported
+instructions, fetch failures or engine audio underruns. Across 13,800 frame
+steps, 19 exceeded 16.67 ms; individual screenshot-enabled runs ranged from
+77.75 to 93.24 headless FPS, with p95 step times of 11.51–12.50 ms. The latest
+checkpoint, input scripts and screenshots remain local. These measurements do
+not establish smooth presentation or audible audio during active play.
