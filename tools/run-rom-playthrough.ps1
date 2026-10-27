@@ -8,6 +8,8 @@ param(
     [ValidateRange(1, 10)][int]$Runs = 3,
     [ValidateRange(1, 10000000)][int]$MaxStepsPerFrame = 500000,
     [string]$InputScript = '',
+    [string]$LoadState = '',
+    [switch]$SaveState,
     [string]$ExePath = '',
     [string]$OutputDirectory = '',
     [int[]]$ScreenshotFrames = @(),
@@ -23,6 +25,10 @@ if (-not $OutputDirectory) {
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 $RomPath = (Resolve-Path -LiteralPath $RomPath).Path
 if ($InputScript) { $InputScript = (Resolve-Path -LiteralPath $InputScript).Path }
+if ($LoadState) {
+    $LoadState = (Resolve-Path -LiteralPath $LoadState).Path
+    if (-not (Test-Path -LiteralPath $LoadState -PathType Leaf)) { throw "LoadState must be a file: $LoadState" }
+}
 foreach ($frame in $ScreenshotFrames) {
     if ($frame -lt 0 -or $frame -ge $Frames) { throw "Screenshot frame $frame is outside 0..$($Frames - 1)" }
 }
@@ -41,6 +47,17 @@ if ($InputScript) {
     $inputSha256 = (Get-FileHash -LiteralPath $inputCopy -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+# Freeze the checkpoint used by every repetition. A state can contain ROM and
+# save data, so the output directory is local evidence and must not be committed.
+$stateSource = $LoadState
+$stateSha256 = $null
+if ($LoadState) {
+    $stateCopy = Join-Path $OutputDirectory 'initial.state'
+    Copy-Item -LiteralPath $LoadState -Destination $stateCopy
+    $LoadState = $stateCopy
+    $stateSha256 = (Get-FileHash -LiteralPath $stateCopy -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
 $measurements = @()
 $reference = $null
 $executionOk = $true
@@ -54,6 +71,12 @@ for ($index = 1; $index -le $Runs; $index++) {
         '--max-steps-per-frame', "$MaxStepsPerFrame", '--frame-hash', '--audio-hash',
         '--state-hash', '--artifact', $artifactPath)
     if ($InputScript) { $arguments += @('--input-script', $InputScript) }
+    if ($LoadState) { $arguments += @('--load-state', $LoadState) }
+    $finalStatePath = $null
+    if ($SaveState) {
+        $finalStatePath = Join-Path $runDir 'final.state'
+        $arguments += @('--save-state', $finalStatePath)
+    }
     foreach ($frame in $ScreenshotFrames) { $arguments += @('--screenshot-frame', "$frame") }
     if ($ScreenshotFrames.Count) { $arguments += @('--screenshot-output', (Join-Path $runDir 'screenshots')) }
     # Resource observation happens outside the executable's timed region.
@@ -70,24 +93,43 @@ for ($index = 1; $index -le $Runs; $index++) {
     $runExit = $LASTEXITCODE
     if (-not (Test-Path -LiteralPath $artifactPath)) {
         $executionOk = $false
-        $measurements += @{ run = $index; exit_code = $runExit; artifact_missing = $true; host = $hostSample }
+        $measurement = @{ run = $index; exit_code = $runExit; artifact_missing = $true; host = $hostSample }
+        if ($SaveState) {
+            $measurement.final_state = $finalStatePath
+            if (Test-Path -LiteralPath $finalStatePath -PathType Leaf) {
+                $measurement.final_state_sha256 = (Get-FileHash -LiteralPath $finalStatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
+        $measurements += $measurement
         break
     }
     $artifact = Get-Content -LiteralPath $artifactPath -Raw | ConvertFrom-Json
     $ok = $runExit -eq 0 -and $artifact.run.completed_frames -eq $Frames -and
         $artifact.run.stop_reason -eq 'completed' -and
         $artifact.run.unsupported_instructions -eq 0 -and $artifact.run.fetch_failures -eq 0
+    $finalStateHash = $null
+    if ($SaveState) {
+        if (Test-Path -LiteralPath $finalStatePath -PathType Leaf) {
+            $finalStateHash = (Get-FileHash -LiteralPath $finalStatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        } else {
+            $ok = $false
+        }
+    }
     $executionOk = $executionOk -and $ok
-    $identity = @($artifact.engine, $artifact.rom.sha256, $artifact.run,
-        $artifact.video, $artifact.audio, $artifact.state) | ConvertTo-Json -Depth 10 -Compress
+    $identityParts = @($artifact.engine, $artifact.rom.sha256, $artifact.run,
+        $artifact.video, $artifact.audio, $artifact.state)
+    if ($SaveState) { $identityParts += $finalStateHash }
+    $identity = $identityParts | ConvertTo-Json -Depth 10 -Compress
     if ($null -eq $reference) { $reference = $identity }
     else {
         $repeatComparisons++
         if ($identity -cne $reference) { $deterministic = $false }
     }
-    $measurements += @{ run = $index; exit_code = $runExit; execution_ok = $ok;
+    $measurement = @{ run = $index; exit_code = $runExit; execution_ok = $ok;
         performance = $artifact.performance; audio_underruns = $artifact.audio.underruns;
         host = $hostSample; artifact = $artifactPath }
+    if ($SaveState) { $measurement.final_state = $finalStatePath; $measurement.final_state_sha256 = $finalStateHash }
+    $measurements += $measurement
     if (-not $ok) { break }
 }
 $targetMet = $executionOk -and $deterministic -and $repeatComparisons -gt 0 -and
@@ -103,6 +145,11 @@ $summary = @{ schema_version = 1; rom_sha256 = (Get-FileHash -LiteralPath $RomPa
     repeat_comparisons = $repeatComparisons; target_fps = $TargetFps; headless_target_met = $targetMet;
     executable = $ExePath; executable_sha256 = $exeSha256;
     input_script = $inputSource; input_sha256 = $inputSha256; measurements = $measurements }
+if ($stateSource) {
+    $summary.initial_state = $stateSource
+    $summary.initial_state_copy = $LoadState
+    $summary.initial_state_sha256 = $stateSha256
+}
 $summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'summary.json') -Encoding utf8
 Write-Output "ROM experiment: execution_ok=$executionOk repeat_comparisons=$repeatComparisons headless_target_met=$targetMet"
 Write-Output "Evidence: $OutputDirectory"
