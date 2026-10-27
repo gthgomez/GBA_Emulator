@@ -154,6 +154,9 @@ color layout (red in bits 0–4), preserving framebuffer hashes in that layout.
 
 For repeated local scripted runs with resource samples, input/binary provenance
 and determinism checks, use `tools/run-rom-playthrough.ps1 -RomPath <path>`.
+Add `-LoadState <checkpoint>` to repeat from a saved state and `-SaveState` to
+retain a final state per run. The helper copies the starting state and records
+SHA-256 hashes; keep its local output private because states contain game data.
 See [the Emerald campaign](emerald-performance-campaign.md) for the measurement
 protocol and current results. A headless timing result does not verify SDL
 presentation or audio smoothness.

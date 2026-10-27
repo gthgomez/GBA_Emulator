@@ -722,12 +722,14 @@ unexercised translation units. Do not suppress profile mismatch warnings or
 assume untrained paths are optimized correctly.
 
 Measure a separate workload after building, for example with
-`tools/run-rom-playthrough.ps1 -RomPath $rom -ExePath $exe -Frames 1200 -Runs 2`.
-That helper starts at boot; it does not resume `$checkpoint`. For a checkpoint
-comparison, pass `--load-state $checkpoint` to the headless executable, capture
-artifacts for both builds, and compare completion, run, video, audio and final
-state identities before comparing FPS and frame times. Headless throughput is
-not a substitute for a real desktop audio and presentation soak. On the tested
+`tools/run-rom-playthrough.ps1 -RomPath $rom -ExePath $exe -LoadState $checkpoint -SaveState -Frames 1200 -Runs 2`.
+The helper copies the initial checkpoint into its new local output directory,
+records its SHA-256, and writes a final state and SHA-256 for each repetition.
+Those state files can contain ROM and cartridge-save data; keep the output
+private. For a comparison between builds, use the same checkpoint and input
+script, and compare completion, run, video, audio, final-state and saved-file
+identities before comparing FPS and frame times. Headless throughput is not a
+substitute for a real desktop audio and presentation soak. On the tested
 MinGW toolchain, linking also required process-local `TMP` and `TEMP` pointing
 to an existing writable path with forward slashes; restore those variables
 after the build if changing them in a persistent shell.
@@ -735,3 +737,19 @@ after the build if changing them in a persistent shell.
 The recipe above was assembled from the commands used for the local experiment;
 its standalone form has only been syntax-checked and checked for missing-input
 refusal. A complete fresh-directory replay of the recipe remains to be run.
+
+### Repeatable checkpoint experiments
+
+The local experiment helper accepts `-LoadState` to copy a starting checkpoint
+into a new output directory and record its SHA-256. `-SaveState` requests a
+separate final state and hash for each run; repeated runs compare those hashes
+alongside the existing run, video, audio and machine-state identities. A failed
+run remains a failed run even if it produced a partial state. These local state
+files can contain ROM and cartridge-save data and must not be committed.
+
+VERIFIED: a generated synthetic-ROM check exercised repeated checkpoint replay,
+saved-file hash matching against a direct run, the unchanged boot-only summary,
+missing and corrupt checkpoints, a different ROM, and preservation of an
+existing output directory. The 33 core verifiers and benchmark checksum suite
+also passed; the optional ROM video smoke was not included. A real-ROM replay
+through this updated helper remains to be run when host memory permits.

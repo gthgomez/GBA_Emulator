@@ -19,6 +19,8 @@ external/test-suites/
 *.gb
 *.gbc
 *.sav
+*.state
+*.state[0-9]*
 *.srm
 *.bin
 *.bios
