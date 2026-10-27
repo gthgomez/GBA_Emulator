@@ -787,6 +787,19 @@ reported 59.70 FPS averaged over the host loop, 59.56 FPS in the last window,
 and zero audio queue-empty proxy events. This single run does not establish
 audible audio quality or sustained smoothness during active gameplay.
 
+OBSERVED: two subsequent 3,600-frame no-input desktop runs from a rival-battle
+checkpoint reported 59.25 and 59.72 FPS average, with zero audio queue-empty
+proxy events. Their external wall times were 61.53 and 60.89 seconds including
+startup. Only the first requested a final window screenshot. The average timer
+currently includes the final save flush and optional screenshot after the loop,
+so the first result also includes capture overhead; these runs do not isolate
+the cause of the difference or measure active-play frame pacing or audibility.
+The desktop host now captures the end time immediately after the frame loop,
+before that cleanup. In a local 120-frame diagnostic with a temporary one-second
+delay, placing the delay inside the measurement yielded 32.24 FPS while placing
+it after the loop end yielded 43.42 FPS. The delay was removed after the probe;
+the ordinary Release build used for it is slower than the profile-guided build.
+
 ### Repeatable checkpoint experiments
 
 The local experiment helper accepts `-LoadState` to copy a starting checkpoint
@@ -860,3 +873,9 @@ steps, 19 exceeded 16.67 ms; individual screenshot-enabled runs ranged from
 77.75 to 93.24 headless FPS, with p95 step times of 11.51–12.50 ms. The latest
 checkpoint, input scripts and screenshots remain local. These measurements do
 not establish smooth presentation or audible audio during active play.
+
+OBSERVED: two further repeated segments advanced through the post-battle
+dialogue and returned to Oldale at frame 61880. All four runs completed with
+matching identities per segment and no reported unsupported instructions,
+fetch failures or engine audio underruns. The screenshot-enabled runs measured
+83.71–92.25 headless FPS, with seven of 3,600 steps exceeding 16.67 ms.
