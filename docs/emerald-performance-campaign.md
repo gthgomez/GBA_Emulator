@@ -614,3 +614,27 @@ instructions, fetch failures or engine audio underruns. The desktop save-type
 and state checks passed, as did the desktop rendering/error smoke using dummy
 SDL drivers. All 33 native core verifiers and the benchmark checksum suite
 passed; the optional ROM video smoke was not included.
+
+### Interactive checkpoint loading and one-minute desktop run
+
+OBSERVED: interactive mode accepted `--load-state` but ignored it. The desktop
+host now uses the existing guarded save-state load path at startup, rejecting a
+missing, corrupt, different-ROM or different-save-type state. A synthetic host
+check failed before the change and passed afterward for valid, missing, corrupt,
+wrong-ROM and wrong-save-type inputs. A ROM is required when this option is
+used. Slot-based F8 loading still uses the same guard.
+
+OBSERVED: a mixed build with profile-guided core code and the checkpoint-loading
+host resumed the post-lab checkpoint in the real desktop host. A 3,600-frame run
+completed in 61.18 seconds of external wall time including startup, reported
+59.68 FPS for its last window, and recorded 10 queue-empty proxy events. In a
+second instrumented run, four such events each had 28 input bytes still queued,
+showing the existing available-output-byte counter is not a literal empty-input
+queue or direct audible-underrun count. These runs used an isolated save
+directory and no scripted input; they do not prove smooth interactive gameplay
+or audible behavior over a full playthrough.
+
+The interactive session summary now also prints average FPS across the host
+loop, in addition to its existing last-window rate. This average excludes ROM
+loading and window/audio initialization; the external wall-clock measurement
+above includes them.
