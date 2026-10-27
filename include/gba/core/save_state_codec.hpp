@@ -41,10 +41,11 @@ struct SaveStateDecodeResult {
 //        ROM/save/type only). No longer decodable.
 //   3  : complete-machine capture; every component serialized through its
 //        own State struct. TimerState::prescaler_remainder dropped.
+//   4  : adds saved outer HLE IRQ frames. Version 3 remains readable.
 class SaveStateCodec {
  public:
   static constexpr std::uint32_t kMagic = 0x53534247;  // GBSS, little-endian.
-  static constexpr std::uint32_t kVersion = 3;
+  static constexpr std::uint32_t kVersion = 4;
 
   [[nodiscard]] static std::vector<std::uint8_t> encode(const CoreSession& session);
   [[nodiscard]] static SaveStateDecodeResult decode_into(

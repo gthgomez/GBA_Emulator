@@ -936,3 +936,26 @@ advancement, 52 to scanline rendering, 49 to Thumb stepping and 27 to 16-bit
 memory reads. Sampling interrupts the process and these counts are not exact
 CPU-time shares or evidence of a speedup; they identify areas for further
 profiling. The local sample and its ROM-derived artifacts are not published.
+
+OBSERVED: after the running-shoes event, a scripted Route 101 segment from frame
+77680 stopped after 348 completed frames with a fetch failure at PC `0x4000`.
+The ordinary Release and profile-guided executables reproduced the same stop
+frame and final machine hash. A separate 348-frame checkpoint was replayed
+successfully, and an instruction trace from it showed a second IRQ entering
+while the first IRQ's handler was still active. The inner handler returned to
+the original interrupted code; that code subsequently popped zero as a return
+address and branched into BIOS space. The scheduler currently stores only one
+HLE IRQ return address and one saved-register set. INFERRED: a nested IRQ can
+overwrite the outer HLE context, causing the premature return. A focused
+regression reproduced the premature return and passed after preserving the
+outer IRQ register, return-address and return-timing state. The new v4 snapshot
+format records nested contexts; the decoder also accepts v3 snapshots, while
+older builds cannot read v4. From the original v3 checkpoint, the corrected
+ordinary Release candidate completed the previously failing 600-frame segment
+twice with matching identities and reached a wild Wurmple encounter. Both runs
+reported zero unsupported instructions, fetch failures and engine audio
+underruns; they measured below 60 FPS. All 35 core verifiers, the benchmark
+checksum suite, the desktop save-type check and the synthetic checkpoint replay
+check passed. Optional ROM video smoke was not included in the core suite.
+The failing checkpoint, script and trace stay local. Independent review and
+broader IRQ timing validation remain necessary.
