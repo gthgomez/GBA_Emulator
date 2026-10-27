@@ -143,6 +143,13 @@ def main():
                                  "--save-directory", interactive_saves, "--load-state", state,
                                  "--quit-after", 4, message="save state loaded")
         assert "fps average" in interactive_result.stderr, interactive_result.stderr
+        assert "presentation intervals" not in interactive_result.stderr
+        timing_result = run("--rom", idle, "--save-type", "sram32k",
+                            "--save-directory", interactive_saves, "--load-state", state,
+                            "--quit-after", 4, "--frame-timing")
+        assert "presentation intervals (count=3," in timing_result.stderr, timing_result.stderr
+        run("--rom", idle, "--headless", "--frames", 1, "--frame-timing",
+            code=2, message="--frame-timing requires play mode")
         interactive_save = interactive_saves / (idle.name + ".sav")
         saved_before_refusals = interactive_save.read_bytes()
         run("--rom", eeprom, "--save-type", "sram32k", "--save-directory", interactive_saves,

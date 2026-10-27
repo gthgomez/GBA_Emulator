@@ -1,4 +1,5 @@
 #include "desktop_app.hpp"
+#include "frame_interval_stats.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -747,6 +748,8 @@ int DesktopApp::run() {
   std::uint64_t perf_frames = 0;
   const auto perf_start = Clock::now();
   auto perf_mark = perf_start;
+  FrameIntervalStats frame_intervals;
+  std::optional<Clock::time_point> previous_present;
 
   while (running_) {
     SDL_Event event;
@@ -755,6 +758,7 @@ int DesktopApp::run() {
     }
 
     if (!session_loaded_) {
+      previous_present.reset();
       // Waiting for the user to pick (or cancel) a ROM in the file dialog.
       SDL_Delay(10);
       continue;
@@ -763,6 +767,7 @@ int DesktopApp::run() {
 
     const bool fast_forward = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_TAB] != 0;
     if (paused_) {
+      previous_present.reset();
       SDL_Delay(10);
       continue;
     }
@@ -787,6 +792,14 @@ int DesktopApp::run() {
     }
     push_audio();
     present_frame();
+    if (options_.frame_timing) {
+      const auto presented = Clock::now();
+      if (previous_present) {
+        frame_intervals.add(std::chrono::duration<double, std::milli>(
+                                presented - *previous_present).count());
+      }
+      previous_present = presented;
+    }
     flush_cartridge_save(false);
     pace_frame(fast_forward);
 
@@ -829,6 +842,13 @@ int DesktopApp::run() {
   std::cerr << "gba-desktop: session ended (" << stats_.frames_presented << " frames, "
             << stats_.host_fps << " fps last window, " << average_fps << " fps average, "
             << stats_.audio_underruns << " audio underruns)\n";
+  if (options_.frame_timing) {
+    std::cerr << "gba-desktop: presentation intervals (count=" << frame_intervals.count()
+              << ", p95_upper_ms=" << frame_intervals.percentile_upper_ms(95)
+              << ", p99_upper_ms=" << frame_intervals.percentile_upper_ms(99)
+              << ", max_ms=" << frame_intervals.maximum_ms()
+              << ", over_25ms=" << frame_intervals.over_25ms() << ")\n";
+  }
   return 0;
 }
 

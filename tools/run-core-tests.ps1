@@ -670,6 +670,12 @@ $coreTests = @(
         )
     },
     @{
+        Name = "desktop_frame_interval_test"
+        Sources = @(
+            "tests\desktop_frame_interval_test.cpp"
+        )
+    },
+    @{
         Name = "desktop_persistence_test"
         Sources = @(
             "tests\desktop_persistence_test.cpp"

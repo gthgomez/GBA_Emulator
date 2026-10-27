@@ -800,6 +800,37 @@ delay, placing the delay inside the measurement yielded 32.24 FPS while placing
 it after the loop end yielded 43.42 FPS. The delay was removed after the probe;
 the ordinary Release build used for it is slower than the profile-guided build.
 
+OBSERVED: a Windows-only local keyboard probe posted arrow key messages to the
+owned desktop window after loading the frame-61880 checkpoint. A first attempt
+without the extended-key flag did not visibly move the character and is not an
+active-input result. With that flag, the character moved and triggered May's
+dialogue. The 1,800-frame session reported 59.67 FPS average, 59.68 FPS in the
+last window and zero audio queue-empty proxy events; most of the session was
+spent at the dialogue. The executable predates the loop-timer correction and
+the reported average includes its final screenshot and save cleanup. The probe
+uses wall-clock key durations, so it is not a frame-exact deterministic replay;
+it does not establish audible quality or smoothness throughout active play.
+An additional 3,600-frame run from the same checkpoint used approximately 20
+seconds of timed movement and dialogue inputs, then continued without input.
+Its final screenshot showed Littleroot Town; the host reported 59.69 FPS average,
+59.56 FPS in the last window and zero audio queue-empty proxy events. This uses
+the same pre-timer-fix executable and includes final cleanup in the average. The
+probe does not save a machine checkpoint, measure frame-time percentiles, or
+verify what the audio sounded like.
+
+OBSERVED: a fresh profile-guided build from commit `9bb6e132e057`, trained on
+boot and the frame-68880 lab checkpoint, completed with four missing-profile
+warnings. Repeating the same 3,600-frame Windows keyboard probe from frame 61880
+with the corrected loop timer reached Littleroot and reported 59.70 FPS average,
+59.36 FPS in the last window and zero audio queue-empty proxy events. Inputs
+were wall-clock timed and the final position differed from the previous run;
+this is not a deterministic replay or a frame-pacing or audibility check.
+Two separate 1,200-frame no-input headless holdout runs from frame 47240 measured
+87.66 and 86.07 FPS, with p95 step times of 11.98 and 12.21 ms and no steps
+over 16.67 ms. They matched each other and the earlier build's saved-state,
+video and audio hashes, with zero reported instruction, fetch or engine-audio
+failures. The two profile builds used different training checkpoints.
+
 ### Repeatable checkpoint experiments
 
 The local experiment helper accepts `-LoadState` to copy a starting checkpoint
@@ -879,3 +910,29 @@ dialogue and returned to Oldale at frame 61880. All four runs completed with
 matching identities per segment and no reported unsupported instructions,
 fetch failures or engine audio underruns. The screenshot-enabled runs measured
 83.71–92.25 headless FPS, with seven of 3,600 steps exceeding 16.67 ms.
+
+OBSERVED: four more repeated profile-guided segments returned to Littleroot,
+entered Birch's lab, and reached the Poké Ball award at frame 68880. All eight
+runs completed with matching identities per segment and no reported unsupported
+instructions, fetch failures or engine audio underruns. Screenshot-enabled
+headless runs measured 83.66–88.02 FPS, with p95 step times of 12.01–13.32 ms
+and 49 of 14,000 steps above 16.67 ms. These runs used the earlier executable
+before the desktop FPS timer correction; its core includes the renderer fixes.
+The checkpoint and replay inputs remain local.
+
+OBSERVED: seven repeated segments using the profile-guided build at commit
+`9bb6e132e057` continued from frame 68880 to frame 76080, left the lab and
+reached the running-shoes event. All pairs matched their replay identities and
+reported no unsupported instructions, fetch failures or engine audio underruns.
+The screenshot-enabled runs measured 82.41–88.83 headless FPS, with p95 step
+times of 12.08–13.31 ms; 68 of 14,400 steps exceeded 16.67 ms. Repeated A
+presses re-engaged May's dialogue before a single confirmation and movement
+exited the lab. The checkpoint and input scripts stay local.
+
+OBSERVED: a separate 600-frame no-input sample at frame 76080 completed on the
+same build with zero reported instruction, fetch or engine-audio failures. Of
+432 sampled instruction locations, 74 mapped to frame stepping, 73 to device
+advancement, 52 to scanline rendering, 49 to Thumb stepping and 27 to 16-bit
+memory reads. Sampling interrupts the process and these counts are not exact
+CPU-time shares or evidence of a speedup; they identify areas for further
+profiling. The local sample and its ROM-derived artifacts are not published.
