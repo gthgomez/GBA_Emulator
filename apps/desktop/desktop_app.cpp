@@ -813,6 +813,7 @@ int DesktopApp::run() {
     }
   }
 
+  const auto perf_end = Clock::now();
   if (session_loaded_) {
     flush_cartridge_save(true);
   }
@@ -820,7 +821,7 @@ int DesktopApp::run() {
     return 3;
   }
   const double total =
-      std::chrono::duration<double>(Clock::now() - perf_start).count();
+      std::chrono::duration<double>(perf_end - perf_start).count();
   stats_.avg_frame_ms =
       total * 1000.0 / static_cast<double>(stats_.frames_presented ? stats_.frames_presented : 1);
   const double average_fps =
