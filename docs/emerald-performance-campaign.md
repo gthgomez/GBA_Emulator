@@ -527,3 +527,40 @@ audio and final-state artifacts matched. The final LTO candidate measured
 runs do not establish a precise speedup or interactive smoothness. All 33 core
 verifiers and the benchmark checksum suite passed; optional ROM video smoke was
 not included. LTO remains a locally tested configuration, not a default.
+
+### Prescaler division experiment and later lab checkpoint
+
+OBSERVED: an LTO profile sampled 723 instruction locations over a completed
+600-frame lab checkpoint run. Timer ticking accounted for 38 samples; samples
+are not exact CPU-time shares. The Release binary performed integer division in
+the timer prescaler path. All four divisors are powers of two, allowing the same
+unsigned phase calculation to use a mask and shift.
+
+OBSERVED: in alternating 600-frame battle-checkpoint runs, the LTO baseline
+measured 50.12/49.79 FPS and the isolated prescaler candidate 52.43/52.58 FPS.
+In alternating lab-checkpoint runs, baseline measured 50.88/51.95 FPS and the
+candidate 55.20/55.26 FPS. Run, video, audio and final-state artifacts matched
+within each comparison; all runs completed with zero reported unsupported
+instructions, fetch failures and engine audio underruns. These short single-host
+headless measurements do not establish 60 FPS or interactive smoothness.
+
+VERIFIED: a timer regression compares all four prescalers, deferred ticks,
+cycle boundaries and scheduler cycle counts crossing 32 bits against the prior
+division-based arithmetic. The regression passed against both implementations.
+Existing timer and integration tests remain necessary to cover overflow, IRQ and
+cascade behavior.
+
+OBSERVED: the LTO playthrough continued from the first battle into Birch's lab,
+received Torchic and reached frame 42040. Four further 420- or 800-frame segments
+completed with zero reported unsupported instructions, fetch failures and
+engine audio underruns, at 47.67 to 52.07 headless FPS. Screenshots, input
+scripts and the checkpoint remain under ignored `build/`.
+
+OBSERVED: the complete rebuilt LTO candidate did not reproduce the isolated
+lab gain. Alternating 600-frame lab runs measured 55.01/55.20 FPS for the
+preserved baseline and 54.94/54.56 FPS for the rebuilt candidate, with matching
+run, video, audio and state artifacts and no reported unsupported instructions,
+fetch failures or engine audio underruns. Host load and build/link layout varied
+between experiments. The full candidate passed all 33 core verifiers and the
+benchmark checksum suite, but the speedup was not repeatable; the timer change
+and its experimental test were removed from the proposed core.
