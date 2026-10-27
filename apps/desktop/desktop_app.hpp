@@ -26,6 +26,7 @@ namespace gba::desktop {
 
 struct HostOptions {
   std::string rom_path;
+  std::string initial_state_path;
   // When empty, cartridge saves live next to the ROM as <rom>.sav.
   std::string save_directory;
   // Applies only to the initial ROM file; other ROMs use automatic detection.
@@ -109,6 +110,7 @@ class DesktopApp {
   bool flush_cartridge_save(bool force);
   bool write_save_state(int slot);
   bool read_save_state(int slot);
+  bool read_save_state_path(const std::string& path, const std::string& label);
   void reset_runtime();
   void open_rom_dialog();
 

@@ -510,9 +510,13 @@ bool DesktopApp::read_save_state(int slot) {
     return false;
   }
   const std::string path = persistence::save_state_path(save_prefix_, slot);
+  return read_save_state_path(path, "save state " + std::to_string(slot));
+}
+
+bool DesktopApp::read_save_state_path(const std::string& path, const std::string& label) {
   const auto blob = persistence::read_binary_file(path);
   if (blob.empty()) {
-    std::cerr << "gba-desktop: no save state " << slot << " at " << path << "\n";
+    std::cerr << "gba-desktop: cannot read " << label << " at " << path << "\n";
     return false;
   }
   // The core codec restores whatever ROM its blob carries, so the host also
@@ -524,17 +528,17 @@ bool DesktopApp::read_save_state(int slot) {
   const SaveStateLoadStatus status =
       load_save_state_for_session(runtime_.session(), blob, *scratch);
   if (status == SaveStateLoadStatus::decode_failed) {
-    std::cerr << "gba-desktop: save state " << slot
+    std::cerr << "gba-desktop: " << label
               << " failed to load (corrupt, unsupported, or mismatched)\n";
     return false;
   }
   if (status == SaveStateLoadStatus::wrong_rom) {
-    std::cerr << "gba-desktop: save state " << slot
+    std::cerr << "gba-desktop: " << label
               << " belongs to a different ROM; refusing to load\n";
     return false;
   }
   if (status == SaveStateLoadStatus::wrong_save_type) {
-    std::cerr << "gba-desktop: save state " << slot
+    std::cerr << "gba-desktop: " << label
               << " uses a different save type; refusing to load\n";
     return false;
   }
@@ -546,7 +550,7 @@ bool DesktopApp::read_save_state(int slot) {
   sync_input_mask();
   clear_queued_audio();
   next_frame_deadline_ = Clock::now();
-  std::cerr << "gba-desktop: save state " << slot << " loaded\n";
+  std::cerr << "gba-desktop: " << label << " loaded\n";
   return true;
 }
 
@@ -731,6 +735,10 @@ int DesktopApp::run() {
   } else {
     std::cerr << "gba-desktop: no ROM specified; opening file dialog\n";
   }
+  if (!options_.initial_state_path.empty() &&
+      !read_save_state_path(options_.initial_state_path, "save state")) {
+    return 3;
+  }
   init_audio();
   if (!session_loaded_) {
     open_rom_dialog();
@@ -815,9 +823,11 @@ int DesktopApp::run() {
       std::chrono::duration<double>(Clock::now() - perf_start).count();
   stats_.avg_frame_ms =
       total * 1000.0 / static_cast<double>(stats_.frames_presented ? stats_.frames_presented : 1);
+  const double average_fps =
+      total > 0.0 ? static_cast<double>(stats_.frames_presented) / total : 0.0;
   std::cerr << "gba-desktop: session ended (" << stats_.frames_presented << " frames, "
-            << stats_.host_fps << " fps last window, " << stats_.audio_underruns
-            << " audio underruns)\n";
+            << stats_.host_fps << " fps last window, " << average_fps << " fps average, "
+            << stats_.audio_underruns << " audio underruns)\n";
   return 0;
 }
 
