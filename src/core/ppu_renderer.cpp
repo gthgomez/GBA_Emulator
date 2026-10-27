@@ -476,9 +476,11 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     const bool effects_allowed = (layer_mask & kWindowEffectsBit) != 0;
     const bool first_target =
         (control.bldcnt & static_cast<std::uint16_t>(1U << best.layer_bit)) != 0;
+    const bool second_target =
+        (control.bldcnt & static_cast<std::uint16_t>(1U << (second.layer_bit + 8U))) != 0;
     const bool forced_obj_alpha = best.layer_bit == 4 && winner_is_semi_transparent;
     const bool do_alpha =
-        effects_allowed && (forced_obj_alpha ||
+        effects_allowed && second_target && (forced_obj_alpha ||
                             (effect == kEffectAlpha && first_target));
     const bool do_brightness =
         effects_allowed && !do_alpha &&

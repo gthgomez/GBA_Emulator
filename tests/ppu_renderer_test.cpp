@@ -240,7 +240,7 @@ int main() {
   gba::core::PpuRenderControl alpha_control =
       control(static_cast<std::uint16_t>(kBg0Enable),
               static_cast<std::uint16_t>(8U << 8));
-  alpha_control.bldcnt = 0x0041;
+  alpha_control.bldcnt = 0x2041;
   alpha_control.bldalpha = static_cast<std::uint16_t>((8U << 8) | 8U);
   [[maybe_unused]] const gba::core::PpuRenderStats alpha_stats =
       renderer.render_scanline(memory, alpha_control, 0);
@@ -250,6 +250,11 @@ int main() {
          "alpha blend mixes BG0 green with the backdrop at EVA=EVB=8");
   expect(renderer.pixel(1, 0) == kBackdrop,
          "non-first-target pixels skip alpha blending");
+  alpha_control.bldcnt = 0x0041;
+  [[maybe_unused]] const auto no_alpha_target_stats =
+      renderer.render_scanline(memory, alpha_control, 0);
+  expect(renderer.pixel(0, 0) == kBgGreen,
+         "alpha first target stays opaque when backdrop is not a second target");
 
   expect(memory.write16(0x07000000, static_cast<std::uint16_t>(0x0400U)),
          "seed semi-transparent OBJ attr0");
@@ -262,12 +267,19 @@ int main() {
   gba::core::PpuRenderControl semi_control =
       control(static_cast<std::uint16_t>(kObjEnable), 0);
   semi_control.bldalpha = static_cast<std::uint16_t>(12U | (4U << 8));
+  [[maybe_unused]] const auto opaque_semi_stats =
+      renderer.render_scanline(memory, semi_control, 0);
+  expect(renderer.pixel(0, 0) == kObjRed,
+         "semi-transparent OBJ remains opaque without a second target");
+  expect(opaque_semi_stats.blend_pixels == 0,
+         "semi-transparent OBJ does not blend without a second target");
+  semi_control.bldcnt = 0x2000;
   const gba::core::PpuRenderStats semi_stats =
       renderer.render_scanline(memory, semi_control, 0);
   expect(semi_stats.blend_pixels == 8,
          "semi-transparent OBJ forces alpha only where it draws");
   expect(renderer.pixel(0, 0) == 0x6044,
-         "semi-transparent OBJ blends against backdrop without BLDCNT gating");
+         "semi-transparent OBJ blends against selected backdrop");
 
   gba::core::PpuRenderControl affine_bg_control =
       control(static_cast<std::uint16_t>(2U | 0x0400U), 0);

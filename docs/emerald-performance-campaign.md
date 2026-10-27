@@ -418,6 +418,33 @@ offset; they do not establish the cause or prove general rendering accuracy.
 No scripted input occurs during these first 390 frames. Reference replay and
 images remain in ignored `build/reference-mgba/`.
 
+OBSERVED: a later comparison of the existing corrected candidate and reference
+captures found 1,121, 1,125, 1,169, 4,903, 346, 0 and 76 differing pixels at
+frames 420, 450, 480, 510, 540, 570 and 600 respectively, after converting
+both images to five-bit color channels. The reference captures at frames 540
+and 570 are identical, so the exact match at frame 570 does not show that the
+timing offset has disappeared. These are 30-frame candidate samples, not a
+continuous comparison. At frame 540 the
+346 differing pixels are confined to x=85–151, y=117–141; at frame 600 the 76
+differing pixels span x=45–203, y=61–93. Coordinates are zero-based. The first
+scripted button event is at zero-based frame 600, after these captures.
+
+OBSERVED: an every-frame reference capture showed that at candidate frame 420
+the central Game Freak symbol was black rather than blue even at reference
+frame 414. The two frames had byte-identical VRAM, palette and OAM dumps, and
+matching sampled display and blend registers. The renderer applied alpha to a
+semi-transparent OBJ even with no selected second target; BLDCNT and BLDALPHA
+were zero. GBATEK describes displaying the top pixel normally when there is no
+second target: https://mgba-emu.github.io/gbatek/.
+
+VERIFIED: a focused test for an unselected second target failed before the
+renderer change and passed afterward; selected backdrop blending remains
+covered. A rebuilt ordinary Release candidate matched the reference exactly
+after five-bit conversion at candidate frames 420 and 450 against reference
+frames 414 and 444 respectively. Candidate frames 480 and 510 still differed
+by 66 and 133 pixels from reference frames 474 and 504. This is a sampled
+comparison, not a complete intro fidelity result.
+
 OBSERVED: the affine candidate continued from the prior frame-25800 checkpoint
 into the neighbor's house, completed the downstairs conversation and reached
 the upstairs room by frame 28320. Nine resumed segments completed by frame 28620
@@ -751,5 +778,26 @@ VERIFIED: a generated synthetic-ROM check exercised repeated checkpoint replay,
 saved-file hash matching against a direct run, the unchanged boot-only summary,
 missing and corrupt checkpoints, a different ROM, and preservation of an
 existing output directory. The 33 core verifiers and benchmark checksum suite
-also passed; the optional ROM video smoke was not included. A real-ROM replay
-through this updated helper remains to be run when host memory permits.
+also passed; the optional ROM video smoke was not included.
+
+OBSERVED: two 120-frame, no-input real-ROM replays from the frame-47240
+checkpoint completed through the updated helper with matching run, video,
+audio, machine-state and saved-file identities. Both reported zero unsupported
+instructions, fetch failures and engine audio underruns. The profile-guided
+executable reports commit `18bc8702dcc1`; it is not the current helper commit.
+The runs measured 63.62 and 56.89 FPS, with 22 and 71 frames exceeding 16.67 ms
+and p95 frame times of 19.46 and 22.45 ms. Host samples during the runs recorded
+96% and 97% system commit. This short, pressured headless replay verifies the
+checkpoint helper with this ROM but neither advances the story nor establishes
+smooth playback or a reliable performance comparison. Artifacts remain local.
+
+OBSERVED: after memory pressure eased, five scripted segments continued from
+frame 47240 to frame 48940, reaching the route north of town. Each segment was
+run twice from a frozen starting state; repeat identities matched and each run
+completed. The profile-guided executable used here predates the second-target
+renderer correction described above. Across the ten 300- or 400-frame runs,
+headless throughput ranged from 69.31 to 81.99 FPS and 13 of 3,400 frame steps
+exceeded 16.67 ms. All reported zero unsupported instructions, fetch failures
+and engine audio underruns. The local helper output retains input scripts,
+checkpoint hashes, artifacts and screenshots for each segment. These short
+headless runs do not verify sustained interactive presentation or audible audio.
