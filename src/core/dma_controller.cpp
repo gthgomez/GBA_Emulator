@@ -561,8 +561,9 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
                                                const WaitStateControl* waitcnt,
                                                std::uint32_t& units_transferred,
                                                std::uint32_t& bus_cycles) {
-  if (!transfer_32bit(channel) || source_control(channel) == DmaAddressControl::increment_reload ||
-      destination_control(channel) != DmaAddressControl::fixed) {
+  // Sound FIFO requests use a four-word burst and keep the FIFO destination
+  // fixed regardless of the programmed transfer-width and destination modes.
+  if (source_control(channel) == DmaAddressControl::increment_reload) {
     return false;
   }
 

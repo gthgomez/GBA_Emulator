@@ -989,3 +989,51 @@ units. Two 600-frame headless replays of the previously failing IRQ segment
 completed with matching saved-state, video and audio hashes against the prior
 build. They measured 89.59 and 90.08 FPS; those headless numbers do not measure
 desktop pacing.
+
+### Sound FIFO DMA investigation
+
+OBSERVED: a local PCM capture from a saved route scene contained nonzero
+samples only 0.97% of the time; separate lab and battle captures showed about
+1% nonzero samples. The route capture's sample count and audio hash matched the
+headless runner. A separate no-input boot capture covering frames 600–1199
+was 0.99% nonzero, while the mGBA libretro reference was 98.07% nonzero over
+the same nominal frame interval. The reference emitted 65,536 samples/second
+and this core emits 32,768; frame phase and amplitude also differ, so this is
+not a sample-aligned waveform comparison. Captures remain local.
+
+OBSERVED: the saved scene configured both sound DMA channels with control
+`0xB600`, which programs an incrementing destination. The core rejected such
+FIFO requests because it required fixed destination mode, leaving the FIFO
+empty. The [mGBA sound DMA implementation](https://github.com/mgba-emu/mgba/blob/master/src/gba/audio.c)
+forces the transfer width and destination stepping for FIFO requests. The core
+now accepts the programmed width and destination fields and uses its existing
+four-word fixed-FIFO transfer; unsupported source increment/reload remains
+unchanged.
+
+VERIFIED: direct DMA regressions for both sound channels, four destination
+modes and two programmed widths, plus a scheduler timer/refill regression,
+failed against the old implementation and passed with the change. All 35 core
+verifiers and the benchmark checksum suite passed; optional ROM video smoke
+was not included. A corrected local route capture was 93.63% nonzero and its
+hash matched the corrected headless runner. The corrected boot capture was
+97.00% nonzero. These measurements show the previous near-silence was reduced;
+they do not establish hardware-accurate waveform or audible quality.
+
+OBSERVED: a fresh profile-guided build with this correction reported four
+missing-profile translation units. Two 1,800-frame battle replays matched
+within the pair, completed at 85.55 and 81.14 headless FPS with p95 steps of
+12.24 and 12.32 ms, and returned to the victory screen. Two 3,600-frame
+replays from a later checkpoint also matched and completed at 88.36 and 88.82
+headless FPS. These are single-host headless measurements.
+
+OBSERVED: the first 3,600-frame desktop attempt stopped early on an unsupported
+instruction at `0x03002158`. The wall-clock input sequence was not recorded
+frame by frame, and two subsequent desktop runs did not reproduce the stop.
+One repeat with eight save-state checkpoints finished at 59.7247 FPS average,
+recorded eight presentation intervals over 25 ms (maximum 69.41 ms), and one
+audio queue-empty proxy event; saving states perturbs pacing. A second repeat
+without checkpoint writes finished at 59.7247 FPS average, with 18 ms p95 and
+19 ms p99 interval upper bounds, no interval over 25 ms (maximum 24.25 ms),
+and zero queue-empty proxy events. It used directional and Z-key (GBA B)
+messages for about 46 seconds, then idle time. The original unsupported stop,
+audio fidelity, audible output and longer active play remain unresolved.

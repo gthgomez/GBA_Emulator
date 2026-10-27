@@ -337,6 +337,39 @@ int main() {
   expect(dma.enabled(1), "repeat FIFO DMA stays enabled for next refill");
   dma.write_control(1, 0);
 
+  // Sound FIFO requests force a four-word, fixed-destination transfer even
+  // when the programmed width and destination-control fields differ.
+  for (const std::uint16_t destination_bits : {0x0000U, 0x0020U, 0x0040U, 0x0060U}) {
+    for (const std::uint16_t width_bits : {0x0000U, 0x0400U}) {
+      for (const std::size_t channel : {1U, 2U}) {
+        DmaController sound_dma;
+        gba::core::Apu sound_apu;
+        gba::core::InterruptController sound_interrupts;
+        sound_apu.write_soundcnt_x(0x0080);
+        sound_apu.write_soundcnt_h(0x3304);
+        const auto fifo = channel == 1 ? gba::core::DirectSoundChannel::a
+                                       : gba::core::DirectSoundChannel::b;
+        const auto trigger = channel == 1 ? gba::core::DmaTrigger::fifo_a
+                                          : gba::core::DmaTrigger::fifo_b;
+        sound_dma.write_source(channel, 0x02000100);
+        sound_dma.write_destination(channel, channel == 1 ? 0x040000A0 : 0x040000A4);
+        sound_dma.write_word_count(channel, 4);
+        sound_dma.write_control(
+            channel, static_cast<std::uint16_t>(0xB200U | destination_bits | width_bits));
+        const auto burst = sound_dma.run_sound_fifo(trigger, memory, sound_apu, sound_interrupts);
+        expect(!burst.unsupported_request && burst.channels_executed == 1 &&
+                   burst.units_transferred == 4 && burst.bus_cycles == 28,
+               "FIFO DMA forces word width and fixed destination");
+        expect(sound_apu.fifo_size(fifo) == 16, "forced FIFO burst writes sixteen bytes");
+        const auto popped = sound_apu.timer_overflow(0);
+        const auto sample = channel == 1 ? popped.fifo_a : popped.fifo_b;
+        expect(sample.produced && sample.sample == 1, "forced FIFO burst preserves byte order");
+        expect(sound_dma.save_state().channels.at(channel).current_source == 0x02000110,
+               "forced FIFO burst advances source by four words");
+      }
+    }
+  }
+
   // M3 regression: the completion IRQ fires exactly once per full block.
   // COUNT=16 words at four words per burst means four bursts, one IRQ.
   interrupts.reset();
