@@ -45,6 +45,37 @@ int main() {
          "RegisterRamReset clears EWRAM");
   expect(session.memory().read8(0x08000000).has_value(), "ROM still mapped after reset");
 
+  // Some games call the BIOS on a zero-filled header. A zero output size
+  // completes without touching the destination, even if the type byte is zero.
+  for (const std::uint32_t swi_number : {0x11U, 0x12U}) {
+    CoreSession lz;
+    std::vector<std::uint8_t> lz_rom(16);
+    write_word(lz_rom, 0, 0xEF000000U | (swi_number << 16));
+    expect(lz.memory().load_game_pak_rom(lz_rom), "zero-length LZ77 ROM loads");
+    lz.configure_for_game_boot();
+    constexpr std::uint32_t source = 0x02000000U;
+    const std::uint32_t destination = swi_number == 0x11U ? 0x02000100U : 0x06000000U;
+    expect(lz.memory().write32(source, 0), "zero-length LZ77 header");
+    expect(lz.memory().write16(destination, 0xA55A), "seed LZ77 destination");
+    lz.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+    lz.cpu().set_register(0, source);
+    lz.cpu().set_register(1, destination);
+    const auto result = lz.step();
+    expect(result.step.has_value() && result.step->cpu_step.status == ExecuteStatus::executed,
+           "zero-length LZ77 completes without a signature");
+    expect(lz.memory().read16(destination).value_or(0) == 0xA55A,
+           "zero-length LZ77 leaves destination unchanged");
+    expect(lz.cpu().register_value(Arm7tdmi::kPc) == kProgramBase + 4,
+           "zero-length LZ77 advances past SWI");
+    expect(lz.memory().write32(source, 0x00000100U), "invalid nonempty LZ77 header");
+    lz.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+    const auto invalid = lz.step();
+    expect(invalid.step.has_value() && invalid.step->cpu_step.status == ExecuteStatus::unsupported,
+           "nonempty LZ77 still requires its signature");
+    expect(lz.memory().read16(destination).value_or(0) == 0xA55A,
+           "rejected LZ77 leaves destination unchanged");
+  }
+
   {
     CoreSession affine;
     std::vector<std::uint8_t> affine_rom(16);

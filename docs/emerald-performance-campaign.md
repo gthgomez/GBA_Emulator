@@ -403,3 +403,106 @@ and writes 16-byte results. The existing floating-point trigonometry has not bee
 established as bit-exact to the BIOS lookup table. The reference implementation
 is available at https://github.com/mgba-emu/mgba/blob/master/src/gba/bios.c.
 VERIFIED: the affine candidate passed all 33 native core verifiers and the core benchmark checksum suite. The optional ROM video smoke was not included in the core test invocation.
+
+### Startup timing, neighbor's house, and CPU register access
+
+OBSERVED: after the affine corrections, the first same-frame difference in a
+frame-by-frame reference comparison occurs at frame 211. The introduction
+transition begins at candidate frame 217 and matches the reference at frame 211;
+candidate frames 217 through 245 each had a matching reference frame six or
+seven frames earlier after five-bit channel quantization. Candidate frames 270,
+300, 330, 360 and 390 likewise had exact matches within that offset. At frame
+360, the two runs had different blend coefficients and moving-sprite attributes.
+These observations explain the sampled visual differences as an animation phase
+offset; they do not establish the cause or prove general rendering accuracy.
+No scripted input occurs during these first 390 frames. Reference replay and
+images remain in ignored `build/reference-mgba/`.
+
+OBSERVED: the affine candidate continued from the prior frame-25800 checkpoint
+into the neighbor's house, completed the downstairs conversation and reached
+the upstairs room by frame 28320. Nine resumed segments completed by frame 28620
+with zero reported unsupported instructions, fetch failures or engine audio
+underruns. The 300- or 420-frame segments measured 42.38 to 45.74 headless FPS;
+these are not interactive display or audible playback measurements.
+
+OBSERVED: a process-local PC sampler collected 871 samples from a 600-frame
+upstairs checkpoint run. The most sampled functions were Thumb scheduling (148),
+device advancement (105), and PC dispatch (74); register access accounted for
+19 samples. These samples can be biased and are not exact CPU-time shares.
+An isolated inline register-access experiment preserved the existing exported
+accessor and bounds behavior. In alternating 600-frame upstairs runs, baseline
+throughput was 44.05/44.61 FPS and the experiment 45.78/45.82 FPS. Alternating
+boot runs measured 47.82/46.96 FPS baseline and 48.71/49.16 FPS experimental.
+Run, video, audio and final-state artifacts matched within each comparison.
+Host load varied, samples are short, and the measurements do not establish
+60 FPS or interactive smoothness.
+The complete Release implementation was then compared in another alternating
+upstairs run: baseline 42.15/41.29 FPS and candidate 41.89/42.13 FPS. All four
+runs completed with matching run, video, audio and state artifacts and no
+reported unsupported instructions, fetch failures or engine audio underruns.
+The ranges overlap under increased host load, so a useful gain was not
+established; the accessor change was removed from the proposed core. The
+candidate passed all 33 local core verifiers and the benchmark checksum suite
+before it was removed. The optional ROM video smoke was not included.
+
+### First battle: zero-length LZ77 BIOS call
+
+OBSERVED: the playthrough met May, returned to Route 101, and selected Torchic.
+The initial battle attempt stopped after 283 of 800 requested frames with one
+unsupported instruction at Thumb PC `0x082E7090` (SWI `0x11`), with no fetch
+failure. Its source pointer referenced a four-byte zero header and destination
+was in EWRAM. The previous segments from frame 28620 through frame 34800 all
+completed with zero reported unsupported instructions, fetch failures and
+engine audio underruns; their headless FPS ranged from 38.77 to 44.20.
+
+DOCUMENTED: the [Pokémon Emerald decompilation](https://github.com/pret/pokeemerald/blob/master/src/trainer_pokemon_sprites.c)
+describes the game's call on uncompressed trainer back graphics and notes that
+its zero header makes the decompression do nothing. The [mGBA HLE implementation](https://github.com/mgba-emu/mgba/blob/master/src/gba/bios.c)
+reads the length independently of the signature and performs no decompression
+when that length is zero.
+
+VERIFIED: a synthetic ARM SWI regression for both WRAM and VRAM variants failed
+on the old implementation and passes with zero-length inputs treated as no-ops.
+It checks destination preservation, PC advancement, and continued rejection of
+nonempty streams with an invalid signature. Replaying the same starter input
+from the frame-34800 checkpoint completed all 800 frames and reached the Torchic
+battle screen, with zero reported unsupported instructions, fetch failures and
+engine audio underruns. It measured 40.54 headless FPS, with 26.41 ms p95 step
+latency. This is not an interactive presentation or audible-playback measurement.
+
+VERIFIED: the fix passed all 33 local core verifiers and the benchmark checksum
+suite. The optional ROM video smoke was not included. The playthrough continued
+through the battle and returned to the route by frame 38420. Five consecutive
+segments from frame 34800 to 38420 completed with zero reported unsupported
+instructions, fetch failures and engine audio underruns. Their headless
+throughput was 39.00 to 44.03 FPS, including the battle.
+
+### Release link-time optimization probe
+
+OBSERVED: the same source was built with GCC 12.2 Release `-O3 -DNDEBUG` and a
+second build added `-flto=1` to compilation and linking. In alternating
+600-frame battle-checkpoint runs, the ordinary build measured 40.35/40.48 FPS
+and LTO measured 49.49/49.21 FPS. In alternating boot runs, ordinary Release
+measured 45.80/46.52 FPS and LTO 54.49/54.10 FPS. The run, video, audio and
+final-state identities matched within each comparison, and all runs completed
+without reported unsupported instructions, fetch failures or engine audio
+underruns. These short, single-host headless measurements do not establish 60 FPS
+or smooth interactive presentation. The LTO build is a local experiment, not
+the default build configuration.
+
+For a comparable GCC experiment, configure a separate Release build with
+`-DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -flto=1"` and
+`-DCMAKE_EXE_LINKER_FLAGS="-flto=1"`, alongside the normal generator and SDL3
+prefix settings, and build with one worker. On this Windows host, the linker
+failed with its inherited `C:\Windows\Temp` path; setting process-local `TMP`
+and `TEMP` to an existing writable forward-slash path allowed the link to
+succeed. Other compiler, platform and interactive-host configurations require
+separate validation.
+
+OBSERVED: adding `-march=native` to LTO measured 49.48/48.75 FPS versus
+48.93/49.43 FPS for ordinary LTO in alternating battle-checkpoint runs, with
+matching artifacts. The ranges overlap, so no useful gain was established;
+the host-specific build remains experimental. A separate experiment disabling
+the headless runner's unused fetch trace measured 50.37/50.40 FPS versus
+50.74/50.19 FPS with the existing trace, with matching artifacts. Its ranges
+also overlap, so that change was not added to the core or host.
