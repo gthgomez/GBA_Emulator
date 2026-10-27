@@ -435,10 +435,13 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
 
       if (obj_enabled &&
           (layer_mask & static_cast<std::uint16_t>(1U << 4)) != 0) {
-        for (std::size_t index = active_sprite_count; index-- > 0;) {
+        // Hardware resolves OBJ-to-OBJ priority before mixing the OBJ layer
+        // with backgrounds. Only the lowest-numbered opaque OBJ survives.
+        std::optional<PixelCandidate> obj_candidate;
+        bool obj_semi_transparent = false;
+        for (std::size_t index = 0; index < active_sprite_count; ++index) {
           const SpriteAttributes& sprite = active_sprites.at(index);
-          if (sprite.obj_window || sprite.priority > best.priority ||
-              !column_intersects_sprite(sprite, x)) {
+          if (sprite.obj_window || !column_intersects_sprite(sprite, x)) {
             continue;
           }
           std::uint8_t local_x = static_cast<std::uint8_t>(
@@ -458,13 +461,17 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
           if (!obj_pixel.has_value() || obj_pixel->transparent) {
             continue;
           }
-          const PixelCandidate candidate{
+          obj_candidate = PixelCandidate{
               normalize_color(obj_pixel->color), 4, sprite.priority};
+          obj_semi_transparent = sprite.semi_transparent;
+          break;
+        }
+        if (obj_candidate.has_value()) {
           const std::uint16_t prior_best_priority = best.priority;
-          consider(candidate);
-          if (candidate.priority <= prior_best_priority) {
+          consider(*obj_candidate);
+          if (obj_candidate->priority <= prior_best_priority) {
             ++obj_pixels;
-            winner_is_semi_transparent = sprite.semi_transparent;
+            winner_is_semi_transparent = obj_semi_transparent;
           }
         }
       }
