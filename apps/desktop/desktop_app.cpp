@@ -16,7 +16,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -717,7 +716,11 @@ void DesktopApp::pace_frame(bool fast_forward) {
   next_frame_deadline_ += frame_duration;
   const auto now = Clock::now();
   if (next_frame_deadline_ > now) {
-    std::this_thread::sleep_for(next_frame_deadline_ - now);
+    // Coarse host sleeps can overshoot a frame; SDL's precise wait trades
+    // some CPU for tighter pacing and can still be delayed by scheduling.
+    const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        next_frame_deadline_ - now);
+    SDL_DelayPrecise(static_cast<Uint64>(remaining.count()));
   } else if (now - next_frame_deadline_ > frame_duration * 4) {
     // Fell far behind (slow frame, debugger, resume): resynchronize rather
     // than accumulate an unbounded catch-up burst.

@@ -959,3 +959,33 @@ checksum suite, the desktop save-type check and the synthetic checkpoint replay
 check passed. Optional ROM video smoke was not included in the core suite.
 The failing checkpoint, script and trace stay local. Independent review and
 broader IRQ timing validation remain necessary.
+
+### Desktop presentation pacing
+
+OBSERVED: with the profile-guided IRQ candidate and `--frame-timing`, a
+3,600-frame desktop probe averaged 59.72 FPS but recorded a 28 ms p95 interval
+upper bound and 321 of 3,599 intervals over 25 ms. A no-input repeat also had
+a 28 ms p95 upper bound and 151 of 1,799 intervals over 25 ms. In a separate
+local probe, a requested 5 ms `std::this_thread::sleep_for` had a 15.78 ms
+median; `SDL_DelayPrecise` had a 5.00 ms median. SDL documents that the precise
+wait can busy-wait and can still return late due to scheduling:
+https://wiki.libsdl.org/SDL3/SDL_DelayPrecise.
+
+OBSERVED: in four alternating 600-frame no-input desktop runs from the same
+checkpoint, the prior wait produced 55 intervals over 25 ms in each run and a
+28 ms p95 upper bound; the precise-wait candidate produced zero such intervals
+and an 18 ms p95 upper bound. The builds were retrained separately, so this is
+not a controlled CPU-cost comparison. A separate 3,600-frame probe with about
+20 seconds of timed movement and dialogue reported 59.73 FPS average, 18 ms p95
+and 19 ms p99 upper bounds, a 20.94 ms maximum and no intervals over 25 ms. It
+reported zero audio queue-empty proxy events. Inputs were wall-clock timed;
+presentation-return intervals do not prove physical scanout or audible audio
+quality. The precise wait may increase CPU or power use, especially on other
+hosts; further active gameplay and platform measurements remain necessary.
+The candidate was rebuilt with a fresh profile because the compiler rejected
+the old profile after the source edit; both profiles used the same boot and
+checkpoint training recipe and each reported four unexercised translation
+units. Two 600-frame headless replays of the previously failing IRQ segment
+completed with matching saved-state, video and audio hashes against the prior
+build. They measured 89.59 and 90.08 FPS; those headless numbers do not measure
+desktop pacing.
