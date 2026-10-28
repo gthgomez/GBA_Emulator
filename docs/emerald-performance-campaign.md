@@ -25,9 +25,9 @@ conformance gaps remain relevant even when a game appears to work.
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #54 merged as `7751705dff14`; all four Linux/Windows CI jobs passed final head `aa705c7aaea2` |
-| Current iteration | Candidate corrects scanline rendering, mode-1 affine BG2 and priority ties; correctness checks pass, native smoothness fails and integration is held |
-| Story | Route 104 trainer battle at frame 217,920; Rich Boy Winston's opening screen reached after healing Torchic to 21/29 HP; checkpoints retained |
+| Integration | PR #54 merged as `7751705dff14`; draft PR #55 at `74aab105e364` passes all four Linux/Windows CI jobs and remains held for native acceptance |
+| Current iteration | Raster repairs are committed; BIOS affine quantization follow-up passes local checks/review, with optimized ROM verification pending |
+| Story | Winston defeated at frame 221,340; Torchic reaches level 11 with 23/31 HP through normal level-up; victory-text checkpoint retained |
 | Repeat throughput | Latest two exact 10,800-frame diagnostic replays: 78.36 / 79.24 FPS; 15 / 12 steps over 16.67 ms; every frame's logical instruction counts identical to native |
 | SDL delivery | Event-guard candidate: 10,800 frames at 59.6837 FPS, 23 queue-empty reports, p95/p99 upper bounds 18/18 ms, maximum 30.9679 ms and eight gaps over 25 ms; further optimization pending |
 | Determinism | Both exact-input profiling replays byte-identical to the diagnostic SDL checkpoint; latest 1,200-frame story pair also identical |
@@ -280,6 +280,64 @@ challenge at frame 217,260 and the battle opening at 217,920. The latter two
 paired segments run at 79.46/79.15 and 80.48/80.68 FPS, with identical final
 states, no execution errors/core underruns and no steps over 16.67 ms. These
 are bounded story measurements; the earlier native delivery failures remain.
+
+### Further intro isolation and BIOS affine precision
+
+OBSERVED: the paired story reaches Winston's defeated message at frame
+221,340. Torchic levels from 10 to 11 and increases naturally to 23/31 HP.
+The final 900-frame pair completes at 76.58/78.83 FPS with identical states,
+no execution errors/core underruns and no steps over 16.67 ms. The checkpoint
+still awaits the victory/payout text before free movement resumes.
+
+OBSERVED: a broader private profile trains 3,600 intro frames, 2,400 recorded
+movement frames and 720 battle frames. Separate movement-input ABBA runs give
+80.1314/80.8800/80.7233/80.0379 FPS (retained/broader/broader/retained).
+Reverse BAAB gives 81.7290/82.0998/81.4904/81.9865 FPS, removing a repeatable
+advantage. Full-intro ABBA gives 82.3963/83.9876/83.0366/79.8119 FPS. All five
+logical artifact sections and saved states match within each comparison.
+Intro results include order-dependent drift; their reverse-order repeat was
+not run. The broader profile is not adopted; no new native gain is claimed.
+
+OBSERVED: selected cycling differences have distinct causes. Frames
+1,750/1,950 differ from nearby reference frames by 442/469 pixels, all within
+the rider's rectangle; backgrounds and other creatures match. At own frame
+2,200 versus reference 2,197, all 3,189 differences exchange two colors.
+The game's [palette-cycle routine](https://github.com/pret/pokeemerald/blob/master/src/intro_credits_graphics.c)
+uses the VBlank counter. INFERRED: palette phase explains that selected
+exchange; this does not classify every unmatched frame.
+
+VERIFIED: a new reference capture reproduces all twelve selected videos
+exactly. Our renderer supplied with its video memory/registers matches every
+pixel in eleven selected Poké Ball frames, including 2,293–2,298, 2,300,
+2,310, 2,320 and 2,330. The additional frame-2,400 static snapshot still
+differs for its known per-line DMA effect. This separates static affine
+rendering from the values supplied by execution.
+
+OBSERVED: our corresponding matrices differ by single fixed-point units
+after phase alignment. Our BIOS helper rounds floating-point products;
+the pinned reference uses a different floating-point approximation, which
+is not physical-hardware proof. DOCUMENTED: the public
+[emibios integer model](https://github.com/coolbho3k/emibios/blob/3087d40c0ec59e67ff556db148cbec0d57d10d17/src/swi/math/affine_set.s)
+uses 2.14 trigonometric values, arithmetic-shifted products and Pb negation
+after shifting. Its [generator](https://github.com/coolbho3k/emibios/blob/3087d40c0ec59e67ff556db148cbec0d57d10d17/tools/gen/sine_lut.zig)
+specifies mathematical truncation. The follow-up independently implements
+that model with a mathematically generated 65-entry quarter wave and the
+existing ASR helper. No BIOS payload or third-party implementation is copied.
+
+VERIFIED: the positive fractional-angle regression fails before correction
+and passes after. Negative-product/Pb-order cases, halfword wrapping, ignored
+low angle bits and all 256 angles over five signed scale pairs pass; the sweep
+uses an independent long-double oracle. BgAffineSet and strided ObjAffineSet
+integration checks pass, together with all 36 core tests (188.5 s) and
+mandatory benchmarks. Fresh independent read-only review verifies the three
+pinned source hashes and finds no introduced defect. Optimized ROM verification
+remains pending; no new pixel-match count or native target result is claimed.
+
+The review identifies a separate existing limitation: BG translation uses
+already narrowed coefficients, so an intermediate +32,768 can become -32,768
+before translation. It is unchanged and requires a focused follow-up.
+Agreement with the public integer model does not independently establish
+physical-hardware equivalence.
 
 ### Post-integration profiling and next rendering correction
 

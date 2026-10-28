@@ -117,6 +117,26 @@ int main() {
       expect(affine.memory().read16(destination + index * 8 + 2).value_or(0) == 0x5555,
              "ObjAffineSet preserves gaps between components");
     }
+    expect(affine.memory().write16(source, static_cast<std::uint16_t>(-256)) &&
+               affine.memory().write16(source + 2, static_cast<std::uint16_t>(-128)) &&
+               affine.memory().write16(source + 4, 0x2000),
+           "ObjAffineSet seeds negative fractional scales");
+    affine.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+    affine.cpu().set_register(0, source);
+    affine.cpu().set_register(1, destination);
+    affine.cpu().set_register(2, 1);
+    affine.cpu().set_register(3, 8);
+    const auto fixed_result = affine.step();
+    expect(fixed_result.step.has_value() &&
+               fixed_result.step->cpu_step.status == ExecuteStatus::executed,
+           "ObjAffineSet executes fractional negative scales");
+    constexpr std::uint16_t fixed_expected[] = {0xFF4A, 182, 0xFFA5, 0xFFA5};
+    for (std::uint32_t index = 0; index < 4; ++index) {
+      expect(affine.memory().read16(destination + index * 8).value_or(0) == fixed_expected[index],
+             "ObjAffineSet stores quantized signed coefficients at the requested stride");
+      expect(affine.memory().read16(destination + index * 8 + 2).value_or(0) == 0x5555,
+             "fractional ObjAffineSet retains stride gaps");
+    }
   }
 
   {
@@ -159,6 +179,25 @@ int main() {
                affine.memory().read32(destination + 24).value_or(0) == 0xFFFFCE00U &&
                affine.memory().read32(destination + 28).value_or(0) == 0x00003200U,
            "BgAffineSet advances 20-byte source and 16-byte destination entries");
+    expect(affine.memory().write16(source + 14, 128) &&
+               affine.memory().write16(source + 16, 0x30FF),
+           "BgAffineSet seeds fractional rotation and unequal scales");
+    affine.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+    affine.cpu().set_register(0, source);
+    affine.cpu().set_register(1, destination);
+    affine.cpu().set_register(2, 1);
+    const auto fixed_result = affine.step();
+    expect(fixed_result.step.has_value() &&
+               fixed_result.step->cpu_step.status == ExecuteStatus::executed,
+           "BgAffineSet executes fractional rotation");
+    expect(affine.memory().read16(destination).value_or(0) == 97 &&
+               affine.memory().read16(destination + 2).value_or(0) == 0xFF14 &&
+               affine.memory().read16(destination + 4).value_or(0) == 118 &&
+               affine.memory().read16(destination + 6).value_or(0) == 48,
+           "BgAffineSet stores the shared quantized matrix");
+    expect(affine.memory().read32(destination + 8).value_or(0) == 29350 &&
+               affine.memory().read32(destination + 12).value_or(0) == 49060,
+           "BgAffineSet translates using stored integer coefficients");
   }
 
   std::cout << "hle_swi_boot_test: PASS\n";

@@ -1,5 +1,7 @@
 #include "gba/core/bios.hpp"
 
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
@@ -107,6 +109,60 @@ int main() {
   expect(quarter_turn.pa == 0 && quarter_turn.pb == -0x0100 &&
              quarter_turn.pc == 0x0080 && quarter_turn.pd == 0,
          "affine quarter turn preserves fixed-point scale and signs");
+
+  // Quantize the sine to 2.14, then ASR the scaled product; Pb negates
+  // after ASR. Floating-point round-to-nearest differs at these angles.
+  const auto fractional = BiosController::hle_affine_matrix(256, 128, 0x3000);
+  expect(fractional.pa == 97 && fractional.pb == -236 &&
+             fractional.pc == 118 && fractional.pd == 48,
+         "affine coefficients use quantized sine products rather than rounding");
+  const auto negative_cosine = BiosController::hle_affine_matrix(256, 256, 0x6000);
+  expect(negative_cosine.pa == -182 && negative_cosine.pb == -181 &&
+             negative_cosine.pc == 181 && negative_cosine.pd == -182,
+         "affine negative products floor through arithmetic shift");
+  const auto negative_scale = BiosController::hle_affine_matrix(-256, -128, 0x2000);
+  expect(negative_scale.pa == -182 && negative_scale.pb == 182 &&
+             negative_scale.pc == -91 && negative_scale.pd == -91,
+         "affine Pb negation follows product quantization for negative scales");
+  const auto extreme_scale = BiosController::hle_affine_matrix(-32768, 32767, 0x40FF);
+  expect(extreme_scale.pa == 0 && extreme_scale.pb == -32768 &&
+             extreme_scale.pc == 32767 && extreme_scale.pd == 0,
+         "affine stores wrap to halfwords and ignore the low angle byte");
+
+  // Independent arithmetic oracle: evaluate the mathematical sine at long
+  // double precision, quantize it, then floor the exact power-of-two product.
+  // Cardinal points are explicit to avoid a host libm's residual near zero.
+  const auto trig = [](unsigned angle) -> std::int32_t {
+    if (angle % 64U == 0) {
+      constexpr std::array<std::int32_t, 4> cardinal{0, 16384, 0, -16384};
+      return cardinal.at(angle / 64U);
+    }
+    return static_cast<std::int32_t>(std::sin(
+        static_cast<long double>(angle) * std::acos(-1.0L) / 128.0L) * 16384.0L);
+  };
+  for (const auto scales : {std::array<int, 2>{0, 0}, {256, 128}, {-256, -129},
+                            {32767, -32768}, {-32768, 32767}}) {
+    for (unsigned angle = 0; angle < 256; ++angle) {
+      const auto m = BiosController::hle_affine_matrix(
+          static_cast<std::int16_t>(scales[0]), static_cast<std::int16_t>(scales[1]),
+          static_cast<std::uint16_t>((angle << 8U) | 0xFFU));
+      const auto sine = trig(angle);
+      const auto cosine = trig((angle + 64U) % 256U);
+      const auto product = [](int scale, std::int32_t value) {
+        return static_cast<std::int32_t>(std::floor(
+            static_cast<double>(scale) * value / 16384.0));
+      };
+      expect(static_cast<std::uint16_t>(m.pa) ==
+                 static_cast<std::uint16_t>(product(scales[0], cosine)) &&
+                 static_cast<std::uint16_t>(m.pb) ==
+                 static_cast<std::uint16_t>(-product(scales[0], sine)) &&
+                 static_cast<std::uint16_t>(m.pc) ==
+                 static_cast<std::uint16_t>(product(scales[1], sine)) &&
+                 static_cast<std::uint16_t>(m.pd) ==
+                 static_cast<std::uint16_t>(product(scales[1], cosine)),
+             "affine full-circle sweep matches quantized integer math at scale limits");
+    }
+  }
 
   std::int32_t arc_scratch_r1 = 0;
   std::int32_t arc_scratch_r3 = 0;
