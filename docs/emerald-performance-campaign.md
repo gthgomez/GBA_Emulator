@@ -127,17 +127,56 @@ whole-emulator speedup.
 VERIFIED: the small early-return candidate passes all 36 core tests (255.6 s)
 and mandatory benchmark checksums. A fresh independent read-only review binds
 the updated header and unchanged bus/test hashes and finds no introduced
-correctness defects. Optimized build and real-frame measurements remain pending.
+correctness defects.
+
+VERIFIED: source `637560a09fe0` builds a fresh optimized executable with SHA256
+`45d8450fd1b4a14392c757f791c6c3d4b5031cbe26f155719220babcc52a9e8b`.
+Its 600-frame boot and checkpoint training ROM/run/video/audio/state fields match
+the preceding build. All three desktop smokes, the owned-window F5/F8/F5/exit
+lifecycle check and all four CI jobs pass (run 40785341768). Five encoded version 6
+states remain byte-identical to the existing 17,312,799-byte input, with unchanged
+live state hashes. Capture takes 0.4423–0.6401 ms; full encoding takes
+26.2404–26.9979 ms. The observed write range, 9.1875–17.3076 ms, retains its outlier.
+
+OBSERVED: eight serial 600-frame field runs in ABBA/BAAB order compare the prior
+and new optimized executables. Every ROM/run/video/audio/state field matches.
+Median throughput rises from 77.1533 to 79.5190 FPS; total step time ranges are
+7,759.1759–7,779.8024 ms versus 7,466.7847–7,545.8646 ms. Every new-build run is
+faster in this bounded comparison. This measures complete optimized builds on
+this host, not a universal or isolated source-level speedup.
+
+OBSERVED: the new normal desktop completes 18,000 frames and all fifty saves at
+59.7280 FPS (last window 59.7269), with zero queue-empty reports and p95/p99
+presentation bins of 18 ms. It still FAILS smoothness: two intervals exceed
+25 ms, with maximum 26.1360 ms. PR #57 remains a draft.
+
+### Repair configured-core verifier registration
+
+VERIFIED: configuring with `GBA_BUILD_TESTS=ON` fails before the fix because the
+root calls `add_subdirectory(tests)` but `tests/CMakeLists.txt` is absent. The new
+registration builds the existing verifier sources against the configured core
+and Threads, with the existing C++17 requirement and no SDL dependency when the
+desktop is disabled. No test sources or assertions change. Actual CTest names,
+PowerShell runner identities and source stems match exactly: 36 verifiers.
+
+VERIFIED: the previously failing core-only configuration now builds successfully;
+all 36 CTest verifiers pass in 5.09 s. The canonical PowerShell runner also passes
+all 36 (3.4 s, valid cached binaries), and mandatory benchmark checksums pass.
+A fresh independent read-only review finds no actionable issue and binds the
+new CMake file's SHA256
+`043c3f1d3654baf171099ab8631b82112761447d1639481b238332506911bc18`.
+The canonical shell runners remain unchanged. This optional path enables checks
+against the exact configured archive before measuring further compiler variants.
 
 ## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `f821da626d43` passes all four Linux/Windows CI jobs; draft remains open |
-| Current iteration | Immutable ROM snapshots pass local checks, independent review and exact codec-byte probes; normal executable SHA-256 begins `f726f3e5910a` |
-| Story | Winston, Haley and Twins Gina & Mia defeated; frame 248,160 is inside Rustboro Gym at 5,19 after natural healing: Torchic level 12, 34/34 HP; Wurmple level 4, 18/18 HP |
+| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `637560a09fe0` passes all four Linux/Windows CI jobs; draft remains open |
+| Current iteration | Loaded-ROM getter return passes local checks, independent review and exact codec-byte probes; normal executable SHA-256 begins `45d8450fd1b4`; configured-core CTest registration repaired |
+| Story | Winston, Haley and Twins Gina & Mia defeated; frame 249,960 shows the first Rustboro Gym trainer's fight menu: Geodude level 10 versus Torchic level 12, 34/34 HP; Wurmple level 4, 18/18 HP |
 | Repeat throughput | Latest 1,200-frame Gym-entry pair: 78.878553 / 78.793804 FPS, p95 steps 13.5502 / 13.6474 ms; zero / one steps above 16.67 ms |
-| SDL delivery | Latest default 18,000-frame/fifty-save control averages 59.7280 FPS but fails smoothness: maximum 27.2794 ms, one gap above 25 ms; prior same-binary run had eight gaps |
+| SDL delivery | Latest default 18,000-frame/fifty-save getter build averages 59.7280 FPS but fails smoothness: maximum 26.1360 ms, two gaps above 25 ms |
 | Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
 | Audio | Latest default control reports zero queue-empty events; prior same-binary run reports four. This proxy does not establish physical audio quality |
 | Intro | Current integer-math runtime: 2,654 nearby exact matches of 3,600; new controlled snapshots isolate palette phase and rider differences at frames 1,300/1,500 |
