@@ -27,6 +27,10 @@ constexpr std::uint32_t kFifoAAddress = 0x040000A0;
 constexpr std::uint32_t kFifoBAddress = 0x040000A4;
 constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
 
+[[nodiscard]] constexpr std::uint32_t dma_word_count_mask(std::size_t channel) {
+  return channel == 3 ? 0xFFFFU : 0x3FFFU;
+}
+
 [[nodiscard]] constexpr InterruptSource dma_interrupt_source(std::size_t channel) {
   return static_cast<InterruptSource>(
       static_cast<std::uint8_t>(InterruptSource::dma0) + channel);
@@ -349,7 +353,10 @@ bool DmaController::load_state(const State& state) {
         channel_state.current_count != 0) {
       return false;
     }
-    if (channel_state.current_count > normalized_word_count(channel)) {
+    // Programmed COUNT and the latched counter can differ after a register
+    // write while enabled. Validate the incoming counter against hardware
+    // capacity, independently of either controller's programmed COUNT.
+    if (channel_state.current_count > dma_word_count_mask(channel) + 1U) {
       return false;
     }
   }
@@ -455,7 +462,7 @@ void DmaController::refresh_immediate_pending() {
 
 std::uint32_t DmaController::normalized_word_count(std::size_t channel) const {
   const Channel& state = checked_channel(channel);
-  const std::uint32_t mask = channel == 3 ? 0xFFFFU : 0x3FFFU;
+  const std::uint32_t mask = dma_word_count_mask(channel);
   const std::uint32_t count = state.word_count & mask;
   return count == 0 ? mask + 1U : count;
 }

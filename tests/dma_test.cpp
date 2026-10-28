@@ -500,6 +500,48 @@ int main() {
            "DMA state restore rejects disabled channels with active counts");
   }
 
+  // Snapshot validity is independent of the receiving controller's registers.
+  // COUNT can also change while enabled without replacing the latched count.
+  for (const std::size_t channel : {0U, 1U, 2U, 3U}) {
+    DmaController snapshot_source;
+    DmaController snapshot_receiver;
+    snapshot_source.write_source(channel, 0x02000100);
+    snapshot_source.write_destination(channel, 0x02000200);
+    snapshot_source.write_word_count(channel, 16);
+    snapshot_source.write_control(channel, 0x8000);
+    snapshot_receiver.write_word_count(channel, 1);
+    snapshot_receiver.write_control(channel, 0x8000);
+    expect(snapshot_receiver.load_state(snapshot_source.save_state()),
+           "DMA snapshot restore ignores the receiver's previous count");
+    expect(snapshot_receiver.state_hash() == snapshot_source.state_hash(),
+           "DMA snapshot restore replaces all receiver state");
+
+    snapshot_source.write_word_count(channel, 1);
+    snapshot_receiver.write_word_count(channel, 1);
+    expect(snapshot_source.active_count(channel) == 16,
+           "programmed count writes preserve an enabled DMA's latched count");
+    expect(snapshot_receiver.load_state(snapshot_source.save_state()),
+           "DMA snapshot accepts latched count above programmed count");
+    expect(snapshot_receiver.state_hash() == snapshot_source.state_hash(),
+           "DMA snapshot preserves independent programmed and latched counts");
+
+    snapshot_source.write_control(channel, 0);
+    snapshot_source.write_word_count(channel, 0);
+    snapshot_source.write_control(channel, 0x8000);
+    const std::uint32_t maximum = channel == 3 ? 0x10000U : 0x4000U;
+    expect(snapshot_source.active_count(channel) == maximum,
+           "zero count latches the channel capacity");
+    expect(snapshot_receiver.load_state(snapshot_source.save_state()),
+           "DMA snapshot accepts the channel's full count capacity");
+    auto excessive_count = snapshot_source.save_state();
+    excessive_count.channels.at(channel).current_count = maximum + 1U;
+    const auto receiver_hash = snapshot_receiver.state_hash();
+    expect(!snapshot_receiver.load_state(excessive_count),
+           "DMA snapshot rejects a count beyond the channel capacity");
+    expect(snapshot_receiver.state_hash() == receiver_hash,
+           "invalid DMA snapshot leaves the receiver unchanged");
+  }
+
   std::cout << "dma_test: PASS\n";
   return 0;
 }
