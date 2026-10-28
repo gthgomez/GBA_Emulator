@@ -45,23 +45,103 @@ values. Hashing and the version 6 codec retain their existing byte order and
 contents. This avoids a separate host ROM cache or a second snapshot API.
 VERIFIED: all 36 core verifiers pass (267.2 s), as does the mandatory benchmark
 checksum suite. A fresh independent read-only review binds all three changed
-source/test hashes and finds no actionable introduced defects. Exact-byte probes
-and repeated native measurements remain pending for this candidate. Existing
-results below describe the earlier executable unless explicitly stated otherwise.
+source/test hashes and finds no actionable introduced defects.
+
+A fresh optimized build from `f821da626d43` has executable SHA256
+`f726f3e5910a4ef3c9f4085d60749c4799149602e4a6fecd004f17b043d32fe5`.
+Its 600-frame boot and checkpoint training ROM/run/video/audio/state fields
+exactly match the previous build. All three desktop smoke checks pass. The
+first local smoke wrapper selected a nonexistent build path; that fixture
+failure is retained, and corrected wrappers use fresh evidence directories.
+All four CI jobs pass for source `f821da626d43` (run 40778577069).
+
+VERIFIED: repeating the same five-encode probe against the rebuilt core produces
+five byte-identical 17,312,799-byte version 6 states and leaves the live machine
+hash unchanged. Machine snapshot capture takes 0.4341–0.6016 ms; the original
+probe measured 6.0796–7.4113 ms. Value-based memory export still takes
+2.8321–3.6343 ms and remains on the worker during F5 encoding. These are stage
+measurements on this host, not proof that every delivery gap is resolved.
+OBSERVED: the repeated normal 18,000-frame/fifty-save experiment completes all
+frames and saves at 59.7280 FPS (last window 59.7305), matching nominal GBA rate.
+It still FAILS smoothness: four queue-empty reports, eight gaps above 25 ms,
+maximum 30.1045 ms. The separate owned-window F5/F8/F5/exit lifecycle check passes.
+A private buffered stage trace is now being used to distinguish event handling,
+emulation, audio submission, pacing, presentation and cartridge-save flushing.
+These instrumented results will not replace normal-executable acceptance.
+PR #57 remains a draft; sustained smooth delivery is still unresolved.
+
+### Buffered stage trace and exact-work replay
+
+OBSERVED: the first private 9,000-frame/twenty-five-save trace reports zero
+queue-empty events and no intervals above 25 ms (maximum 24.6466 ms), so it does
+not reproduce the normal long-run failure. A second private 18,000-frame/fifty-save
+trace averages 59.7280 FPS with two queue-empty reports and one 25.7487 ms gap.
+At that gap, frame 1,371 spends 25.1095 ms in `step_frame`; event handling, audio
+submission, pacing, presentation and save flushing each take below 0.6 ms, and
+no save worker is pending. The two queue-empty reports follow at frames
+1,373/1,374. This localizes the measured episode to emulation-step wall time;
+it does not prove the cause of the earlier normal executable's eight gaps.
+
+OBSERVED: Windows thread CPU-time samples here advance in 15.625 ms increments
+and sometimes exceed a frame's wall duration. They cannot reliably classify an
+individual frame. Cycle counts and the full buffered timeline remain retained.
+Two fresh 1,800-frame headless replays exactly match every native frame's
+executed/skipped instruction counts and finish with byte-identical encoded
+states. Frame 1,371 takes 13.4802 / 12.8740 ms in those replays, rather than
+25.1095 ms. INFERRED: the large cost at that guest frame is not repeatable guest
+work alone. Host execution conditions remain unresolved; these measurements do
+not identify a new core correctness defect or prove an operating-system cause.
+
+A further controlled experiment uses the unchanged normal executable and raises
+only its owned UI/emulation thread from normal priority to one level above
+normal. It is a diagnostic runtime setting, not an implemented product change;
+normal acceptance and a scheduling comparison remain pending.
+
+### Scheduling control and loaded-ROM getter probe
+
+OBSERVED: the one-level priority experiment uses the same normal executable,
+checkpoint and fifty-save/18,000-frame workload. It averages 59.7281 FPS with
+zero queue-empty reports, but has two gaps above 25 ms (maximum 25.7402 ms).
+The subsequent default-priority control averages 59.7280 FPS, also with zero
+queue-empty reports, and has one gap above 25 ms (maximum 27.2794 ms).
+Neither passes the strict smoothness criterion. These measurements do not
+establish a priority benefit, so no product scheduling change is introduced.
+
+OBSERVED: private program-counter sampling of the owned headless emulator collects
+1,990 samples. Containing functions include device advancement (19.65%), the
+runtime frame loop (16.73%), scanline rendering (11.76%) and halfword reads
+(9.10%). Suspension perturbs execution, and inlined code is attributed to its
+containing function; these are approximate samples, not exact function timings.
+Disassembly shows loaded-ROM halfword reads repeatedly testing initialization
+of the getter's fallback empty vector. An early loaded-owner return can avoid
+that guard without changing cartridge bytes or emulated bus timing.
+
+A private synthetic halfword-read experiment rebuilds every translation unit
+against each getter variant with identical compiler flags. The first series
+shows substantial warmup drift and is inconclusive. After a fixed 500 ms warmup,
+ABBA and BAAB orders give baseline medians 10.02668 / 10.11600 ns per read for
+the two address windows, versus candidate 9.69475 / 9.68135 ns. All checksums
+match. Ranges overlap and host execution varies; this does not establish a
+whole-emulator speedup.
+
+VERIFIED: the small early-return candidate passes all 36 core tests (255.6 s)
+and mandatory benchmark checksums. A fresh independent read-only review binds
+the updated header and unchanged bus/test hashes and finds no introduced
+correctness defects. Optimized build and real-frame measurements remain pending.
 
 ## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 final documentation head `36d9d2700261` passes all four Linux/Windows CI jobs; draft remains open |
-| Current iteration | Desktop save-worker follow-up passes local checks and a fresh independent source review; its normal executable SHA-256 begins `c376921db938` |
-| Story | Winston, Haley and Twins Gina & Mia defeated; frame 245,160 retains Rustboro Center's closing dialogue after natural healing: Torchic level 12, 34/34 HP; Wurmple level 4, 18/18 HP |
-| Repeat throughput | Latest 900-frame healing pair: 79.367395 / 78.734339 FPS, p95 steps 13.4924 / 13.6073 ms; two / five steps above 16.67 ms |
-| SDL delivery | Field baseline: 18,000 frames at 59.7286 FPS, maximum interval 20.3601 ms, no gaps above 25 ms. Save-worker stress: 3,600 frames with ten saves at 59.7245 FPS, maximum 24.5283 ms, no gaps above 25 ms |
+| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `f821da626d43` passes all four Linux/Windows CI jobs; draft remains open |
+| Current iteration | Immutable ROM snapshots pass local checks, independent review and exact codec-byte probes; normal executable SHA-256 begins `f726f3e5910a` |
+| Story | Winston, Haley and Twins Gina & Mia defeated; frame 248,160 is inside Rustboro Gym at 5,19 after natural healing: Torchic level 12, 34/34 HP; Wurmple level 4, 18/18 HP |
+| Repeat throughput | Latest 1,200-frame Gym-entry pair: 78.878553 / 78.793804 FPS, p95 steps 13.5502 / 13.6474 ms; zero / one steps above 16.67 ms |
+| SDL delivery | Latest default 18,000-frame/fifty-save control averages 59.7280 FPS but fails smoothness: maximum 27.2794 ms, one gap above 25 ms; prior same-binary run had eight gaps |
 | Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
-| Audio | Both bounded runs above report zero queue-empty events; this counter does not establish physical audio quality or whole-game behavior |
+| Audio | Latest default control reports zero queue-empty events; prior same-binary run reports four. This proxy does not establish physical audio quality |
 | Intro | Current integer-math runtime: 2,654 nearby exact matches of 3,600; new controlled snapshots isolate palette phase and rider differences at frames 1,300/1,500 |
-| Status | Active: bounded field and repeated-save targets observed; a separate candidate battle run retains one 26.1885 ms gap; extend story and investigate timing/random choices |
+| Status | Active: snapshot capture is cheaper and nominal delivery is reached; long-run smoothness and intro guest-phase differences remain unresolved |
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.

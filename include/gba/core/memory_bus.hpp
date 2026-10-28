@@ -306,8 +306,11 @@ class MemoryBus {
   // loading another cartridge replaces only this bus's owner.
   std::shared_ptr<const std::vector<std::uint8_t>> game_pak_rom_;
   [[nodiscard]] const std::vector<std::uint8_t>& rom_bytes() const {
+    if (game_pak_rom_) {
+      return *game_pak_rom_;
+    }
     static const std::vector<std::uint8_t> empty;
-    return game_pak_rom_ ? *game_pak_rom_ : empty;
+    return empty;
   }
   std::vector<std::uint8_t> game_pak_save_;
   std::array<std::uint8_t, 256> mgba_debug_string_;
