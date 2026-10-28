@@ -35,7 +35,7 @@ void obj_line_budget_test() {
   auto renderer = std::make_unique<PpuRenderer>();
   constexpr std::uint16_t kColor = 0x001F;
   const auto scene = [&](unsigned consumers, bool affine, bool disabled,
-                         bool different_line) {
+                         bool different_line, int consumer_x = 0) {
     memory->reset();
     for (unsigned index = 0; index < 128; ++index) {
       expect(memory->write16(0x07000000U + index * 8U, 0x0200),
@@ -55,7 +55,8 @@ void obj_line_budget_test() {
       if (!target && disabled) attr0 = 0x0200;
       if (!target && different_line) attr0 |= 64;
       expect(memory->write16(base, attr0), "seed budget fixture attr0");
-      expect(memory->write16(base + 2, target ? 0xC080 : 0xC000),
+      const auto x = static_cast<std::uint16_t>(consumer_x) & 0x01FFU;
+      expect(memory->write16(base + 2, target ? 0xC080 : 0xC000U | x),
              "seed budget fixture attr1");
       expect(memory->write16(base + 4, target ? 128 : 0),
              "seed budget fixture tile index");
@@ -98,6 +99,22 @@ void obj_line_budget_test() {
   (void)renderer->render_scanline(*memory, control(0x1060, 0), 0);
   expect(renderer->pixel(128, 0) == kColor,
          "objects on another line do not consume full pixel-rendering work");
+  scene(19, false, false, false, -8);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 0);
+  expect(renderer->pixel(191, 0) == kColor,
+         "fully clipped normal pixel pairs do not consume rendering work");
+  scene(19, false, false, false, -1);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 0);
+  expect(renderer->pixel(128, 0) == 0,
+         "a normal pair crossing the left edge still consumes work");
+  scene(19, false, false, false, -2);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 0);
+  expect(renderer->pixel(159, 0) == kColor && renderer->pixel(160, 0) == 0,
+         "clipped normal pairs retain the nominal 32px sentinel prefix");
+  scene(4, true, false, false, -16);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 48);
+  expect(renderer->pixel(223, 48) == kColor,
+         "clipped affine pixels preserve work for later objects");
 }
 
 }  // namespace
