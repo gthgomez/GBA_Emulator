@@ -60,6 +60,16 @@ int main() {
   expect(!obj0->double_size, "OBJ0 is not double-size");
   expect(!obj0->disabled, "OBJ0 is enabled");
 
+  expect(memory.write16(0x07000000, 0x1000), "seed OBJ mosaic bit 12 at Y zero");
+  const auto mosaic_obj = PpuSpriteFetcher::read_sprite(memory, 0);
+  expect(mosaic_obj.has_value() && mosaic_obj->mosaic_enabled && mosaic_obj->y == 0,
+         "attr0 bit 12 enables mosaic independently of Y");
+  expect(memory.write16(0x07000000, 0x0040), "seed Y bit 6 without mosaic");
+  const auto y64_obj = PpuSpriteFetcher::read_sprite(memory, 0);
+  expect(y64_obj.has_value() && !y64_obj->mosaic_enabled && y64_obj->y == 64,
+         "attr0 Y bit 6 does not enable mosaic");
+  expect(memory.write16(0x07000000, 20), "restore OBJ0 Y position");
+
   expect(write_obj_vram_byte(memory, 0x06010000 + 5U * 32U, 0x09),
          "seed OBJ0 tile pixel");
   expect(memory.write16(0x05000200 + 4U * 32U + 9U * 2U, 0x7FFF),

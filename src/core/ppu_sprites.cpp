@@ -137,7 +137,7 @@ std::optional<SpriteAttributes> PpuSpriteFetcher::read_sprite(const MemoryBus& m
       !affine && (attr1.value() & 0x2000U) != 0,
       graphics_mode == 1U,
       graphics_mode == 2U,
-      (attr0.value() & 0x0040U) != 0,
+      (attr0.value() & 0x1000U) != 0,
   };
 }
 

@@ -1,5 +1,6 @@
 #include "gba/core/memory_bus.hpp"
 #include "gba/core/ppu_renderer.hpp"
+#include "gba/core/ppu_sprites.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -117,10 +118,125 @@ void obj_line_budget_test() {
          "clipped affine pixels preserve work for later objects");
 }
 
+void obj_window_texel_test() {
+  using gba::core::MemoryBus;
+  using gba::core::PpuRenderer;
+  auto memory = std::make_unique<MemoryBus>();
+  auto renderer = std::make_unique<PpuRenderer>();
+  constexpr std::uint16_t kGreen = 0x03E0;
+  constexpr std::uint32_t kWindowTile = 0x06011000;
+  const auto scene = [&]() {
+    memory->reset();
+    for (unsigned index = 0; index < 128; ++index) {
+      expect(memory->write16(0x07000000U + index * 8U, 0x0200),
+             "disable unused OBJ-window fixture objects");
+    }
+    expect(memory->write16(0x05000002, kGreen), "seed window background palette");
+    for (unsigned offset = 0; offset < 32; offset += 2) {
+      expect(memory->write16(0x06000000U + offset, 0x1111),
+             "seed opaque window background tile");
+    }
+    expect(memory->write16(0x07000000, 0x0800), "seed window object mode");
+    expect(memory->write16(0x07000002, 0), "seed window object position");
+    expect(memory->write16(0x07000004, 128), "seed window object tile");
+    auto result = control(0x9140, 8U << 8U);
+    result.winout = 0x0001;  // BG0 outside; no layers inside the OBJ window.
+    return result;
+  };
+  auto c = scene();
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == kGreen && renderer->pixel(7, 0) == kGreen,
+         "transparent OBJ-window texels do not mask their bounding rectangle");
+  expect(memory->write16(kWindowTile, 0x0001), "seed one opaque window texel");
+  const auto one_pixel = renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0 && renderer->pixel(1, 0) == kGreen,
+         "only nonzero OBJ-window texels select the inside mask");
+  expect(one_pixel.window_masked_pixels == 1,
+         "one opaque window texel masks exactly one pixel");
+  // Palette entry 1 is black: coverage follows the index, not its RGB value.
+  expect(memory->read16(0x05000202).value_or(1) == 0,
+         "window fixture keeps its opaque palette color black");
+  expect(memory->write16(0x07000000, 0x1800), "enable mosaic flag on window object");
+  expect(gba::core::PpuSpriteFetcher::read_sprite(*memory, 0)->mosaic_enabled,
+         "window fixture exercises the decoded mosaic flag");
+  c.mosaic = 0x7700;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0 && renderer->pixel(1, 0) == kGreen,
+         "OBJ-window coverage bypasses horizontal color mosaic");
+  (void)renderer->render_scanline(*memory, c, 1);
+  expect(renderer->pixel(0, 1) == kGreen,
+         "OBJ-window coverage bypasses vertical color mosaic");
+  expect(memory->write16(0x05000202, 0x001F), "seed normal mosaic OBJ color");
+  expect(memory->write16(0x07000000, 0x1000), "select normal mosaic object");
+  c.dispcnt = 0x1140;
+  (void)renderer->render_scanline(*memory, c, 0);
+  (void)renderer->render_scanline(*memory, c, 1);
+  expect(renderer->pixel(0, 0) == 0x001F && renderer->pixel(1, 0) == 0x001F &&
+             renderer->pixel(0, 1) == 0x001F,
+         "normal OBJ color repeats horizontally and vertically with mosaic bit 12");
+  expect(memory->write16(0x07000000, 0x0040), "select Y64 normal object without mosaic");
+  (void)renderer->render_scanline(*memory, c, 64);
+  (void)renderer->render_scanline(*memory, c, 65);
+  expect(renderer->pixel(0, 64) == 0x001F && renderer->pixel(1, 64) == kGreen &&
+             renderer->pixel(0, 65) == kGreen,
+         "Y bit 6 does not repeat normal OBJ texels");
+  expect(memory->write16(0x07000000, 0x0800), "restore window object mode");
+  c.dispcnt = 0x9140;
+  c.mosaic = 0;
+  c.dispcnt &= ~0x1000U;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == kGreen,
+         "OBJ master enable is required for OBJ-window coverage");
+  c.dispcnt = 0x1140;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == kGreen,
+         "OBJ-window enable is required for OBJ-window coverage");
+  c.dispcnt = 0x9140;
+  expect(memory->write16(0x07000002, 0x1000), "flip window object horizontally");
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == kGreen && renderer->pixel(7, 0) == 0,
+         "OBJ-window coverage follows flipped texture coordinates");
+  expect(memory->write16(0x07000000, 0x2800), "select 8bpp window object");
+  expect(memory->write16(0x07000002, 0), "restore window object position");
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0 && renderer->pixel(1, 0) == kGreen,
+         "8bpp OBJ-window texels use index-zero transparency");
+  expect(memory->write16(0x07000000, 0x0B00), "select affine double-area window");
+  expect(memory->write16(0x07000006, 0x0100), "seed window affine PA");
+  expect(memory->write16(0x0700000E, 0), "seed window affine PB");
+  expect(memory->write16(0x07000016, 0), "seed window affine PC");
+  expect(memory->write16(0x0700001E, 0x0100), "seed window affine PD");
+  (void)renderer->render_scanline(*memory, c, 4);
+  expect(renderer->pixel(3, 4) == kGreen && renderer->pixel(4, 4) == 0 &&
+             renderer->pixel(5, 4) == kGreen,
+         "affine OBJ-window coverage excludes transparent double-area margins");
+
+  c = scene();
+  for (unsigned index = 0; index < 18; ++index) {
+    expect(memory->write16(0x07000000U + index * 8U, 0),
+           "seed transparent window-budget consumer");
+    expect(memory->write16(0x07000002U + index * 8U, 0xC000),
+           "select 64px window-budget consumer");
+    expect(memory->write16(0x07000004U + index * 8U, 0),
+           "select transparent window-budget tile");
+  }
+  expect(memory->write16(0x07000090, 0x0800), "seed final budget-limited window");
+  expect(memory->write16(0x07000092, 0xC080), "position final 64px window");
+  expect(memory->write16(0x07000094, 128), "select final window tile set");
+  for (unsigned offset = 0; offset < 2048; offset += 2) {
+    expect(memory->write16(kWindowTile + offset, 0x1111),
+           "seed opaque budget-limited window tiles");
+  }
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(185, 0) == 0 && renderer->pixel(186, 0) == kGreen,
+         "OBJ-window texel coverage retains the admitted nominal prefix");
+}
+
 }  // namespace
 
 int main() {
   obj_line_budget_test();
+  obj_window_texel_test();
   using gba::core::MemoryBus;
   using gba::core::PpuRenderer;
 
@@ -476,6 +592,9 @@ int main() {
          "seed OBJ-window sprite attr0");
   expect(memory.write16(0x07000002, 0), "seed OBJ-window sprite attr1");
   expect(memory.write16(0x07000004, 20), "seed OBJ-window sprite attr2");
+  expect(memory.write16(0x06010000 + 20U * 32U, 0x1111) &&
+             memory.write16(0x06010000 + 20U * 32U + 2U, 0x1111),
+         "seed eight opaque OBJ-window texels");
   expect(memory.write16(0x07000008, 0), "seed normal OBJ attr0 for window test");
   expect(memory.write16(0x0700000A, 10), "seed normal OBJ attr1 for window test");
   expect(memory.write16(0x0700000C, 11), "seed normal OBJ attr2 for window test");

@@ -286,7 +286,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   // treat this work model as a cycle-exact pipeline.
   std::uint16_t obj_cycles_remaining =
       (control.dispcnt & kHblankIntervalFree) != 0 ? 954U : 1210U;
-  if (obj_enabled || obj_window_enabled) {
+  if (obj_enabled) {
     for (std::uint16_t index = 0; index < PpuSpriteFetcher::kSpriteCount; ++index) {
       const std::optional<SpriteAttributes> sprite =
           PpuSpriteFetcher::read_sprite(memory, index);
@@ -367,19 +367,39 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     }
   }
 
-  const auto obj_window_hit_at = [&](std::uint16_t x) {
-    if (!obj_window_enabled) {
-      return false;
+  const auto obj_pixel_at = [&](std::size_t index,
+                                std::uint16_t x) -> std::optional<SpritePixel> {
+    const SpriteAttributes& sprite = active_sprites.at(index);
+    if (!column_intersects_sprite(sprite, x)) {
+      return std::nullopt;
     }
+    std::uint8_t local_x = static_cast<std::uint8_t>(
+        (static_cast<std::uint32_t>(x) -
+         static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.x))) &
+        0x1FFU);
+    std::uint8_t local_y = static_cast<std::uint8_t>(
+        (static_cast<std::uint32_t>(scanline) -
+         static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.y))) &
+        0xFFU);
+    if (local_x >= active_sprite_ends.at(index)) {
+      return std::nullopt;
+    }
+    // Window coverage uses texture opacity without the color-layer mosaic.
+    if (sprite.mosaic_enabled && !sprite.obj_window) {
+      local_x = static_cast<std::uint8_t>(mosaic_block(local_x, obj_mosaic_w));
+      local_y = static_cast<std::uint8_t>(mosaic_block(local_y, obj_mosaic_h));
+    }
+    return PpuSpriteFetcher::fetch_sprite_pixel(memory, sprite, local_x, local_y,
+                                               character_mapping_1d);
+  };
+  const auto obj_window_hit_at = [&](std::uint16_t x) {
+    if (!obj_enabled || !obj_window_enabled) return false;
     for (std::size_t index = 0; index < active_sprite_count; ++index) {
       const SpriteAttributes& sprite = active_sprites.at(index);
-      if (sprite.obj_window && column_intersects_sprite(sprite, x)) {
-        const auto local_x = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(x) - static_cast<std::uint16_t>(sprite.x)) &
-            0x1FFU);
-        if (local_x < active_sprite_ends.at(index)) {
-          return true;
-        }
+      if (!sprite.obj_window) continue;
+      const auto pixel = obj_pixel_at(index, x);
+      if (pixel.has_value() && !pixel->transparent) {
+        return true;
       }
     }
     return false;
@@ -492,26 +512,10 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
         bool obj_semi_transparent = false;
         for (std::size_t index = 0; index < active_sprite_count; ++index) {
           const SpriteAttributes& sprite = active_sprites.at(index);
-          if (sprite.obj_window || !column_intersects_sprite(sprite, x)) {
+          if (sprite.obj_window) {
             continue;
           }
-          std::uint8_t local_x = static_cast<std::uint8_t>(
-              (static_cast<std::uint32_t>(x) -
-               static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.x))) &
-              0x1FFU);
-          std::uint8_t local_y = static_cast<std::uint8_t>(
-              (static_cast<std::uint32_t>(scanline) -
-               static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.y))) &
-              0xFFU);
-          if (local_x >= active_sprite_ends.at(index)) {
-            continue;
-          }
-          if (sprite.mosaic_enabled) {
-            local_x = static_cast<std::uint8_t>(mosaic_block(local_x, obj_mosaic_w));
-            local_y = static_cast<std::uint8_t>(mosaic_block(local_y, obj_mosaic_h));
-          }
-          const std::optional<SpritePixel> obj_pixel = PpuSpriteFetcher::fetch_sprite_pixel(
-              memory, sprite, local_x, local_y, character_mapping_1d);
+          const std::optional<SpritePixel> obj_pixel = obj_pixel_at(index, x);
           if (!obj_pixel.has_value() || obj_pixel->transparent) {
             continue;
           }

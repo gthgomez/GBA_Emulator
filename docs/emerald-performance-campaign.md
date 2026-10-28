@@ -25,18 +25,86 @@ conformance gaps remain relevant even when a game appears to work.
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #52 merged as `4db5171067b1`; all four Linux/Windows CI jobs passed final head `9f9425bd7239` |
-| Current candidate | OBJ work limit with left clipping: 36 core verifiers, benchmarks and renewed review pass; 11 ripple frames recover exactly; native pacing validation required before integration |
-| Story | Frame 207,240: Aqua grunt defeated; Devon employee dialogue in Petalburg Woods; Torchic level 10, HP 11/29 |
-| Repeat throughput | Two exact 10,800-frame normal-host replays: 88.22 / 88.29 FPS; three / two steps over 16.67 ms |
-| SDL delivery | Integrated pacing build: 10,800 diagnostic + 10,800 normal frames at 59.7290 / 59.7291 FPS; zero intervals over 25 ms, maxima 17.96 / 20.45 ms |
-| Determinism | New 10,800-frame exact-input replay byte-identical to the post-pacing diagnostic checkpoint; six additional story segments repeat identically |
+| Integration | PR #53 merged as `f903979056c0`; all four Linux/Windows CI jobs passed final head `0a6867bc88e3` |
+| Current candidate | OBJ-window texel opacity/master enable and OBJ mosaic bit decoding; focused regressions, 36 core checks, benchmarks and renewed read-only review pass; runtime checks in progress |
+| Story | Frame 209,340: north route interrupted by wild Poochyena level 5 at Woods (7,12); Torchic level 10, HP 11/29; free checkpoint 208,440 retained |
+| Repeat throughput | Two exact 10,800-frame diagnostic replays: 87.58 / 85.95 FPS; two / one steps over 16.67 ms; every frame's logical instruction counts identical |
+| SDL delivery | Integrated OBJ-limit build: 10,800 diagnostic + 10,800 normal frames at 59.7292 / 59.7290 FPS; maxima 19.33 / 25.13 ms; one normal interval over 25 ms remains open |
+| Determinism | Both exact-input profiling replays byte-identical to the diagnostic SDL checkpoint; latest 1,200-frame story pair also identical |
 | Audio | No queue-empty proxy or additional-input requests; finite postmix data; no physical output claim |
-| Intro | Initial 600-frame lag explained by reference HLE accounting; longer 3,600-frame capture exposes further differences, starting with an extra ripple sprite |
-| Status | Active: verify OBJ work-limit candidate, investigate later intro differences, extend story/native soak coverage; original unsupported stop remains unexplained |
+| Intro | Initial 600-frame lag explained by reference HLE accounting; OBJ limit recovers 11 exact ripple frames in 3,600-frame comparison; later differences remain |
+| Status | Active: verify window/mosaic candidate, investigate later intro differences, extend story/native soak coverage; rare delivery hitch and original unsupported stop remain unexplained |
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
+
+### Post-integration profiling and next rendering correction
+
+OBSERVED: PR #53 passed all four CI jobs and merged as `f903979056c0`.
+Its optimized normal desktop binary completed 10,800 frames at 59.7290 FPS,
+with presentation p95/p99 upper bounds 17/18 ms and maximum 25.1269 ms.
+One interval exceeded 25 ms. This rare hitch remains unresolved. The separate
+buffered diagnostic run completed 10,800 frames at 59.7292 FPS, p95/p99
+16.9196/17.2265 ms, maximum 19.3346 ms and no intervals above 25 ms. Its
+16,931 postmix blocks were finite, with no additional-input requests or
+queue-empty proxy events. These are local bounded observations, not proof of
+physical speaker output or an uninterrupted whole-game playthrough.
+
+VERIFIED: two diagnostic headless replays of the 360 recorded SDL input changes
+completed at 87.583940 and 85.954195 FPS, with p99 steps 13.2704/13.5608 ms and
+two/one steps above 16.67 ms. Both final states were byte-identical to the SDL
+state (`023fd79b645674eff94d660b8409efd5741d1923f1e015be1afbbb66596dd334`).
+Every frame's executed/skipped instruction counts matched across both replays.
+Their outlier frames did not overlap. The SDL outliers at frames 2089, 2104,
+2263 and 10251 replayed in 10.9756–12.0654 ms. INFERRED: this evidence does not
+identify a repeatable guest-instruction hotspot; OS scheduling is not proven
+as the cause. Diagnostic throughput is not normal desktop presentation.
+
+OBSERVED: the next 1,200-frame story pair finished Devon's dialogue at frame
+208,440, returning to the free overworld. It completed at 88.777533/90.692514
+FPS, with identical final states, no execution errors and no core underruns.
+The better story checkpoint is retained separately from movement soak loops.
+
+OBSERVED: OBJ-window coverage previously selected an object's whole rectangle,
+including transparent texels and affine margins, and could operate with the
+master OBJ enable clear. The synthetic transparent-window regression failed
+before correction. Coverage now uses the same coordinate calculation, admitted
+budget endpoint and texel fetch as normal color sprites, requires both enable
+bits, and ignores palette RGB when deciding opacity. Window coverage bypasses
+color mosaic. These rules follow [GBATEK's OBJ-window description](https://mgba-emu.github.io/gbatek/#the-obj-window)
+and the [hardware researcher's implementation](https://raw.githubusercontent.com/nba-emu/NanoBoyAdvance/master/src/nba/src/hw/ppu/sprite.cc);
+the latter was inspected as evidence, not copied into this implementation.
+
+OBSERVED: independent review exposed a separate existing decoder defect:
+`mosaic_enabled` read attribute bit 6 (part of Y), instead of bit 12. The initial
+window mosaic assertions therefore did not exercise the flag. A decoder
+regression failed before correction; the decoder now reads bit 12. Focused
+tests verify bit-12 enable, Y=64 without mosaic, normal horizontal/vertical
+color repetition and window exclusion with an explicitly decoded flag.
+The revised four-file candidate passed affected independent read-only review.
+VERIFIED: all 36 core tests pass (39.7 s), and the benchmark checksum suite passes.
+Hardware mosaic phase, exact OBJ pipeline timing and broader affine/mapping
+combinations remain outside these bounded checks.
+
+VERIFIED: fresh optimized window/mosaic executable SHA-256
+`12c5632603e3d29f6ba670c96dbfbac7963172fbd80ece14b482e85f164288df`.
+Boot and checkpoint training artifacts match the previous optimized build's
+ROM/run/video/audio/state fields. A complete 3,600-frame capture produces
+byte-identical frame-end and VBlank image streams to the merged OBJ-limit build,
+with the same final machine hash `03a0a5fa907228c7`. Therefore the window/mosaic
+fix introduces no image changes in this bounded intro sequence. It does not
+resolve the later differences: nearby exact matches remain 1,986/1,990, with
+the first remaining unmatched frame at 1,245/1,246 respectively.
+
+OBSERVED: repeated menu navigation opens the start menu and bag correctly.
+The item and berry pockets are empty, so no healing item was used. These
+local menu checks do not establish general UI or input compatibility.
+
+VERIFIED: a repeated 900-frame north-route segment reaches a wild Poochyena
+level 5 encounter at Woods (7,12). Both runs agree, complete at
+80.218150/82.607449 FPS, report no execution errors/core underruns and have
+maximum steps 14.8269/16.3135 ms. This checkpoint preserves the actual
+encounter; no claim that the planned north exit was reached.
 
 ## Initial observations
 
