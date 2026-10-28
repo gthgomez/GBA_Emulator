@@ -1389,3 +1389,46 @@ saved-state identities. Across 6,000 frame steps, throughput was 84.00–91.13
 FPS, p95 step time 11.54–12.68 ms, and thirteen steps exceeded 16.67 ms. The
 original unsupported stop remains unreproduced and unexplained; these bounded
 successes do not establish that it is fixed.
+
+### IRQ admission and checkpoint word integrity (2026-10-27)
+
+OBSERVED: the next paired 1,000-frame story segment reached frame 190,540
+with identical final states at 84.32 and 85.12 FPS. Both runs completed with
+zero reported audio underruns; p95 step times were 12.65 and 12.43 ms, with
+three steps above 16.67 ms across the two runs. The battle remains active.
+
+VERIFIED: a fresh cumulative integration review identified two IRQ defects,
+both reproduced against `d1ede55debbe` before repair. Ordinary IRQ admission
+already populated the return LR, so dispatch mistook the first handler for
+a nested handler. The reproducer observed one phantom outer frame during
+dispatch and a populated return LR after return. Dispatch now requires the
+saved registers of an actually dispatched handler before pushing an outer
+frame. Tests cover successive ordinary admissions and a real nested admission,
+including register/PC restoration and complete context cleanup.
+
+VERIFIED: the generic byte-container hash discarded the upper 24 bits of
+saved IRQ register words. Flipping bit 8 of an outer saved r0 passed the old
+codec's integrity check. Auditing the other callers exposed the equivalent
+upper-byte omission for APU wave RAM halfwords, also reproduced as an accepted
+corrupted snapshot. The current hash uses explicit little-endian word hashing
+for active/outer IRQ registers and both wave RAM banks. Regression assertions
+corrupt each of their serialized bytes and require rejection without changing
+the receiving session.
+
+The writer now emits version 5 with the unchanged v4 payload layout and the
+corrected integrity calculation. Versions 3 and 4 remain readable using their
+historical hash calculation; their inherited integrity gaps cannot be repaired
+retroactively. Golden hashes captured from the previous encoder cover idle,
+active IRQ, nested IRQ and nonzero two-bank wave RAM snapshots. New v5 files
+cannot be read by earlier builds. No game assets or private evidence are
+included in this change.
+
+VERIFIED: both focused verifiers pass, followed by all 35 core verifiers
+(211.9 seconds) and the benchmark checksum suite. Optional ROM video smoke
+was skipped. Full integration review and rebuilt playthrough measurements
+remain separate gates; the prior FPS results above describe the previous build.
+
+OBSERVED: one fresh read-only review of the cumulative integration candidate
+found no actionable defects after this repair. Its 37-file production/test/tooling
+manifest remained unchanged throughout the review. A second fresh perspective is
+still required for the accumulated persisted-format and CI changes.

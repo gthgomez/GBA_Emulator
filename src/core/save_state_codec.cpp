@@ -799,7 +799,8 @@ bool parse_io_state(Reader& reader, IoRegistersState& io) {
 
 // Mirrors CoreSession::state_hash() exactly, computed over a scratch
 // snapshot so a mismatch can reject BEFORE the target session is mutated.
-[[nodiscard]] std::uint64_t snapshot_state_hash(CoreSessionState& snapshot) {
+[[nodiscard]] std::uint64_t snapshot_state_hash(CoreSessionState& snapshot,
+                                              bool legacy_word_hashes) {
   IoRegisters io(snapshot.interrupts, snapshot.timers, snapshot.dma,
                  snapshot.ppu, snapshot.apu, snapshot.waitcnt, snapshot.keypad);
   io.load_state(snapshot.io);
@@ -817,12 +818,14 @@ bool parse_io_state(Reader& reader, IoRegistersState& io) {
   hasher.add_u64(snapshot.timers.state_hash());
   hasher.add_u64(snapshot.dma.state_hash());
   hasher.add_u64(snapshot.ppu.state_hash());
-  hasher.add_u64(snapshot.apu.state_hash());
+  hasher.add_u64(legacy_word_hashes ? snapshot.apu.legacy_wave_state_hash()
+                                  : snapshot.apu.state_hash());
   hasher.add_u8(static_cast<std::uint8_t>(snapshot.bios.mode()));
   hasher.add_u64(snapshot.keypad.state_hash());
   hasher.add_u64(snapshot.waitcnt.state_hash());
   hasher.add_u64(io.state_hash());
-  hasher.add_u64(scheduler.state_hash());
+  hasher.add_u64(legacy_word_hashes ? scheduler.legacy_irq_state_hash()
+                                 : scheduler.state_hash());
   return hasher.value();
 }
 
@@ -886,7 +889,7 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
   if (!reader.read_u32(version)) {
     return {SaveStateDecodeStatus::corrupt_payload, version, encoded_hash};
   }
-  if (version != 3 && version != kVersion) {
+  if (version != 3 && version != 4 && version != kVersion) {
     // Includes every pre-v3 layout (e.g. v2 partial snapshots).
     return {SaveStateDecodeStatus::unsupported_version, version, encoded_hash};
   }
@@ -951,7 +954,7 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
 
   // Phase 2b: integrity gate BEFORE commit so a mismatch leaves the target
   // session provably unmutated.
-  if (snapshot_state_hash(*next) != encoded_hash) {
+  if (snapshot_state_hash(*next, version < 5) != encoded_hash) {
     return {SaveStateDecodeStatus::state_hash_mismatch, version, encoded_hash};
   }
 

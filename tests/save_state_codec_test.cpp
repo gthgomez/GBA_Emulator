@@ -13,7 +13,66 @@
 
 #include "test_helpers.hpp"
 
+namespace {
+void wave_integrity_test() {
+  using namespace gba::core;
+  auto source = std::make_unique<CoreSession>();
+  auto initial = source->apu().save_state();
+  for (std::size_t bank = 0; bank < initial.wave_ram_banks.size(); ++bank) {
+    for (std::size_t word = 0; word < initial.wave_ram_banks[bank].size(); ++word) {
+      initial.wave_ram_banks[bank][word] = 0x9182 + bank * 0x1000 + word * 0x111;
+    }
+  }
+  expect(source->apu().load_state(initial), "seed both wave RAM banks");
+  const auto encoded = SaveStateCodec::encode(*source);
+  const auto apu_hash = source->apu().state_hash();
+  auto target = std::make_unique<CoreSession>();
+  const auto target_hash = target->state_hash();
+  for (std::size_t bank = 0; bank < initial.wave_ram_banks.size(); ++bank) {
+    for (std::size_t word = 0; word < initial.wave_ram_banks[bank].size(); ++word) {
+      for (unsigned byte = 0; byte < 2; ++byte) {
+        auto altered = initial;
+        altered.wave_ram_banks[bank][word] ^= 1U << (byte * 8);
+        expect(source->apu().load_state(altered), "alter wave RAM byte");
+        expect(source->apu().state_hash() != apu_hash,
+               "wave RAM low and high bytes affect APU hash");
+        const auto altered_bytes = SaveStateCodec::encode(*source);
+        auto tampered = encoded;
+        std::size_t payload_differences = 0;
+        for (std::size_t i = 16; i < encoded.size(); ++i) {
+          if (encoded[i] != altered_bytes[i]) {
+            tampered[i] = altered_bytes[i];
+            ++payload_differences;
+          }
+        }
+        expect(payload_differences == 1, "corruption changes one wave RAM byte");
+        expect(SaveStateCodec::decode_into(*target, tampered).status ==
+                   SaveStateDecodeStatus::state_hash_mismatch,
+               "codec rejects corruption of every wave RAM byte");
+        expect(target->state_hash() == target_hash,
+               "wave corruption rejection preserves target");
+      }
+    }
+  }
+  expect(source->apu().load_state(initial), "restore uncorrupted wave RAM");
+  // Golden hash from the v4 encoder for this nonzero two-bank wave fixture.
+  for (const unsigned version : {3U, 4U}) {
+    auto legacy = encoded;
+    legacy[4] = version;
+    constexpr std::uint64_t legacy_hash = 839431053314699171ULL;
+    for (unsigned i = 0; i < 8; ++i) legacy[8 + i] = (legacy_hash >> (8 * i)) & 0xff;
+    if (version == 3) legacy.resize(legacy.size() - 4);
+    expect(SaveStateCodec::decode_into(*target, legacy).status ==
+               SaveStateDecodeStatus::ok,
+           "legacy nonzero wave RAM snapshot remains readable");
+    expect(target->state_hash() == source->state_hash(),
+           "legacy wave RAM migrates to the full machine hash");
+  }
+}
+}  // namespace
+
 int main() {
+  wave_integrity_test();
   using gba::core::Arm7tdmi;
   using gba::core::CoreRunStopReason;
   using gba::core::CoreSession;

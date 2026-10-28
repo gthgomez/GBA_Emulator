@@ -142,6 +142,8 @@ class CoreScheduler {
   [[nodiscard]] CoreSchedulerState save_state() const;
   void load_state(const CoreSchedulerState& state);
   [[nodiscard]] std::uint64_t state_hash() const;
+  // Decoder compatibility only: v3/v4 hashed just the low byte of IRQ registers.
+  [[nodiscard]] std::uint64_t legacy_irq_state_hash() const;
   [[nodiscard]] bool halted() const;
   void halt_until_interrupt();
   [[nodiscard]] bool wake_from_halt_if_irq_pending();
@@ -170,6 +172,7 @@ class CoreScheduler {
   [[nodiscard]] CoreSchedulerRunResult run_from_pc(std::uint32_t max_steps);
 
  private:
+  [[nodiscard]] std::uint64_t state_hash_impl(bool legacy_irq_registers) const;
   Arm7tdmi& cpu_;
   MemoryBus& memory_;
   InterruptController& interrupts_;

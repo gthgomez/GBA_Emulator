@@ -1401,7 +1401,23 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
 }
 
 std::uint64_t CoreScheduler::state_hash() const {
+  return state_hash_impl(false);
+}
+
+std::uint64_t CoreScheduler::legacy_irq_state_hash() const {
+  return state_hash_impl(true);
+}
+
+std::uint64_t CoreScheduler::state_hash_impl(bool legacy_irq_registers) const {
   StateHasher hasher;
+  const auto add_irq_registers = [&](const auto& registers) {
+    if (legacy_irq_registers) {
+      hasher.add_bytes(registers);
+    } else {
+      hasher.add_u64(registers.size());
+      for (const auto value : registers) hasher.add_u32(value);
+    }
+  };
   hasher.add_u64(scheduler_cycles_);
   hasher.add_bool(halted_);
   hasher.add_bool(last_fetch_address_.has_value());
@@ -1431,7 +1447,7 @@ std::uint64_t CoreScheduler::state_hash() const {
   }
   hasher.add_bool(hle_irq_saved_registers_.has_value());
   if (hle_irq_saved_registers_.has_value()) {
-    hasher.add_bytes(hle_irq_saved_registers_.value());
+    add_irq_registers(*hle_irq_saved_registers_);
   }
   hasher.add_bool(hle_irq_reentry_dispatch_pending_);
   hasher.add_bool(hle_irq_return_latency_pending_);
@@ -1448,14 +1464,14 @@ std::uint64_t CoreScheduler::state_hash() const {
   hasher.add_u8(auto_irq_latency_cycles_);
   hasher.add_u32(timer_io_access_gap_cycles_);
   hasher.add_u32(thumb_misfetch_recovery_count_);
-  // Empty nesting preserves version 3 checkpoint hashes.
+  // Legacy mode preserves version 3/4 checkpoint hashes exactly.
   if (!hle_irq_outer_frames_.empty()) {
     hasher.add_u32(0x4952514EU);
     hasher.add_u64(hle_irq_outer_frames_.size());
     for (const auto& frame : hle_irq_outer_frames_) {
       hasher.add_u32(frame.return_lr);
       hasher.add_bool(frame.saved_registers.has_value());
-      if (frame.saved_registers) hasher.add_bytes(*frame.saved_registers);
+      if (frame.saved_registers) add_irq_registers(*frame.saved_registers);
       hasher.add_bool(frame.long_timer_return_pending);
       hasher.add_bool(frame.slow_timer0_return_pending);
     }
@@ -2460,7 +2476,10 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
       irq_timing.chained_post_return && irq_timing.timer0_interrupt_requested &&
       irq_timing.timer0_reload <= 0xFF80U;
   const std::uint32_t irq_link = cpu_.register_value(Arm7tdmi::kLinkRegister);
+  // Admission already latches the return LR. Saved registers exist only once
+  // the outer handler has actually been dispatched.
   const bool nested = hle_irq_return_lr_.has_value() &&
+                      hle_irq_saved_registers_.has_value() &&
                       irq_link != BiosHleConstants::kIrqReturnSentinelPc;
   if (nested) {
     hle_irq_outer_frames_.push_back({*hle_irq_return_lr_, hle_irq_saved_registers_,
