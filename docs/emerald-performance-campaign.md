@@ -1235,3 +1235,41 @@ checkpoint was recorded in this production probe. Inputs were wall-clock timed,
 so this is a bounded interactive observation rather than an exact replay.
 Audio delivery and physical scanout remain unverified; the proxy events require
 further investigation before claiming smooth audible output.
+
+### DMA snapshot validation and further playback evidence
+
+VERIFIED: a focused regression reproduced the inherited snapshot rejection:
+a receiver with programmed COUNT=1 rejected a valid incoming latched COUNT=16.
+Validation now bounds the incoming counter by the channel's capacity (0x4000
+for DMA0–2, 0x10000 for DMA3). It cannot use either programmed COUNT because
+software may change that register while the enabled channel retains its old
+internal counter. The regression covers all four channels, independent counts,
+exact capacity, excessive counts and unchanged receiver state after rejection.
+It failed before the correction and passed afterward. All 35 native core tests
+and the benchmark checksum suite passed. The serialized representation and
+codec version are unchanged; this is a restore-correctness fix, not a speedup.
+Two fresh independent read-only source reviews found no actionable defects in
+the unchanged controller/test candidate. Neither reviewer ran the local tests.
+
+OBSERVED: eight paired 400-frame story segments reached frame 161,240 outside
+Petalburg gym after Norman's dialogue. All sixteen runs matched their replay
+identities and reported no unsupported instructions, fetch failures or engine
+audio failures. Headless throughput ranged from 86.38 to 92.74 FPS, with p95
+step times of 11.36–12.28 ms and five steps above 16.67 ms across 6,400 steps.
+
+OBSERVED: a separate local desktop diagnostic captured the application's SDL
+postmix output in preallocated memory, writing it after the timed run. From
+that checkpoint it completed 10,800 frames at 59.7244 FPS, against native
+59.7275 FPS. Presentation-return intervals had 18 ms p95 and 19 ms p99 upper
+bounds, a 24.7814 ms maximum, and none above 25 ms. No unsupported stop or
+queue-empty proxy occurred. This used the corrected FIFO core at source
+commit `1c0560007421`, before the snapshot validation follow-up.
+
+OBSERVED: all 16,932 captured playback blocks contained finite float samples;
+99.224% of samples were nonzero. The only five fully silent blocks were at
+startup. None of 16,932 stream callbacks requested additional input, and the
+capture reported no overflow. The 44,100 Hz stereo output covers approximately
+180.84 seconds. This establishes bounded digital delivery for that diagnostic;
+it does not verify physical speakers, scanout or waveform accuracy, or explain
+the production run's earlier 32 queue-empty proxies. The final local machine
+checkpoint is frame 172,040. Game-derived PCM, images and states remain private.
