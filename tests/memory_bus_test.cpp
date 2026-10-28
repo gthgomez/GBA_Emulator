@@ -251,6 +251,12 @@ int main() {
                 "EWRAM word timing metadata");
   expect_timing(MemoryBus::timing(0x03000000, AccessWidth::word), 1, 1, true, true,
                 "IWRAM word timing metadata");
+  for (const std::uint32_t address : {0x04000400U, 0x10000000U, 0xFFFFFFFFU}) {
+    for (const auto width : {AccessWidth::byte, AccessWidth::halfword, AccessWidth::word}) {
+      expect_timing(MemoryBus::timing(address, width), 1, 1, false, false,
+                    "unused bus timing does not expose raw readable or writable memory");
+    }
+  }
   expect_timing(MemoryBus::timing(0x06000000, AccessWidth::word), 2, 2, true, true,
                 "VRAM word timing metadata");
   expect_timing(MemoryBus::timing(0x00000000, AccessWidth::word), 1, 1, true, false,

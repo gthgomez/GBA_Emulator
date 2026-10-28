@@ -413,6 +413,49 @@ All four CI jobs pass for source commit `2dba57f`.
 Agreement with the public integer model does not independently establish
 physical-hardware equivalence.
 
+### Further battle coverage exposes unused-data timing rejection
+
+OBSERVED: continuing the real story reaches Haley's Lotad battle at frame
+224,160, with Torchic level 11 at 23/31 HP. A 900-frame Ember input sequence
+stops after 451 completed frames, reported as an unsupported instruction.
+The current normal executable and the previous integer-affine executable
+stop at the same instruction and produce byte-identical serialized failure
+states. The bounded native delivery passes above do not cover this failure;
+integration is held while it is investigated.
+
+VERIFIED: the stopped opcode is a valid post-indexed byte load from an unused
+address. A private trace follows the game's compressed reverse-sample path
+through a negative sample index. Its arithmetic forms the unused address.
+The CPU already implements pipeline open-bus data for this load, but the
+cycle-estimation preflight rejects the access first because unused bus
+metadata reports zero cycles. The synthetic untimed load succeeds, while its
+timed counterpart fails; the focused regression exits 1 before correction.
+No ROM, trace or machine-state payload is included in the repository.
+
+DOCUMENTED: [GBATEK's unused-memory rules](https://github.com/mgba-emu/gbatek/blob/master/gba.md#reading-from-unused-memory-00004000-01ffffff10000000-ffffffff)
+return prefetched instruction data, with ARM sourcing the word at PC+8 and
+narrow reads selecting the addressed lane. The pinned reference's
+[load implementation](https://github.com/mgba-emu/mgba/blob/7a12d6d/src/gba/memory.c)
+also supplies pipeline data without external wait states for unused loads.
+The candidate assigns a one-cycle unused bus access and permits the existing
+CPU fallback to execute. Raw memory reads and policy flags remain unchanged;
+unreadable pipeline sources and unused instruction fetches still fail.
+Detailed Thumb pipeline history and DMA-driven open bus remain separate
+accuracy limits; this is not a complete hardware open-bus implementation.
+
+VERIFIED: focused CPU tests pass after correction for byte lanes, post-index
+wraparound, flags, word rotation, halfword selection, plain/WAITCNT-aware
+steps, Thumb timing and an unreadable pipeline. New scheduler and raw timing
+checks cover actual fetch/execute and unchanged unsupported fetch behavior.
+A diagnostic runtime compiled with the corrected CPU and memory implementation
+completes all 900 formerly failing battle frames without execution errors.
+This establishes functional progress, not normal-build speed or sustained
+performance. All 36 core verifiers pass (220.6 s), including the new scheduler
+and memory cases, and mandatory benchmarks pass. A fresh independent read-only
+review finds no introduced defect across the five pinned source/test files,
+including actual DMA and scheduler timing consumers; hashes match before and
+after review. Fresh normal optimized ROM checks remain pending at this point.
+
 ### Post-integration profiling and next rendering correction
 
 OBSERVED: PR #53 passed all four CI jobs and merged as `f903979056c0`.

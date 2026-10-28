@@ -2785,6 +2785,28 @@ int main() {
     intr_wait_scheduler.load_state(gba::core::CoreSchedulerState{});
   }
 
+  {
+    cpu.reset(); memory.reset(); interrupts.reset(); timers.reset();
+    dma.reset(); ppu.reset(); apu.reset();
+    CoreScheduler unused_scheduler(cpu, memory, interrupts, timers, dma, ppu, apu, waitcnt);
+    // LDRB LR,[R2],#1, with a separately seeded pipeline word at PC+8.
+    expect(memory.write32(0x03001000, 0xE4D2E001) &&
+               memory.write32(0x03001008, 0xA1B2C3D4),
+           "unused data scheduler test seeds synthetic code");
+    cpu.set_register(Arm7tdmi::kPc, 0x03001000);
+    cpu.set_register(2, 0x10000003);
+    const auto unused_result = unused_scheduler.step_from_pc();
+    expect(!unused_result.fetch_failed && unused_result.step.has_value() &&
+               unused_result.step->cpu_step.status == ExecuteStatus::executed,
+           "scheduler executes a timed unused byte load");
+    expect(cpu.register_value(14) == 0xA1 && cpu.register_value(2) == 0x10000004 &&
+               cpu.register_value(Arm7tdmi::kPc) == 0x03001004 &&
+               unused_result.step->cpu_step.elapsed_cycles == 3,
+           "scheduler retains unused byte data, writeback and CPU timing");
+    cpu.set_register(Arm7tdmi::kPc, 0x10000000);
+    expect(unused_scheduler.step_from_pc().fetch_failed,
+           "unused instruction fetch still fails instead of fabricating code");
+  }
   std::cout << "core_scheduler_test: PASS\n";
   return 0;
 }

@@ -1748,6 +1748,72 @@ int main() {
   expect(open_bus_cpu.register_value(4) == 0x08E3A020,
          "protected BIOS unaligned LDR rotates PC+8 word");
 
+  constexpr std::uint32_t unused_ldrb_post_index =
+      kCondAl | kSingleDataTransferImmediate | kUp | kByteTransfer | kLoad |
+      rn(2) | rd(14) | offset12(1);
+  expect(open_bus_memory.write32(0x03001008, 0xA1B2C3D4),
+         "unused-data timing test seeds its ARM pipeline word");
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x03001000);
+  open_bus_cpu.set_register(2, 0x10000003);
+  expect(open_bus_cpu.execute_arm(unused_ldrb_post_index, open_bus_memory) ==
+             ExecuteStatus::executed && open_bus_cpu.register_value(14) == 0xA1 &&
+             open_bus_cpu.register_value(2) == 0x10000004,
+         "untimed unused byte load reads the aligned pipeline lane and writes back");
+  for (const std::uint32_t unused_address :
+       {0x10000000U, 0x10000001U, 0x10000002U, 0x10000003U,
+        0x8C000003U, 0xFFFFFFFFU, 0x00010000U, 0x04000400U}) {
+    for (bool use_waitcnt : {true, false}) {
+      const auto flags_before = open_bus_cpu.cpsr();
+      open_bus_cpu.set_register(Arm7tdmi::kPc, 0x03001000);
+      open_bus_cpu.set_register(2, unused_address);
+      const auto unused_step = use_waitcnt
+          ? open_bus_cpu.step_arm(unused_ldrb_post_index, open_bus_memory, waitcnt)
+          : open_bus_cpu.step_arm(unused_ldrb_post_index, open_bus_memory);
+      expect(unused_step.status == ExecuteStatus::executed,
+             "timed unused byte load reaches the existing open-bus fallback");
+      expect(unused_step.elapsed_cycles == 3 && unused_step.memory_timing_applied &&
+                 open_bus_cpu.register_value(14) ==
+                     ((0xA1B2C3D4U >> ((unused_address & 3U) * 8U)) & 0xFFU) &&
+                 open_bus_cpu.register_value(2) == unused_address + 1U &&
+                 open_bus_cpu.cpsr() == flags_before,
+             "timed unused byte load charges bus cycles and preserves writeback");
+    }
+  }
+  constexpr std::uint32_t unused_ldr_word =
+      kCondAl | kSingleDataTransferImmediate | kPreIndexed | kUp | kLoad | rn(2) | rd(14);
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x03001000);
+  open_bus_cpu.set_register(2, 0x10000001);
+  const auto unused_word_step = open_bus_cpu.step_arm(unused_ldr_word, open_bus_memory, waitcnt);
+  expect(unused_word_step.status == ExecuteStatus::executed &&
+             unused_word_step.elapsed_cycles == 3 &&
+             open_bus_cpu.register_value(14) == 0xD4A1B2C3,
+         "timed unused word load rotates the ARM pipeline word");
+  constexpr std::uint32_t unused_ldrh =
+      kCondAl | kHalfwordDataTransferImmediate | kPreIndexed | kUp | kLoad | rn(2) | rd(14);
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x03001000);
+  open_bus_cpu.set_register(2, 0x10000002);
+  const auto unused_half_step = open_bus_cpu.step_arm(unused_ldrh, open_bus_memory, waitcnt);
+  expect(unused_half_step.status == ExecuteStatus::executed &&
+             unused_half_step.elapsed_cycles == 3 &&
+             open_bus_cpu.register_value(14) == 0xA1B2,
+         "timed unused halfword load selects the ARM pipeline half");
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x10000000);
+  open_bus_cpu.set_register(2, 0x10000003);
+  expect(open_bus_cpu.step_arm(unused_ldrb_post_index, open_bus_memory, waitcnt).status ==
+             ExecuteStatus::unsupported && open_bus_cpu.register_value(2) == 0x10000003,
+         "unused load still fails without a readable pipeline source");
+
+  expect(open_bus_memory.load_game_pak_rom(rom_with_word(4, 0x12345678)),
+         "Thumb unused-data timing test seeds its pipeline halfword");
+  expect(open_bus_cpu.set_cpsr(0x3F), "unused-data test enters Thumb system mode");
+  open_bus_cpu.set_register(Arm7tdmi::kPc, 0x08000000);
+  open_bus_cpu.set_register(1, 0x10000001);
+  const auto unused_thumb_word = open_bus_cpu.step_thumb(0x6808, open_bus_memory, waitcnt);
+  expect(unused_thumb_word.status == ExecuteStatus::executed &&
+             unused_thumb_word.elapsed_cycles == 3 && unused_thumb_word.memory_timing_applied &&
+             open_bus_cpu.register_value(0) == 0x78567856,
+         "timed Thumb unused word load charges bus timing for its existing fallback");
+
   constexpr std::uint32_t str_r1_base_plus_r2_rrx =
       kCondAl | kSingleDataTransferRegister | kPreIndexed | kUp | rn(6) | rd(1) |
       shift_type(3) | rm(2);
