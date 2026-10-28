@@ -25,18 +25,88 @@ conformance gaps remain relevant even when a game appears to work.
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #54 merged as `7751705dff14`; draft PR #55 at `74aab105e364` passes all four Linux/Windows CI jobs and remains held for native acceptance |
-| Current iteration | Raster repairs are committed; BIOS affine quantization follow-up passes local checks/review, with optimized ROM verification pending |
-| Story | Winston defeated at frame 221,340; Torchic reaches level 11 with 23/31 HP through normal level-up; victory-text checkpoint retained |
-| Repeat throughput | Latest two exact 10,800-frame diagnostic replays: 78.36 / 79.24 FPS; 15 / 12 steps over 16.67 ms; every frame's logical instruction counts identical to native |
-| SDL delivery | Event-guard candidate: 10,800 frames at 59.6837 FPS, 23 queue-empty reports, p95/p99 upper bounds 18/18 ms, maximum 30.9679 ms and eight gaps over 25 ms; further optimization pending |
-| Determinism | Both exact-input profiling replays byte-identical to the diagnostic SDL checkpoint; latest 1,200-frame story pair also identical |
-| Audio | Pause repair verified: settled missing-input requests 5→0 and first-three-second queue-empty events 7→0; identical guest states; general stall recovery remains open |
-| Intro | Actual runtime nearby exact matches increase 1,986→2,655 of 3,600; selected wave/title scenes match exactly at offsets of 5–8 frames; timing/randomized scenes remain |
-| Status | Active: diagnose remaining native hitch, investigate intro timing/random choices and extend story from Route 104; broad smoothness target remains open |
+| Integration | PR #55 merged as `b55ca48c0903`; all four final PR CI jobs and all four post-merge CI jobs passed |
+| Current iteration | Scanline rendering, mode-1 layers/ties, integer BIOS affine math, wide translation and timed unused-memory loads integrated; normal executable SHA-256 begins `2f5e11f72f5a` |
+| Story | Winston, Haley and Twins Gina & Mia defeated; frame 237,060 retains double-battle payout text; Torchic level 12, 26/34 HP, Wurmple level 4 |
+| Repeat throughput | Latest 900-frame double-battle victory pair: 77.409907 / 77.202220 FPS; earlier turn pairs include occasional steps above 16.67 ms |
+| SDL delivery | Current normal executable: 18,000 frames at 59.7286 FPS; zero reported queue-empty events; presentation p95/p99 upper bounds 18/18 ms, maximum 20.3601 ms, no gaps above 25 ms |
+| Determinism | Every new paired double-battle segment completes with byte-identical final states and no execution errors |
+| Audio | Current five-minute normal run reports zero queue-empty events; this counter does not establish physical audio quality or whole-game behavior |
+| Intro | Current integer-math runtime: 2,654 nearby exact matches of 3,600; new controlled snapshots isolate palette phase and rider differences at frames 1,300/1,500 |
+| Status | Active: bounded native target observed; extend story, investigate guest timing/random choices and retain longer-run coverage |
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
+
+### Merged candidate, double battle and scenery isolation
+
+VERIFIED: PR #55 merged at `b55ca48c09035cd281084092b0117bc4095403bc`.
+Its tree equals the locally verified final PR candidate `23cb7142e3fc`.
+All four Linux/Windows core/desktop jobs passed both on that PR candidate
+(run `40762927613`) and after merge (run `40764125518`). No implementation
+changed during the following playthrough and diagnostic work.
+
+OBSERVED: the normal optimized executable completes the Twins Gina & Mia
+double battle through the victory payout. Screenshots establish both command
+menus, Ember, Seedot fainting, experience awards, Wurmple reaching level 4,
+Lotad fainting and the payout. Torchic remains level 12 at 26/34 HP. Every
+paired segment from frame 231,420 through 237,060 completes with identical
+serialized states and no execution errors. The 1,260-frame first-turn pair
+runs at 75.904661 / 75.256566 FPS, with p95 steps of 13.8174 / 13.8949 ms;
+one / three steps exceed 16.67 ms. The final 900-frame pair runs at
+77.409907 / 77.202220 FPS. These headless results extend progression coverage;
+the separate 18,000-frame normal SDL measurement establishes the latest
+bounded presentation result.
+
+VERIFIED: five newly recaptured reference states/videos at frames 1,293,
+1,297, 1,300, 1,497 and 1,500 reproduce the retained reference stream exactly.
+The current renderer, given each reference's video memory and LCD registers,
+also reproduces all five reference images with zero differing pixels.
+Private captures from the current core verify all first 1,500 runtime images
+against the retained current stream before interpreting selected states.
+
+OBSERVED: rendering our final state at frame N differs from the image already
+completed at N: final-state registers include later guest updates. The first
+palette experiment using those final states is therefore inconclusive and is
+retained. Using our states at 1,299 and 1,499 instead reproduces the actual
+current runtime images at 1,300 and 1,500 exactly, with zero differing pixels.
+This phase check is necessary before interpreting a snapshot substitution.
+
+VERIFIED: a private static-render experiment replaces only those snapshots'
+palette bytes with reference palette bytes. It does not change the executable,
+normal runtime captures or story checkpoints:
+
+| Actual current frame | Reference frame | Original differing pixels | After palette substitution | Remaining bounds |
+| --- | --- | ---: | ---: | --- |
+| 1,300 | 1,297 | 3,041 | 442 | x 200–232, y 77–114, rider only |
+| 1,500 | 1,497 | 3,110 | 469 | x 118–150, y 77–119, rider only |
+
+Only four palette bytes differ in each case: entries 9 and 10 exchange colors
+12,844 and 7,788. At current 1,300 versus reference 1,293 the palettes already
+match, but scroll registers differ; choosing the smallest whole-image pixel
+count alone had selected a misleading phase. At reference 1,297 the scroll
+positions agree modulo the hardware register masks, and palette substitution
+leaves only the rider difference already associated with the differing guest
+gender selection. INFERRED: the selected scenery differences follow guest
+palette/scene phase, rather than a demonstrated pixel-rendering defect.
+The public game's
+[CycleSceneryPalette](https://raw.githubusercontent.com/pret/pokeemerald/master/src/intro_credits_graphics.c)
+exchanges these entries according to the VBlank counter while fading is
+inactive. Additional read-only memory probes observe current counters
+1,287 / 1,487 in the phase-checked states versus reference counters
+1,284 / 1,484 at frames 1,297 / 1,497. Current/reference guest gender values
+are 0 / 1. Reference video recapture remains exact while collecting these
+values through its exposed guest-memory maps. The underlying counter/timing
+divergence still needs investigation;
+no palette remapping, forced gender, or reference-specific correction is
+implemented.
+
+Private evidence: `build/route104-twins-232080` through
+`build/route104-twins-237060`, `build/intro-reference-scenery-selected`,
+`build/intro-own-scenery*`, `build/intro-scenery-phase-analysis.json`,
+`build/intro-scenery-counterfactual-comparison.json` (first, phase-mismatched
+experiment) and `build/intro-scenery-prior-counterfactual-comparison.json`
+(phase-checked experiment). Game-derived artifacts remain ignored locally.
 
 VERIFIED: PR #54 passed all four CI jobs on `aa705c7aaea2` and merged through
 the exact-candidate normal path as `7751705dff14`. The canonical checkout was
