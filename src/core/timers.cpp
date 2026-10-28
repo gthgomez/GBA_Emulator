@@ -253,7 +253,7 @@ std::uint32_t Timers::cycles_until_next_prescaler_tick(std::size_t index) const 
 }
 
 std::uint64_t Timers::overflow_count(std::size_t index) const {
-  return checked_timer(index).overflow_count;
+  return overflow_count_at(index);
 }
 
 std::uint64_t Timers::state_hash() const {

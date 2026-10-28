@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -65,6 +66,7 @@ struct CliOptions {
   std::string save_state_output;
   std::string load_state_input;
   std::uint32_t quit_after_frames = 0;
+  bool frame_timing = false;
   std::uint32_t reset_after_frames = 0;
   std::uint32_t switch_after_frames = 0;
   std::string switch_to_path;
@@ -88,6 +90,7 @@ struct InputEvent {
       "  gba-desktop                          (opens a ROM file dialog)\n"
       "  --save-type TYPE                    initial ROM backup type (default auto)\n"
       "    auto|none|sram32k|flash64k|flash128k|eeprom512|eeprom8k\n"
+      "  --load-state PATH                   load a checkpoint before play\n"
       "\n"
       "Headless lab mode:\n"
       "  --headless                          run deterministically without a window\n"
@@ -105,6 +108,7 @@ struct InputEvent {
       "\n"
       "Automation hooks (play mode):\n"
       "  --quit-after N                      quit after N presented frames\n"
+      "  --frame-timing                      report presentation interval statistics\n"
       "  --reset-after N                     reset after N presented frames\n"
       "  --switch-after N                    switch to --switch-to ROM after N frames\n"
       "  --switch-to PATH                    ROM used by --switch-after\n"
@@ -168,6 +172,8 @@ CliOptions parse_cli(int argc, char** argv) {
       opts.frames = next_u32();
     } else if (arg == "--max-steps-per-frame") {
       opts.max_steps_per_frame = next_u32();
+    } else if (arg == "--frame-timing") {
+      opts.frame_timing = true;
     } else if (arg == "--input-script") {
       opts.input_script_path = next_path();
     } else if (arg == "--artifact") {
@@ -202,6 +208,14 @@ CliOptions parse_cli(int argc, char** argv) {
   }
   if (!rom_seen && opts.headless) {
     std::cerr << "gba-desktop: --headless requires a ROM (--rom <path.gba>)\n";
+    usage(2);
+  }
+  if (opts.headless && opts.frame_timing) {
+    std::cerr << "gba-desktop: --frame-timing requires play mode\n";
+    std::exit(2);
+  }
+  if (!rom_seen && !opts.load_state_input.empty()) {
+    std::cerr << "gba-desktop: --load-state requires a ROM (--rom <path.gba>)\n";
     usage(2);
   }
   if (!rom_seen && opts.save_type_override) {
@@ -637,7 +651,10 @@ int run_headless(const CliOptions& opts) {
   sha.update(rom.data(), rom.size());
   const std::string rom_sha256 = hex_fixed(sha.digest().data(), 32);
 
-  EmulatorRuntime runtime;
+  // Keep the large runtime off the host stack; save-state encoding also needs
+  // substantial temporary space, especially with cross-module optimization.
+  auto runtime_owner = std::make_unique<EmulatorRuntime>();
+  auto& runtime = *runtime_owner;
   // The lab records the final machine hash below. Per-frame runtime hashing
   // would also scan the entire cartridge on every frame (16 MiB for Emerald),
   // even though none of those intermediate hashes are consumed here.
@@ -876,8 +893,10 @@ int main(int argc, char** argv) {
   if (!opts.headless) {
     gba::desktop::HostOptions host;
     host.rom_path = opts.rom_path;
+    host.initial_state_path = opts.load_state_input;
     host.initial_scale = 3;
     host.quit_after_frames = opts.quit_after_frames;
+    host.frame_timing = opts.frame_timing;
     host.reset_after_frames = opts.reset_after_frames;
     host.switch_after_frames = opts.switch_after_frames;
     host.switch_to_path = opts.switch_to_path;

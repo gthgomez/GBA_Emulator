@@ -110,6 +110,14 @@ jobs:
         if: runner.os == 'Linux'
         run: ./tools/run-desktop-smoke.sh
 
+      # Check repeatable checkpoint runs using only generated fixture data.
+      - name: Checkpoint replay helper (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          python .\tests\rom_playthrough_check.py --exe .\build\desktop\apps\desktop\gba-desktop.exe
+
       # Cartridge-save lifecycle: restart persistence, reset preservation,
       # no spurious empty saves, rejected-save preservation.
       - name: Save-lifecycle smoke (Windows)

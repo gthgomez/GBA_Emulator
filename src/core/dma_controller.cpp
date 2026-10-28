@@ -27,6 +27,10 @@ constexpr std::uint32_t kFifoAAddress = 0x040000A0;
 constexpr std::uint32_t kFifoBAddress = 0x040000A4;
 constexpr std::uint32_t kSoundFifoWordsPerRequest = 4;
 
+[[nodiscard]] constexpr std::uint32_t dma_word_count_mask(std::size_t channel) {
+  return channel == 3 ? 0xFFFFU : 0x3FFFU;
+}
+
 [[nodiscard]] constexpr InterruptSource dma_interrupt_source(std::size_t channel) {
   return static_cast<InterruptSource>(
       static_cast<std::uint8_t>(InterruptSource::dma0) + channel);
@@ -225,6 +229,10 @@ void DmaController::write_control(std::size_t channel, std::uint16_t value) {
   const bool was_enabled = (state.control & kEnableFlag) != 0;
   const bool was_immediate =
       was_enabled && start_timing(channel) == DmaStartTiming::immediate;
+  const bool was_sound_fifo =
+      was_enabled && (channel == 1 || channel == 2) &&
+      start_timing(channel) == DmaStartTiming::special &&
+      (state.destination == kFifoAAddress || state.destination == kFifoBAddress);
   const std::uint16_t control_mask =
       channel == 3 ? static_cast<std::uint16_t>(kControlMask | kGamePakDrqFlag)
                    : kControlMask;
@@ -233,6 +241,12 @@ void DmaController::write_control(std::size_t channel, std::uint16_t value) {
   if (!was_enabled && is_enabled) {
     state.current_source = state.source;
     state.current_destination = state.destination;
+    state.current_count = normalized_word_count(channel);
+  } else if (was_sound_fifo && is_enabled &&
+             start_timing(channel) == DmaStartTiming::immediate) {
+    // The FIFO stop sequence keeps Enable set, writes COUNT=4 and selects
+    // immediate mode. COUNT becomes effective again; preserve the addresses
+    // reached by the preceding FIFO bursts (AGB manual section 12.4.2.2).
     state.current_count = normalized_word_count(channel);
   }
   if (!is_enabled) {
@@ -339,7 +353,10 @@ bool DmaController::load_state(const State& state) {
         channel_state.current_count != 0) {
       return false;
     }
-    if (channel_state.current_count > normalized_word_count(channel)) {
+    // Programmed COUNT and the latched counter can differ after a register
+    // write while enabled. Validate the incoming counter against hardware
+    // capacity, independently of either controller's programmed COUNT.
+    if (channel_state.current_count > dma_word_count_mask(channel) + 1U) {
       return false;
     }
   }
@@ -445,7 +462,7 @@ void DmaController::refresh_immediate_pending() {
 
 std::uint32_t DmaController::normalized_word_count(std::size_t channel) const {
   const Channel& state = checked_channel(channel);
-  const std::uint32_t mask = channel == 3 ? 0xFFFFU : 0x3FFFU;
+  const std::uint32_t mask = dma_word_count_mask(channel);
   const std::uint32_t count = state.word_count & mask;
   return count == 0 ? mask + 1U : count;
 }
@@ -561,8 +578,9 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
                                                const WaitStateControl* waitcnt,
                                                std::uint32_t& units_transferred,
                                                std::uint32_t& bus_cycles) {
-  if (!transfer_32bit(channel) || source_control(channel) == DmaAddressControl::increment_reload ||
-      destination_control(channel) != DmaAddressControl::fixed) {
+  // Sound FIFO requests use a four-word burst and keep the FIFO destination
+  // fixed regardless of the programmed transfer-width and destination modes.
+  if (source_control(channel) == DmaAddressControl::increment_reload) {
     return false;
   }
 
@@ -588,19 +606,8 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
   state.current_source = source_address;
   state.current_destination = destination(channel);
 
-  // Each FIFO request consumes one 4-word burst from the programmed block.
-  // The completion IRQ fires exactly when the internal counter reaches zero
-  // (once per full block), not on every burst; repeat then reloads the
-  // counter for the next block, otherwise the channel disables itself.
-  const std::uint32_t remaining =
-      state.current_count >= kSoundFifoWordsPerRequest
-          ? state.current_count - kSoundFifoWordsPerRequest
-          : 0U;
-  if (remaining != 0) {
-    state.current_count = remaining;
-    return true;
-  }
-
+  // FIFO mode ignores programmed COUNT: each four-word request is a complete
+  // transfer, including its completion IRQ and repeat/disable handling.
   if (irq_on_completion(channel)) {
     interrupts.request(dma_interrupt_source(channel));
   }

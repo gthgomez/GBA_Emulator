@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -291,6 +292,37 @@ int main() {
   expect(bus.write8(0x05000000, 0x78), "write palette start");
   expect(bus.write8(0x06000000, 0x9A), "write VRAM start");
   expect(bus.write16(0x07000000, 0x00BC), "write OAM start");
+
+  // The renderer's fast halfword reads must retain ordinary bus semantics,
+  // including mirrors, odd addresses and non-video fallbacks.
+  auto video_bus = std::make_unique<MemoryBus>();
+  for (std::uint32_t offset = 0; offset < MemoryBus::kVramSize; offset += 2) {
+    expect(video_bus->write16(0x06000000U + offset,
+                              static_cast<std::uint16_t>((offset * 37U) ^ (offset >> 5))),
+           "seed video memory for fast-read comparison");
+  }
+  for (std::uint32_t offset = 0; offset < MemoryBus::kPaletteSize; offset += 2) {
+    expect(video_bus->write16(0x05000000U + offset,
+                              static_cast<std::uint16_t>((offset * 19U) ^ 0xA55AU)),
+           "seed palette for fast-read comparison");
+  }
+  constexpr std::uint32_t video_read_boundaries[] = {
+      0x04FFFFFF, 0x05000000, 0x05000001, 0x050003FE, 0x050003FF,
+      0x05000400, 0x05FFFFFE, 0x06000000, 0x06017FFE, 0x06017FFF,
+      0x06018000, 0x0601FFFE, 0x06020000, 0x06FFFFFE, 0x07000000,
+      0x08000000, 0x0E000001, 0xFFFFFFFF};
+  for (const std::uint32_t address : video_read_boundaries) {
+    expect(video_bus->read_video16(address) == video_bus->read16(address),
+           "video halfword read matches the ordinary bus at boundaries");
+  }
+  std::uint32_t sample_address = 0x12345678;
+  for (std::uint32_t sample = 0; sample < 65536; ++sample) {
+    sample_address = sample_address * 1664525U + 1013904223U;
+    const std::uint32_t address = ((sample & 2U) ? 0x05000000U : 0x06000000U) |
+                                  (sample_address & 0x00FFFFFFU);
+    expect(video_bus->read_video16(address) == video_bus->read16(address),
+           "video halfword read preserves mirrored and unaligned accesses");
+  }
 
   expect_read(bus, 0x02000000, 0x12, "read EWRAM start");
   expect_read(bus, 0x0203FFFF, 0x34, "read EWRAM end");

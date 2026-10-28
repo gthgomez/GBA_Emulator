@@ -1318,6 +1318,7 @@ void CoreScheduler::reset_scheduler_cycles() {
   halted_ = false;
   hle_irq_return_lr_.reset();
   hle_irq_saved_registers_.reset();
+  hle_irq_outer_frames_.clear();
   hle_irq_reentry_dispatch_pending_ = false;
   hle_irq_return_latency_pending_ = false;
   hle_irq_post_return_latency_armed_ = false;
@@ -1357,7 +1358,7 @@ CoreSchedulerState CoreScheduler::save_state() const {
           hle_irq_post_return_chain_active_,
           hle_irq_chained_spaced_data_service_count_, auto_irq_line_high_,
           auto_irq_latency_cycles_, timer_io_access_gap_cycles_,
-          thumb_misfetch_recovery_count_};
+          thumb_misfetch_recovery_count_, hle_irq_outer_frames_};
 }
 
 void CoreScheduler::load_state(const CoreSchedulerState& state) {
@@ -1374,6 +1375,7 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
   last_waitcnt_control_ = state.last_waitcnt_control;
   hle_irq_return_lr_ = state.hle_irq_return_lr;
   hle_irq_saved_registers_ = state.hle_irq_saved_registers;
+  hle_irq_outer_frames_ = state.hle_irq_outer_frames;
   hle_irq_reentry_dispatch_pending_ = state.hle_irq_reentry_dispatch_pending;
   hle_irq_return_latency_pending_ = state.hle_irq_return_latency_pending;
   hle_irq_post_return_latency_armed_ = state.hle_irq_post_return_latency_armed;
@@ -1399,7 +1401,23 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
 }
 
 std::uint64_t CoreScheduler::state_hash() const {
+  return state_hash_impl(false);
+}
+
+std::uint64_t CoreScheduler::legacy_irq_state_hash() const {
+  return state_hash_impl(true);
+}
+
+std::uint64_t CoreScheduler::state_hash_impl(bool legacy_irq_registers) const {
   StateHasher hasher;
+  const auto add_irq_registers = [&](const auto& registers) {
+    if (legacy_irq_registers) {
+      hasher.add_bytes(registers);
+    } else {
+      hasher.add_u64(registers.size());
+      for (const auto value : registers) hasher.add_u32(value);
+    }
+  };
   hasher.add_u64(scheduler_cycles_);
   hasher.add_bool(halted_);
   hasher.add_bool(last_fetch_address_.has_value());
@@ -1429,7 +1447,7 @@ std::uint64_t CoreScheduler::state_hash() const {
   }
   hasher.add_bool(hle_irq_saved_registers_.has_value());
   if (hle_irq_saved_registers_.has_value()) {
-    hasher.add_bytes(hle_irq_saved_registers_.value());
+    add_irq_registers(*hle_irq_saved_registers_);
   }
   hasher.add_bool(hle_irq_reentry_dispatch_pending_);
   hasher.add_bool(hle_irq_return_latency_pending_);
@@ -1446,6 +1464,18 @@ std::uint64_t CoreScheduler::state_hash() const {
   hasher.add_u8(auto_irq_latency_cycles_);
   hasher.add_u32(timer_io_access_gap_cycles_);
   hasher.add_u32(thumb_misfetch_recovery_count_);
+  // Legacy mode preserves version 3/4 checkpoint hashes exactly.
+  if (!hle_irq_outer_frames_.empty()) {
+    hasher.add_u32(0x4952514EU);
+    hasher.add_u64(hle_irq_outer_frames_.size());
+    for (const auto& frame : hle_irq_outer_frames_) {
+      hasher.add_u32(frame.return_lr);
+      hasher.add_bool(frame.saved_registers.has_value());
+      if (frame.saved_registers) add_irq_registers(*frame.saved_registers);
+      hasher.add_bool(frame.long_timer_return_pending);
+      hasher.add_bool(frame.slow_timer0_return_pending);
+    }
+  }
   return hasher.value();
 }
 
@@ -1458,7 +1488,7 @@ void CoreScheduler::halt_until_interrupt() {
 }
 
 bool CoreScheduler::wake_from_halt_if_irq_pending() {
-  if (!halted_ || !interrupts_.irq_line()) {
+  if (!halted_ || !interrupts_.irq_line_active()) {
     return false;
   }
   halted_ = false;
@@ -1478,10 +1508,10 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
     return {0, std::nullopt, 0, {}, {}};
   }
 
-  const std::uint64_t timer0_overflows_before = timers_.overflow_count(0);
-  const std::uint64_t timer1_overflows_before = timers_.overflow_count(1);
+  const std::uint64_t timer0_overflows_before = timers_.overflow_count_at(0);
+  const std::uint64_t timer1_overflows_before = timers_.overflow_count_at(1);
   const bool irq_line_active_before =
-      interrupts_.irq_line() && !cpu_.irq_disabled();
+      interrupts_.irq_line_active() && !cpu_.irq_disabled();
   const Timers::TickResult timer_tick = timers_.tick(cycles, interrupts_);
   if (io_ != nullptr) {
     io_->tick(cycles);
@@ -1525,9 +1555,9 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
     }
   };
   consume_direct_sound_timer(
-      0, timers_.overflow_count(0) - timer0_overflows_before);
+      0, timers_.overflow_count_at(0) - timer0_overflows_before);
   consume_direct_sound_timer(
-      1, timers_.overflow_count(1) - timer1_overflows_before);
+      1, timers_.overflow_count_at(1) - timer1_overflows_before);
 
   // Iterative event/DMA drain loop.
   // DMA bus_cycles may generate new PPU events (HBlank/VBlank) or timer
@@ -1553,8 +1583,8 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
         total_dma_result.unsupported_request || triggered_dma.unsupported_request;
     triggered_dma = {0, 0, false, 0};
 
-    const std::uint64_t iter_timer0_before = timers_.overflow_count(0);
-    const std::uint64_t iter_timer1_before = timers_.overflow_count(1);
+    const std::uint64_t iter_timer0_before = timers_.overflow_count_at(0);
+    const std::uint64_t iter_timer1_before = timers_.overflow_count_at(1);
     const Timers::TickResult dma_timer_tick =
         timers_.tick(pending_dma, interrupts_);
     if (io_ != nullptr) {
@@ -1605,9 +1635,9 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
       }
     };
     consume_dma_direct_sound(
-        0, timers_.overflow_count(0) - iter_timer0_before);
+        0, timers_.overflow_count_at(0) - iter_timer0_before);
     consume_dma_direct_sound(
-        1, timers_.overflow_count(1) - iter_timer1_before);
+        1, timers_.overflow_count_at(1) - iter_timer1_before);
 
     total_dma_result.bus_cycles += pending_dma;
     dma_time_base += pending_dma;
@@ -1624,7 +1654,7 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
             : timer_io_access_gap_cycles_ + total_visible_cycles;
   }
   const bool irq_line_active_after =
-      interrupts_.irq_line() && !cpu_.irq_disabled();
+      interrupts_.irq_line_active() && !cpu_.irq_disabled();
   // Combine IRQ cycle information from both the CPU interval and DMA time
   const bool any_timer_irq =
       timer_tick.first_irq_cycle.has_value() || dma_first_irq_cycle.has_value();
@@ -2377,7 +2407,7 @@ void CoreScheduler::reset_fetch_timing_sequence() {
 }
 
 void CoreScheduler::update_auto_irq_latency(std::uint32_t elapsed_cycles) {
-  const bool line_active = interrupts_.irq_line() && !cpu_.irq_disabled();
+  const bool line_active = interrupts_.irq_line_active() && !cpu_.irq_disabled();
   if (!line_active) {
     reset_auto_irq_latency();
     return;
@@ -2398,7 +2428,7 @@ void CoreScheduler::update_auto_irq_latency(std::uint32_t elapsed_cycles) {
 }
 
 bool CoreScheduler::auto_irq_ready() const {
-  return interrupts_.irq_line() && !cpu_.irq_disabled() &&
+  return interrupts_.irq_line_active() && !cpu_.irq_disabled() &&
          auto_irq_line_high_ && auto_irq_latency_cycles_ == 0;
 }
 
@@ -2445,6 +2475,17 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
   const bool long_timer_chained_post_return_dispatch =
       irq_timing.chained_post_return && irq_timing.timer0_interrupt_requested &&
       irq_timing.timer0_reload <= 0xFF80U;
+  const std::uint32_t irq_link = cpu_.register_value(Arm7tdmi::kLinkRegister);
+  // Admission already latches the return LR. Saved registers exist only once
+  // the outer handler has actually been dispatched.
+  const bool nested = hle_irq_return_lr_.has_value() &&
+                      hle_irq_saved_registers_.has_value() &&
+                      irq_link != BiosHleConstants::kIrqReturnSentinelPc;
+  if (nested) {
+    hle_irq_outer_frames_.push_back({*hle_irq_return_lr_, hle_irq_saved_registers_,
+                                     hle_irq_long_timer_chained_return_pending_,
+                                     hle_irq_slow_timer0_return_pending_});
+  }
   hle_irq_reentry_dispatch_pending_ = false;
   hle_irq_post_return_dispatch_pending_ = false;
   hle_irq_chained_post_return_dispatch_pending_ = false;
@@ -2455,11 +2496,9 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
   hle_irq_slow_timer0_return_pending_ =
       interrupts_.requested(InterruptSource::timer0) &&
       timers_.prescaler_divisor(0) > 1U;
-  const std::uint32_t irq_link = cpu_.register_value(Arm7tdmi::kLinkRegister);
-  if (!hle_irq_return_lr_.has_value() &&
-      irq_link != BiosHleConstants::kIrqReturnSentinelPc) {
+  if (irq_link != BiosHleConstants::kIrqReturnSentinelPc) {
     hle_irq_return_lr_ = irq_link;
-    (void)memory_.write32(0x03007FF8U, irq_link);
+    if (!nested) (void)memory_.write32(0x03007FF8U, irq_link);
   }
   std::array<std::uint32_t, 13> saved_registers{};
   for (std::uint8_t reg = 0; reg < saved_registers.size(); ++reg) {
@@ -2517,13 +2556,21 @@ std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_return(
       hle_irq_long_timer_chained_return_pending_, slow_timer0_active_return);
   hle_irq_long_timer_chained_return_pending_ = false;
   hle_irq_slow_timer0_return_pending_ = false;
+  if (!hle_irq_outer_frames_.empty()) {
+    const auto frame = hle_irq_outer_frames_.back();
+    hle_irq_outer_frames_.pop_back();
+    hle_irq_return_lr_ = frame.return_lr;
+    hle_irq_saved_registers_ = frame.saved_registers;
+    hle_irq_long_timer_chained_return_pending_ = frame.long_timer_return_pending;
+    hle_irq_slow_timer0_return_pending_ = frame.slow_timer0_return_pending;
+  }
   const ArmStepResult cpu_step{status, return_cycles, cpu_.elapsed_cycles(), false,
                                false};
   const CoreDeviceTickResult devices =
       status == ExecuteStatus::executed ? advance_devices(cpu_step.elapsed_cycles)
                                         : CoreDeviceTickResult{};
   bool irq_serviced = false;
-  if (status == ExecuteStatus::executed && interrupts_.irq_line() &&
+  if (status == ExecuteStatus::executed && interrupts_.irq_line_active() &&
       !cpu_.irq_disabled()) {
     irq_serviced = service_pending_irq();
     if (irq_serviced) {
@@ -2832,7 +2879,7 @@ bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old
   // the legacy per-cycle polling loop.
   for (std::uint32_t cycles = 0; cycles < kMaxBiosWaitCycles;) {
     if ((interrupts_.interrupt_flags() & mask) != 0) {
-      if (interrupts_.irq_line() && !cpu_.irq_disabled()) {
+      if (interrupts_.irq_line_active() && !cpu_.irq_disabled()) {
         auto_irq_line_high_ = true;
         auto_irq_latency_cycles_ = 0;
       }
@@ -2844,7 +2891,7 @@ bool CoreScheduler::wait_for_interrupt_mask(std::uint16_t mask, bool discard_old
     cycles += batch;
   }
   const bool matched = (interrupts_.interrupt_flags() & mask) != 0;
-  if (matched && interrupts_.irq_line() && !cpu_.irq_disabled()) {
+  if (matched && interrupts_.irq_line_active() && !cpu_.irq_disabled()) {
     auto_irq_line_high_ = true;
     auto_irq_latency_cycles_ = 0;
   }
@@ -3525,21 +3572,33 @@ bool CoreScheduler::hle_bg_affine_set() {
   }
 
   for (std::int32_t index = 0; index < count; ++index) {
-    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 6U;
+    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 20U;
     const std::uint32_t dst = dest + static_cast<std::uint32_t>(index) * 16U;
-    const std::optional<std::uint16_t> scale_x = memory_.read16(src);
-    const std::optional<std::uint16_t> scale_y = memory_.read16(src + 2U);
-    const std::optional<std::uint16_t> rotation = memory_.read16(src + 4U);
-    if (!scale_x.has_value() || !scale_y.has_value() || !rotation.has_value()) {
+    const std::optional<std::uint32_t> origin_x = memory_.read32(src);
+    const std::optional<std::uint32_t> origin_y = memory_.read32(src + 4U);
+    const std::optional<std::uint16_t> center_x = memory_.read16(src + 8U);
+    const std::optional<std::uint16_t> center_y = memory_.read16(src + 10U);
+    const std::optional<std::uint16_t> scale_x = memory_.read16(src + 12U);
+    const std::optional<std::uint16_t> scale_y = memory_.read16(src + 14U);
+    const std::optional<std::uint16_t> rotation = memory_.read16(src + 16U);
+    if (!origin_x || !origin_y || !center_x || !center_y || !scale_x || !scale_y || !rotation) {
       return false;
     }
     const BiosController::AffineMatrix matrix = BiosController::hle_affine_matrix(
         static_cast<std::int16_t>(scale_x.value()),
         static_cast<std::int16_t>(scale_y.value()), rotation.value());
+    const std::int64_t x = static_cast<std::int16_t>(center_x.value());
+    const std::int64_t y = static_cast<std::int16_t>(center_y.value());
+    const std::uint32_t reference_x = origin_x.value() -
+        static_cast<std::uint32_t>(matrix.pa * x + matrix.pb * y);
+    const std::uint32_t reference_y = origin_y.value() -
+        static_cast<std::uint32_t>(matrix.pc * x + matrix.pd * y);
     if (!memory_.write16(dst, static_cast<std::uint16_t>(matrix.pa)) ||
         !memory_.write16(dst + 2U, static_cast<std::uint16_t>(matrix.pb)) ||
         !memory_.write16(dst + 4U, static_cast<std::uint16_t>(matrix.pc)) ||
-        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd))) {
+        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd)) ||
+        !memory_.write32(dst + 8U, reference_x) ||
+        !memory_.write32(dst + 12U, reference_y)) {
       return false;
     }
   }
@@ -3556,9 +3615,9 @@ bool CoreScheduler::hle_obj_affine_set() {
   }
 
   for (std::int32_t index = 0; index < count; ++index) {
-    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 6U;
-    const std::uint32_t dst =
-        dest + static_cast<std::uint32_t>(index) * static_cast<std::uint32_t>(offset);
+    const std::uint32_t src = source + static_cast<std::uint32_t>(index) * 8U;
+    const std::uint32_t stride = static_cast<std::uint32_t>(offset);
+    const std::uint32_t dst = dest + static_cast<std::uint32_t>(index) * stride * 4U;
     const std::optional<std::uint16_t> scale_x = memory_.read16(src);
     const std::optional<std::uint16_t> scale_y = memory_.read16(src + 2U);
     const std::optional<std::uint16_t> rotation = memory_.read16(src + 4U);
@@ -3569,9 +3628,9 @@ bool CoreScheduler::hle_obj_affine_set() {
         static_cast<std::int16_t>(scale_x.value()),
         static_cast<std::int16_t>(scale_y.value()), rotation.value());
     if (!memory_.write16(dst, static_cast<std::uint16_t>(matrix.pa)) ||
-        !memory_.write16(dst + 2U, static_cast<std::uint16_t>(matrix.pb)) ||
-        !memory_.write16(dst + 4U, static_cast<std::uint16_t>(matrix.pc)) ||
-        !memory_.write16(dst + 6U, static_cast<std::uint16_t>(matrix.pd))) {
+        !memory_.write16(dst + stride, static_cast<std::uint16_t>(matrix.pb)) ||
+        !memory_.write16(dst + stride * 2U, static_cast<std::uint16_t>(matrix.pc)) ||
+        !memory_.write16(dst + stride * 3U, static_cast<std::uint16_t>(matrix.pd))) {
       return false;
     }
   }
@@ -3585,7 +3644,7 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
   const std::optional<std::uint8_t> size1 = memory_.read8(source++);
   const std::optional<std::uint8_t> size2 = memory_.read8(source++);
   if (!header_type.has_value() || !size0.has_value() || !size1.has_value() ||
-      !size2.has_value() || header_type.value() != 0x10U) {
+      !size2.has_value()) {
     return false;
   }
 
@@ -3594,6 +3653,14 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
       (static_cast<std::uint32_t>(size1.value()) << 8U) |
       (static_cast<std::uint32_t>(size2.value()) << 16U);
   output.clear();
+  // The BIOS accepts a zero-length header without consulting the type byte.
+  // Emerald invokes this on an uncompressed, zero-prefixed trainer sprite.
+  if (decompressed_size == 0) {
+    return true;
+  }
+  if (header_type.value() != 0x10U) {
+    return false;
+  }
   output.reserve(decompressed_size);
 
   while (output.size() < decompressed_size) {

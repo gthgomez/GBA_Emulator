@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 
 namespace gba::core {
 
@@ -64,6 +65,12 @@ class Timers {
   [[nodiscard]] std::uint32_t cycles_until_next_prescaler_tick(
       std::size_t index) const;
   [[nodiscard]] std::uint64_t overflow_count(std::size_t index) const;
+  [[nodiscard]] std::uint64_t overflow_count_at(std::size_t index) const {
+    if (index >= kTimerCount) {
+      throw std::out_of_range("timer index out of range");
+    }
+    return timers_[index].overflow_count;
+  }
   [[nodiscard]] std::uint64_t state_hash() const;
 
  private:

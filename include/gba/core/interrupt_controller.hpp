@@ -46,6 +46,9 @@ class InterruptController {
   [[nodiscard]] bool enabled(InterruptSource source) const;
   [[nodiscard]] std::uint16_t pending_mask() const;
   [[nodiscard]] bool irq_line() const;
+  [[nodiscard]] bool irq_line_active() const {
+    return master_enabled_ && (interrupt_enable_ & interrupt_flags_ & kSupportedMask) != 0;
+  }
   [[nodiscard]] bool service_pending_irq(Arm7tdmi& cpu) const;
   [[nodiscard]] std::uint64_t state_hash() const;
 

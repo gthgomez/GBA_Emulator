@@ -26,6 +26,7 @@ namespace gba::desktop {
 
 struct HostOptions {
   std::string rom_path;
+  std::string initial_state_path;
   // When empty, cartridge saves live next to the ROM as <rom>.sav.
   std::string save_directory;
   // Applies only to the initial ROM file; other ROMs use automatic detection.
@@ -35,6 +36,8 @@ struct HostOptions {
   // Automation hooks: quit after N presented frames (CI smoke), and capture
   // the presented framebuffer via SDL_RenderReadPixels (no screen capture).
   std::uint32_t quit_after_frames = 0;
+  // Optional fixed-memory presentation interval diagnostics.
+  bool frame_timing = false;
   // Automation hook: perform a full reset after N presented frames (lifecycle
   // testing of cartridge-save preservation across reset).
   std::uint32_t reset_after_frames = 0;
@@ -109,6 +112,7 @@ class DesktopApp {
   bool flush_cartridge_save(bool force);
   bool write_save_state(int slot);
   bool read_save_state(int slot);
+  bool read_save_state_path(const std::string& path, const std::string& label);
   void reset_runtime();
   void open_rom_dialog();
 

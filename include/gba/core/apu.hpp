@@ -147,8 +147,11 @@ class Apu {
   [[nodiscard]] bool direct_sound_enabled(DirectSoundChannel channel) const;
   [[nodiscard]] bool psg_channel_enabled(std::uint8_t channel) const;
   [[nodiscard]] std::uint64_t state_hash() const;
+  // Decoder compatibility only: v3/v4 hashed just the low byte of wave words.
+  [[nodiscard]] std::uint64_t legacy_wave_state_hash() const;
 
  private:
+  [[nodiscard]] std::uint64_t state_hash_impl(bool legacy_wave_words) const;
   struct Fifo {
     std::array<std::int8_t, kFifoCapacity> samples;
     std::size_t head;

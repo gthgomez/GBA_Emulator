@@ -135,6 +135,37 @@ def main():
         run("--rom", idle, "--save-type", "sram32k", "--headless", "--frames", 1,
             "--load-state", state)
 
+        # Interactive startup must actually load the requested checkpoint and
+        # refuse a state from a different ROM or backup type.
+        interactive_saves = root / "interactive-saves"
+        interactive_saves.mkdir()
+        interactive_result = run("--rom", idle, "--save-type", "sram32k",
+                                 "--save-directory", interactive_saves, "--load-state", state,
+                                 "--quit-after", 4, message="save state loaded")
+        assert "fps average" in interactive_result.stderr, interactive_result.stderr
+        assert "presentation intervals" not in interactive_result.stderr
+        timing_result = run("--rom", idle, "--save-type", "sram32k",
+                            "--save-directory", interactive_saves, "--load-state", state,
+                            "--quit-after", 4, "--frame-timing")
+        assert "presentation intervals (count=3," in timing_result.stderr, timing_result.stderr
+        run("--rom", idle, "--headless", "--frames", 1, "--frame-timing",
+            code=2, message="--frame-timing requires play mode")
+        interactive_save = interactive_saves / (idle.name + ".sav")
+        saved_before_refusals = interactive_save.read_bytes()
+        run("--rom", eeprom, "--save-type", "sram32k", "--save-directory", interactive_saves,
+            "--load-state", state, "--quit-after", 4, code=3, message="different ROM")
+        run("--rom", idle, "--save-type", "eeprom8k", "--save-directory", interactive_saves,
+            "--load-state", state, "--quit-after", 4, code=3, message="different save type")
+        run("--rom", idle, "--save-type", "sram32k", "--save-directory", interactive_saves,
+            "--load-state", root / "missing.state", "--quit-after", 4, code=3,
+            message="cannot read save state")
+        corrupt_state = root / "corrupt.state"
+        corrupt_state.write_bytes(b"not a save state")
+        run("--rom", idle, "--save-type", "sram32k", "--save-directory", interactive_saves,
+            "--load-state", corrupt_state, "--quit-after", 4, code=3, message="failed to load")
+        assert interactive_save.read_bytes() == saved_before_refusals, (
+            "a rejected interactive checkpoint changed the existing cartridge save")
+
         # A resumed SRAM-writing ROM must retain its written backup data.
         written_state = root / "written-sram.state"
         run("--rom", ambiguous, "--save-type", "sram32k", "--headless",
@@ -190,6 +221,7 @@ def main():
             run("--rom", idle, "--save-type", invalid, code=2, message="invalid save type")
         run("--rom", idle, "--save-type", code=2, message="missing value")
         run("--save-type", "sram32k", code=2, message="requires a ROM")
+        run("--load-state", state, code=2, message="requires a ROM")
 
     print("check-desktop-save-type-override: PASS")
 

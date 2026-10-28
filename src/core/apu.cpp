@@ -472,13 +472,26 @@ bool Apu::psg_channel_enabled(std::uint8_t channel) const {
 }
 
 std::uint64_t Apu::state_hash() const {
+  return state_hash_impl(false);
+}
+
+std::uint64_t Apu::legacy_wave_state_hash() const {
+  return state_hash_impl(true);
+}
+
+std::uint64_t Apu::state_hash_impl(bool legacy_wave_words) const {
   StateHasher hasher;
   hasher.add_u16(soundcnt_l_);
   hasher.add_u16(soundcnt_h_);
   hasher.add_u16(soundcnt_x_status_);
   hasher.add_u16(soundbias_);
   for (const std::array<std::uint16_t, kWaveRamHalfwords>& bank : wave_ram_banks_) {
-    hasher.add_bytes(bank);
+    if (legacy_wave_words) {
+      hasher.add_bytes(bank);
+    } else {
+      hasher.add_u64(bank.size());
+      for (const auto value : bank) hasher.add_u16(value);
+    }
   }
   hasher.add_bool(wave_bank_select_);
   for (const Fifo& fifo_state : fifos_) {

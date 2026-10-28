@@ -1,4 +1,5 @@
 #include "desktop_app.hpp"
+#include "frame_interval_stats.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -8,13 +9,13 @@
 #include "stb_image_write.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -145,6 +146,13 @@ bool DesktopApp::init_audio() {
     std::cerr << "gba-desktop: audio device unavailable (" << SDL_GetError()
               << "); continuing without sound\n";
     return false;
+  }
+  // Start with about 62.5 ms of silence so normal frame scheduling jitter
+  // does not immediately drain an otherwise empty playback queue.
+  const std::array<gba::core::ApuMixedSample, 2048> initial_silence{};
+  if (!SDL_PutAudioStreamData(audio_stream_, initial_silence.data(),
+                              static_cast<int>(sizeof(initial_silence)))) {
+    std::cerr << "gba-desktop: cannot prime audio queue (" << SDL_GetError() << ")\n";
   }
   SDL_ResumeAudioStreamDevice(audio_stream_);
   return true;
@@ -502,9 +510,13 @@ bool DesktopApp::read_save_state(int slot) {
     return false;
   }
   const std::string path = persistence::save_state_path(save_prefix_, slot);
+  return read_save_state_path(path, "save state " + std::to_string(slot));
+}
+
+bool DesktopApp::read_save_state_path(const std::string& path, const std::string& label) {
   const auto blob = persistence::read_binary_file(path);
   if (blob.empty()) {
-    std::cerr << "gba-desktop: no save state " << slot << " at " << path << "\n";
+    std::cerr << "gba-desktop: cannot read " << label << " at " << path << "\n";
     return false;
   }
   // The core codec restores whatever ROM its blob carries, so the host also
@@ -516,17 +528,17 @@ bool DesktopApp::read_save_state(int slot) {
   const SaveStateLoadStatus status =
       load_save_state_for_session(runtime_.session(), blob, *scratch);
   if (status == SaveStateLoadStatus::decode_failed) {
-    std::cerr << "gba-desktop: save state " << slot
+    std::cerr << "gba-desktop: " << label
               << " failed to load (corrupt, unsupported, or mismatched)\n";
     return false;
   }
   if (status == SaveStateLoadStatus::wrong_rom) {
-    std::cerr << "gba-desktop: save state " << slot
+    std::cerr << "gba-desktop: " << label
               << " belongs to a different ROM; refusing to load\n";
     return false;
   }
   if (status == SaveStateLoadStatus::wrong_save_type) {
-    std::cerr << "gba-desktop: save state " << slot
+    std::cerr << "gba-desktop: " << label
               << " uses a different save type; refusing to load\n";
     return false;
   }
@@ -538,7 +550,7 @@ bool DesktopApp::read_save_state(int slot) {
   sync_input_mask();
   clear_queued_audio();
   next_frame_deadline_ = Clock::now();
-  std::cerr << "gba-desktop: save state " << slot << " loaded\n";
+  std::cerr << "gba-desktop: " << label << " loaded\n";
   return true;
 }
 
@@ -704,7 +716,11 @@ void DesktopApp::pace_frame(bool fast_forward) {
   next_frame_deadline_ += frame_duration;
   const auto now = Clock::now();
   if (next_frame_deadline_ > now) {
-    std::this_thread::sleep_for(next_frame_deadline_ - now);
+    // Coarse host sleeps can overshoot a frame; SDL's precise wait trades
+    // some CPU for tighter pacing and can still be delayed by scheduling.
+    const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        next_frame_deadline_ - now);
+    SDL_DelayPrecise(static_cast<Uint64>(remaining.count()));
   } else if (now - next_frame_deadline_ > frame_duration * 4) {
     // Fell far behind (slow frame, debugger, resume): resynchronize rather
     // than accumulate an unbounded catch-up burst.
@@ -723,6 +739,10 @@ int DesktopApp::run() {
   } else {
     std::cerr << "gba-desktop: no ROM specified; opening file dialog\n";
   }
+  if (!options_.initial_state_path.empty() &&
+      !read_save_state_path(options_.initial_state_path, "save state")) {
+    return 3;
+  }
   init_audio();
   if (!session_loaded_) {
     open_rom_dialog();
@@ -731,6 +751,8 @@ int DesktopApp::run() {
   std::uint64_t perf_frames = 0;
   const auto perf_start = Clock::now();
   auto perf_mark = perf_start;
+  FrameIntervalStats frame_intervals;
+  std::optional<Clock::time_point> previous_present;
 
   while (running_) {
     SDL_Event event;
@@ -739,6 +761,7 @@ int DesktopApp::run() {
     }
 
     if (!session_loaded_) {
+      previous_present.reset();
       // Waiting for the user to pick (or cancel) a ROM in the file dialog.
       SDL_Delay(10);
       continue;
@@ -747,6 +770,7 @@ int DesktopApp::run() {
 
     const bool fast_forward = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_TAB] != 0;
     if (paused_) {
+      previous_present.reset();
       SDL_Delay(10);
       continue;
     }
@@ -771,6 +795,14 @@ int DesktopApp::run() {
     }
     push_audio();
     present_frame();
+    if (options_.frame_timing) {
+      const auto presented = Clock::now();
+      if (previous_present) {
+        frame_intervals.add(std::chrono::duration<double, std::milli>(
+                                presented - *previous_present).count());
+      }
+      previous_present = presented;
+    }
     flush_cartridge_save(false);
     pace_frame(fast_forward);
 
@@ -797,6 +829,7 @@ int DesktopApp::run() {
     }
   }
 
+  const auto perf_end = Clock::now();
   if (session_loaded_) {
     flush_cartridge_save(true);
   }
@@ -804,12 +837,21 @@ int DesktopApp::run() {
     return 3;
   }
   const double total =
-      std::chrono::duration<double>(Clock::now() - perf_start).count();
+      std::chrono::duration<double>(perf_end - perf_start).count();
   stats_.avg_frame_ms =
       total * 1000.0 / static_cast<double>(stats_.frames_presented ? stats_.frames_presented : 1);
+  const double average_fps =
+      total > 0.0 ? static_cast<double>(stats_.frames_presented) / total : 0.0;
   std::cerr << "gba-desktop: session ended (" << stats_.frames_presented << " frames, "
-            << stats_.host_fps << " fps last window, " << stats_.audio_underruns
-            << " audio underruns)\n";
+            << stats_.host_fps << " fps last window, " << average_fps << " fps average, "
+            << stats_.audio_underruns << " audio underruns)\n";
+  if (options_.frame_timing) {
+    std::cerr << "gba-desktop: presentation intervals (count=" << frame_intervals.count()
+              << ", p95_upper_ms=" << frame_intervals.percentile_upper_ms(95)
+              << ", p99_upper_ms=" << frame_intervals.percentile_upper_ms(99)
+              << ", max_ms=" << frame_intervals.maximum_ms()
+              << ", over_25ms=" << frame_intervals.over_25ms() << ")\n";
+  }
   return 0;
 }
 

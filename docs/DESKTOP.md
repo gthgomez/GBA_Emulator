@@ -35,6 +35,11 @@ does), then `cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release` and
 ```
 
 Launching with no arguments opens a file picker instead of printing usage.
+To resume a checkpoint at launch, pass both the ROM and `--load-state`, for
+example `gba-desktop --rom game.gba --load-state checkpoint.state`. The host
+rejects states for a different ROM or save type; keep checkpoints and cartridge
+saves outside the repository.
+
 Paths containing spaces are fine (quote them in the shell as usual). The window
 shows the engine framebuffer (nearest-neighbor, letterboxed, resizable, F11
 fullscreen). Controls:
@@ -42,7 +47,7 @@ fullscreen). Controls:
 | Input | Action |
 | --- | --- |
 | Arrow keys / gamepad d-pad | D-pad |
-| Z / X (gamepad B / A) | B / A |
+| Z / X (gamepad B / A) | A / B |
 | Enter / Backspace | Start / Select |
 | A / S | R / L |
 | Tab (hold) | Fast-forward |
@@ -73,14 +78,17 @@ so no button stays stuck.
 - Cartridge saves persist to `<rom>.sav` next to the ROM (or in
   `--save-directory`), imported at boot, flushed on exit and every ~5 s of dirty
   frames. Games with no cartridge-backed save never create a `.sav`.
-- Save states are `<rom>.state1` etc. (core `SaveStateCodec` v3 format). Because
+- Save states are `<rom>.state1` etc. (core `SaveStateCodec` v5 format). Because
   the codec snapshot is self-contained, the host additionally refuses a state
   that was captured from a different ROM or uses a different save type. Headless
   `--load-state` also checks both identities when `--save-type` is explicit;
   it never reinitializes backup memory over the restored save data.
   Snapshots support every selectable backup capacity, including both Flash128K
-  banks and their protocol state. The v3 format is unchanged; Flash128K states
-  written before the decoder fix can now be loaded.
+  banks and their protocol state. The decoder still accepts v3/v4 states with
+  their historical hashes, including Flash128K states written before the decoder
+  fix. New v5 hashes cover every byte of saved IRQ registers and wave RAM words;
+  the older formats did not hash their upper bytes. Older builds cannot read
+  newly written v5 states.
 - All save writes are replace-in-place safe: a sibling temp file is written and
   renamed over the destination, so a failed or interrupted write cannot truncate
   a good save. (This is crash-safe, not a power-loss durability guarantee.)
@@ -107,9 +115,18 @@ so no button stays stuck.
 | Flag | Effect |
 | --- | --- |
 | `--quit-after N` | quit after N presented frames |
+| `--frame-timing` | report intervals between SDL presentation calls at exit |
 | `--reset-after N` | perform a full reset after N presented frames |
 | `--switch-after N` + `--switch-to PATH` | switch to another ROM after N presented frames |
 | `--window-screenshot PATH` | capture the presented window to a PNG |
+
+With `--frame-timing`, the host reports the interval count, p95 and p99 upper
+bounds rounded up to whole milliseconds, the maximum, and the number longer
+than 25 ms. The first presentation has no interval; paused or unloaded periods
+are excluded. Intervals are measured after `SDL_RenderPresent` returns and do
+not prove the display's physical scanout timing. The histogram has fixed memory;
+for a percentile in its 1,000 ms overflow bucket, the maximum is the reported
+upper bound. This option is for play mode and cannot be used with `--headless`.
 
 ## Headless lab mode (primary verification surface)
 
@@ -149,6 +166,9 @@ color layout (red in bits 0–4), preserving framebuffer hashes in that layout.
 
 For repeated local scripted runs with resource samples, input/binary provenance
 and determinism checks, use `tools/run-rom-playthrough.ps1 -RomPath <path>`.
+Add `-LoadState <checkpoint>` to repeat from a saved state and `-SaveState` to
+retain a final state per run. The helper copies the starting state and records
+SHA-256 hashes; keep its local output private because states contain game data.
 See [the Emerald campaign](emerald-performance-campaign.md) for the measurement
 protocol and current results. A headless timing result does not verify SDL
 presentation or audio smoothness.

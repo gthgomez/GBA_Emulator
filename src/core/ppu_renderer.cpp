@@ -296,6 +296,13 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   const std::uint16_t obj_mosaic_h =
       static_cast<std::uint16_t>(((control.mosaic >> 12) & 0xFU) + 1U);
 
+  // Background control registers are constant for this scanline. Decode them
+  // once rather than repeating the same work for every visible pixel.
+  std::array<BgControl, 4> decoded_bg{};
+  for (std::size_t index = 0; index < decoded_bg.size(); ++index) {
+    decoded_bg[index] = PpuBackgroundFetcher::decode_control(control.bg_control[index]);
+  }
+
   std::array<AffineParams, 4> affine_params{};
   if (mode == 1 || mode == 2) {
     for (std::uint8_t bg_index = 2; bg_index < 4; ++bg_index) {
@@ -355,8 +362,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
               (layer_mask & static_cast<std::uint16_t>(1U << bg_index)) == 0) {
             continue;
           }
-          const BgControl bg = PpuBackgroundFetcher::decode_control(
-              control.bg_control.at(bg_index));
+          const BgControl& bg = decoded_bg.at(bg_index);
           std::uint16_t sample_x = x;
           std::uint16_t sample_y = scanline;
           if ((bg.raw & kBgMosaicEnable) != 0) {
@@ -387,8 +393,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
               (layer_mask & static_cast<std::uint16_t>(1U << bg_index)) == 0) {
             continue;
           }
-          const BgControl bg = PpuBackgroundFetcher::decode_control(
-              control.bg_control.at(bg_index));
+          const BgControl& bg = decoded_bg.at(bg_index);
           // GBATEK rot/scale model (8.8 fixed point): reference point plus
           // matrix rows scaled by screen position, shifted back to integer.
           std::int64_t dx = x;
@@ -430,10 +435,13 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
 
       if (obj_enabled &&
           (layer_mask & static_cast<std::uint16_t>(1U << 4)) != 0) {
-        for (std::size_t index = active_sprite_count; index-- > 0;) {
+        // Hardware resolves OBJ-to-OBJ priority before mixing the OBJ layer
+        // with backgrounds. Only the lowest-numbered opaque OBJ survives.
+        std::optional<PixelCandidate> obj_candidate;
+        bool obj_semi_transparent = false;
+        for (std::size_t index = 0; index < active_sprite_count; ++index) {
           const SpriteAttributes& sprite = active_sprites.at(index);
-          if (sprite.obj_window || sprite.priority > best.priority ||
-              !column_intersects_sprite(sprite, x)) {
+          if (sprite.obj_window || !column_intersects_sprite(sprite, x)) {
             continue;
           }
           std::uint8_t local_x = static_cast<std::uint8_t>(
@@ -453,13 +461,17 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
           if (!obj_pixel.has_value() || obj_pixel->transparent) {
             continue;
           }
-          const PixelCandidate candidate{
+          obj_candidate = PixelCandidate{
               normalize_color(obj_pixel->color), 4, sprite.priority};
+          obj_semi_transparent = sprite.semi_transparent;
+          break;
+        }
+        if (obj_candidate.has_value()) {
           const std::uint16_t prior_best_priority = best.priority;
-          consider(candidate);
-          if (candidate.priority <= prior_best_priority) {
+          consider(*obj_candidate);
+          if (obj_candidate->priority <= prior_best_priority) {
             ++obj_pixels;
-            winner_is_semi_transparent = sprite.semi_transparent;
+            winner_is_semi_transparent = obj_semi_transparent;
           }
         }
       }
@@ -471,9 +483,11 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     const bool effects_allowed = (layer_mask & kWindowEffectsBit) != 0;
     const bool first_target =
         (control.bldcnt & static_cast<std::uint16_t>(1U << best.layer_bit)) != 0;
+    const bool second_target =
+        (control.bldcnt & static_cast<std::uint16_t>(1U << (second.layer_bit + 8U))) != 0;
     const bool forced_obj_alpha = best.layer_bit == 4 && winner_is_semi_transparent;
     const bool do_alpha =
-        effects_allowed && (forced_obj_alpha ||
+        effects_allowed && second_target && (forced_obj_alpha ||
                             (effect == kEffectAlpha && first_target));
     const bool do_brightness =
         effects_allowed && !do_alpha &&
