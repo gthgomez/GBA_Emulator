@@ -25,15 +25,15 @@ conformance gaps remain relevant even when a game appears to work.
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`; all four final PR CI jobs and all four post-merge CI jobs passed |
-| Current iteration | Scanline rendering, mode-1 layers/ties, integer BIOS affine math, wide translation and timed unused-memory loads integrated; normal executable SHA-256 begins `2f5e11f72f5a` |
-| Story | Winston, Haley and Twins Gina & Mia defeated; frame 237,060 retains double-battle payout text; Torchic level 12, 26/34 HP, Wurmple level 4 |
-| Repeat throughput | Latest 900-frame double-battle victory pair: 77.409907 / 77.202220 FPS; earlier turn pairs include occasional steps above 16.67 ms |
-| SDL delivery | Current normal executable: 18,000 frames at 59.7286 FPS; zero reported queue-empty events; presentation p95/p99 upper bounds 18/18 ms, maximum 20.3601 ms, no gaps above 25 ms |
-| Determinism | Every new paired double-battle segment completes with byte-identical final states and no execution errors |
-| Audio | Current five-minute normal run reports zero queue-empty events; this counter does not establish physical audio quality or whole-game behavior |
+| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `1bc73473b5a0` passes all four Linux/Windows CI jobs |
+| Current iteration | Desktop save-worker follow-up passes local checks and a fresh independent source review; its normal executable SHA-256 begins `c376921db938` |
+| Story | Winston, Haley and Twins Gina & Mia defeated; frame 245,160 retains Rustboro Center's closing dialogue after natural healing: Torchic level 12, 34/34 HP; Wurmple level 4, 18/18 HP |
+| Repeat throughput | Latest 900-frame healing pair: 79.367395 / 78.734339 FPS, p95 steps 13.4924 / 13.6073 ms; two / five steps above 16.67 ms |
+| SDL delivery | Field baseline: 18,000 frames at 59.7286 FPS, maximum interval 20.3601 ms, no gaps above 25 ms. Save-worker stress: 3,600 frames with ten saves at 59.7245 FPS, maximum 24.5283 ms, no gaps above 25 ms |
+| Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
+| Audio | Both bounded runs above report zero queue-empty events; this counter does not establish physical audio quality or whole-game behavior |
 | Intro | Current integer-math runtime: 2,654 nearby exact matches of 3,600; new controlled snapshots isolate palette phase and rider differences at frames 1,300/1,500 |
-| Status | Active: bounded native target observed; extend story, investigate guest timing/random choices and retain longer-run coverage |
+| Status | Active: bounded field and repeated-save targets observed; a separate candidate battle run retains one 26.1885 ms gap; extend story and investigate timing/random choices |
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
@@ -68,21 +68,68 @@ produces byte-identical encodes and leaves the session hash unchanged:
 
 These independently timed operations overlap logically; do not add all five
 rows together. The complete encode already includes snapshots and hashing.
-Source inspection establishes that F5 currently encodes and writes on the
+Source inspection establishes that baseline F5 encodes and writes on the
 presentation thread. INFERRED: that synchronous work can explain a missed
-presentation budget. A candidate captures an owned machine on the main thread
+presentation budget. Source `1bc73473b5a0` captures an owned machine on the main thread
 and uses one bounded background job for the unchanged codec and atomic writer.
 Requests report busy while a result remains pending; F8 and exit drain it.
-The focused persistence test, all 36 core tests and mandatory benchmarks pass.
-The first full attempt stopped at test 35 because the new PowerShell thread
-flag was split into characters; the corrected array passes all 36 tests in
-233.9 seconds. Native comparison and independent review are pending, so the
-candidate is not yet accepted as a performance fix.
+VERIFIED: the focused persistence test, all 36 core tests and mandatory
+benchmarks pass. The first full attempt stopped at test 35 because the new
+PowerShell thread flag was split into characters; the corrected array passes
+all 36 tests in 233.9 seconds. All three fresh desktop smoke evaluators pass;
+only their three path bindings differ from the repository scripts. A fresh
+independent read-only review of all seven source/test/build files at
+`1bc73473b5a0` finds no actionable introduced defects; their manifest hashes
+match before and after review. All four CI jobs pass that source commit
+(run `40771054625`).
+
+OBSERVED: the normal candidate completes the same 9,000-frame battle/A/F5
+sequence at 59.7409 FPS, with zero queue-empty reports, p95/p99 upper bounds
+18/18 ms, maximum 26.1885 ms and one gap above 25 ms. The battle completes
+and the saved state decodes. This run still fails the no-gaps-above-25-ms
+criterion; the timing report does not identify the cause of that interval.
+
+OBSERVED: a stronger control starts from the same idle field checkpoint and
+sends ten F5 requests at six-second intervals, without guest button input:
+
+| Normal executable | Frames | Completed saves | FPS | Queue-empty reports | Maximum interval | Gaps above 25 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline `2f5e11f72f5a` | 3,600 | 10 | 58.0758 | 57 | 950.457 ms | 15 |
+| Candidate `c376921db938` | 3,600 | 10 | 59.7245 | 0 | 24.5283 ms | 0 |
+
+Both final window PNGs are byte-identical, and the candidate's last snapshot
+decodes successfully. Host load varied between these serial runs; these two
+points do not establish a general speedup ratio or attribute the entire
+950 ms interval to encoding. Together with the independent encode timings and
+the source path, they establish a useful bounded repeated-save result. The
+separate 26.1885 ms battle outlier remains open.
+
+VERIFIED: an owned-window F5 → F8 → F5 → Escape probe exits cleanly. Its log
+reports the first write before F8 loads it, then reports the second write after
+the session-end message during destructor drain. The retained state decodes.
+This functional load/exit probe is not a smooth-presentation measurement.
+No codec, file format, emulation timing, or frame output was changed.
+
+OBSERVED: continued paired input reaches Rustboro City at frame 240,960,
+then exercises the Mart and Center transitions. The 1,200-frame Center-entry
+pair runs at 83.528473 / 84.313423 FPS with identical states and no execution
+errors. The nurse's healing sequence completes at frame 245,160; read-only
+party inspection confirms Torchic level 12 at 34/34 HP (previously 24/34) and
+Wurmple level 4 at 18/18, both with clear status values. The final 900-frame
+pair runs at 79.367395 / 78.734339 FPS, p95 13.4924 / 13.6073 ms, with two /
+five steps above 16.67 ms and identical final states. The closing dialogue
+remains on screen. No health, item, RNG, or game-progress memory was edited.
 
 Private evidence: `build/emerald-double-battle-normal-9000`,
 `build/emerald-double-battle-normal-9000-no-save`,
 `build/save-state-stages-baseline/stages.csv`,
-`build/desktop-save-worker-plan.md` and the candidate verification logs.
+`build/emerald-async-state-save-normal-9000`,
+`build/emerald-repeated-save-{baseline,candidate}-3600`,
+`build/emerald-async-state-save-f5-f8-exit`,
+`build/rustboro-healed-245160`,
+`build/desktop-save-worker-plan.md`, `build/desktop-async-save-review.json`
+and the candidate verification logs. The earlier failed measurements remain
+available; they are not replaced by the stress result.
 
 ### Merged candidate, double battle and scenery isolation
 
