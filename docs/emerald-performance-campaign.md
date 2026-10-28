@@ -1216,3 +1216,22 @@ VERIFIED: the final completion-and-stop candidate passed all 35 native core
 verifiers and the benchmark checksum suite after the transition change.
 Optional ROM video smoke was not included. Independent review remained bound
 to the unchanged controller and regression-test file hashes.
+
+OBSERVED: a fresh profile-guided desktop build embeds source commit
+`1c0560007421` and reports four unexercised translation units during profile
+use. Two 400-frame checkpoint replays on that build matched all identities,
+completed at 92.74 and 91.05 headless FPS, and had no frame steps over 16.67 ms.
+Their p95 step times were 11.41 and 11.69 ms. They advanced Norman's dialogue;
+they do not establish sustained performance across the game.
+
+OBSERVED: the same build's unmodified production desktop host then completed
+10,800 frames with directional and X-key input posted for about 172 seconds.
+It averaged 59.6984 FPS against the native target of approximately 59.7275 FPS,
+with 18 ms p95 and 19 ms p99 presentation-return interval upper bounds. None
+of 10,799 intervals exceeded 25 ms; the maximum was 23.8271 ms. It reported
+32 audio queue-empty proxy events. No unsupported stop occurred. The final
+window image shows the player near the gym exit; no desktop final machine
+checkpoint was recorded in this production probe. Inputs were wall-clock timed,
+so this is a bounded interactive observation rather than an exact replay.
+Audio delivery and physical scanout remain unverified; the proxy events require
+further investigation before claiming smooth audible output.
