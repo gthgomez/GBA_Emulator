@@ -1273,3 +1273,70 @@ capture reported no overflow. The 44,100 Hz stereo output covers approximately
 it does not verify physical speakers, scanout or waveform accuracy, or explain
 the production run's earlier 32 queue-empty proxies. The final local machine
 checkpoint is frame 172,040. Game-derived PCM, images and states remain private.
+
+### IWRAM byte access timing investigation
+
+VERIFIED: snapshot validation was published as commit `1e84eb6dddce` in draft
+PR #47, stacked on #46; all four Windows/Linux core/desktop CI jobs passed.
+A fresh profile-guided build of that commit completed three further paired
+story segments, reaching Scott's encounter at frame 174,540. Their six runs
+matched replay identities and saved-state bytes, measured 85.79–89.09 headless
+FPS with p95 step times 11.86–12.34 ms, and had no steps over 16.67 ms.
+
+OBSERVED: a separate unprofiled LTO build completed an earlier matching
+600-frame replay pair at 57.25–57.35 FPS. The prior profile-guided build ran
+the identical input/checkpoint at 83.51–86.54 FPS and produced byte-identical
+final states across all four runs. These differing build configurations are
+not a controlled source-change performance comparison; an unprofiled build
+does not satisfy this segment's throughput target.
+
+OBSERVED: a boot RAM timeline narrows the remaining intro offset. The reference
+switches its main callback at frame 176 and reaches the logo fade task at 209;
+the candidate switches at 175 but reaches the next task at 215. The candidate
+spends most of the intervening cycles executing an IWRAM byte-copy loop during
+save initialization. The reference finishes that work at approximately frame
+204, then spends several frames in BIOS decompression/copy routines. The
+candidate finishes the byte copy around 213 and its HLE setup much sooner.
+The final image offset therefore includes more than one timing discrepancy.
+
+VERIFIED: a local synthetic cartridge isolates IWRAM Thumb code copying bytes
+from SRAM (eight waits) to EWRAM, measured by timer 2. At lengths 64, 128 and
+192 bytes, the current core reports 1,861 / 3,717 / 5,573 cycles; the reference
+reports 1,349 / 2,693 / 4,037. The slopes are 29 versus 21 cycles per byte.
+A local hypothesis probe separating the one-cycle IWRAM instruction fetch
+from data access, including the cartridge bus cycle in addition to its waits,
+matches all three reference timer results exactly. The fixture is synthetic;
+no game assets or instruction sequences are included in it.
+
+INFERRED: the existing byte-transfer estimate applied data-bus timing to both
+the data access and the instruction fetch. The candidate correction uses one
+shared calculation for ARM and Thumb byte loads/stores fetched from IWRAM.
+Other widths, fetch regions and static estimate APIs retain their behavior.
+The focused regression failed before the correction and passed afterward,
+covering RAM, SRAM, ROM loads, signed loads, all four wait settings and payloads.
+A fresh independent read-only review of the unchanged source/test candidate
+found no actionable defect; it did not run tests. Its timing analysis used
+the reference's [Thumb handlers](https://raw.githubusercontent.com/mgba-emu/mgba/master/src/arm/isa-thumb.c),
+[ARM handlers](https://raw.githubusercontent.com/mgba-emu/mgba/master/src/arm/isa-arm.c)
+and [memory timings](https://raw.githubusercontent.com/mgba-emu/mgba/master/src/gba/memory.c).
+Full-suite, integrated fixture and ROM follow-up results are recorded below
+when observed. BIOS HLE decompression timing and physical hardware accuracy
+remain separate investigations.
+
+VERIFIED: the byte-timing candidate passed all 35 native core verifiers and
+the benchmark checksum suite; optional ROM video smoke was skipped. Linking
+the actual candidate CPU object into the synthetic fixture runner reproduced
+the reference's 1,349 / 2,693 / 4,037 timer values exactly. This validates the
+integrated execution path, in addition to the direct CPU unit assertions.
+A 600-frame intro diagnostic completed without a fetch failure or unsupported
+instruction. These cycle-correctness results do not establish a host speedup.
+
+OBSERVED: after this correction, all 600 intro images still have exact nearby
+reference matches after five-bit conversion. Uniquely matched end-of-frame
+images now lead the reference by four frames (275 unique matches), rather
+than lagging six; VBlank-entry images lead by three (274 unique matches).
+The logo fade task now starts at candidate frame 205 versus reference 209.
+The reference capture was extended to 610 frames to avoid truncating matches
+for the last candidate images; its first 600 images match the prior reference
+capture exactly. The remaining lead is consistent with the separately observed
+missing HLE decompression/copy time, but that causal model is not yet verified.

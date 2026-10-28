@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -2467,6 +2468,69 @@ int main() {
          "flag-field writes still apply from user mode");
   expect(msr_user_cpu.set_cpsr(static_cast<std::uint32_t>(CpuMode::supervisor)),
          "leave user mode after MSR checks");
+
+  // Code fetched from IWRAM has a one-cycle instruction fetch independently
+  // of the byte data bus. In particular, SRAM WAITCNT must not time both.
+  {
+    auto byte_memory_storage = std::make_unique<MemoryBus>();
+    auto& byte_memory = *byte_memory_storage;
+    expect(byte_memory.load_game_pak_rom(std::vector<std::uint8_t>(0x200, 0x80)),
+           "load byte timing ROM");
+    expect(byte_memory.configure_game_pak_save(gba::core::GamePakSaveType::sram32k),
+           "configure byte timing SRAM");
+    constexpr std::uint32_t first_waits[] = {4, 3, 2, 8};
+    for (std::uint16_t setting = 0; setting < 4; ++setting) {
+      WaitStateControl byte_waitcnt;
+      byte_waitcnt.write_control(static_cast<std::uint16_t>(0x4000U | setting | (setting << 2)));
+      for (const std::uint32_t address : {0x02000100U, 0x03001000U,
+                                         0x0E000100U, 0x08000100U}) {
+        const bool cartridge = address >= 0x08000000U;
+        const std::uint32_t data_cycles = cartridge ? first_waits[setting] + 1U
+                                         : address < 0x03000000U ? 3U : 1U;
+        if (address != 0x08000100U) {
+          expect(byte_memory.write8(address, 0x80), "seed byte timing payload");
+        }
+        for (const bool thumb : {false, true}) {
+          Arm7tdmi byte_cpu;
+          byte_cpu.set_register(Arm7tdmi::kPc, 0x03000000);
+          byte_cpu.set_register(1, address);
+          const auto load = thumb
+              ? byte_cpu.step_thumb(thumb_memory_immediate(true, true, 0, 1, 0),
+                                    byte_memory, byte_waitcnt, true, std::nullopt)
+              : byte_cpu.step_arm(kCondAl | kSingleDataTransferImmediate |
+                                      kPreIndexed | kUp | kLoad | kByteTransfer | rn(1),
+                                  byte_memory, byte_waitcnt);
+          expect(load.status == ExecuteStatus::executed &&
+                     load.elapsed_cycles == data_cycles + 2U &&
+                     byte_cpu.register_value(0) == 0x80,
+                 "IWRAM byte load uses separate instruction and data bus timings");
+          byte_cpu.set_register(2, 0);
+          const auto signed_load = thumb
+              ? byte_cpu.step_thumb(thumb_memory_register(0x3, 2, 1, 0),
+                                    byte_memory, byte_waitcnt)
+              : byte_cpu.step_arm(kCondAl | kSignedByteDataTransferImmediate |
+                                      kPreIndexed | kUp | kLoad | rn(1),
+                                  byte_memory, byte_waitcnt);
+          expect(signed_load.status == ExecuteStatus::executed &&
+                     signed_load.elapsed_cycles == data_cycles + 2U &&
+                     byte_cpu.register_value(0) == 0xFFFFFF80U,
+                 "IWRAM signed byte load preserves timing and sign extension");
+          if (address == 0x08000100U) continue;  // ROM stores are unsupported.
+          byte_cpu.set_register(0, 0x80);
+          const auto store = thumb
+              ? byte_cpu.step_thumb(thumb_memory_immediate(true, false, 0, 1, 0),
+                                    byte_memory, byte_waitcnt)
+              : byte_cpu.step_arm(kCondAl | kSingleDataTransferImmediate |
+                                      kPreIndexed | kUp | kByteTransfer | rn(1),
+                                  byte_memory, byte_waitcnt);
+          expect(store.status == ExecuteStatus::executed &&
+                     store.elapsed_cycles == data_cycles + 1U &&
+                     byte_memory.read8(address).value() == 0x80,
+                 "IWRAM byte store charges its data access once and preserves payload");
+        }
+      }
+    }
+  }
 
   // Save-state roundtrip: every mutable CPU field survives save/load and the
   // hash matches the pre-save snapshot.

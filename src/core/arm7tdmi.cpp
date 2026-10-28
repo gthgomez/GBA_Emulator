@@ -630,6 +630,27 @@ constexpr std::uint32_t kMirroredOamThumbPrefetchSlowRomCycles = 6;
   return static_cast<std::uint32_t>(timing.sequential) + timing.nonsequential;
 }
 
+[[nodiscard]] std::optional<std::uint32_t> iwram_byte_transfer_cycles(
+    std::uint32_t fetch_address, std::uint32_t data_address, bool load,
+    const WaitStateControl& waitcnt) {
+  if (MemoryBus::classify(fetch_address).region != Region::iwram) {
+    return std::nullopt;
+  }
+  const Region data_region = MemoryBus::classify(data_address).region;
+  const MemoryAccessTiming timing =
+      MemoryBus::timing(data_address, AccessWidth::byte, waitcnt);
+  if (timing.nonsequential == 0) {
+    return std::nullopt;
+  }
+  // The instruction fetch costs one IWRAM cycle, independently of the data
+  // bus. Cartridge timing stores wait states, so its access also needs the
+  // bus cycle itself. Loads have one additional internal cycle.
+  const std::uint32_t cartridge_bus_cycle =
+      data_region == Region::game_pak_rom || data_region == Region::game_pak_save
+          ? 1U : 0U;
+  return 1U + timing.nonsequential + cartridge_bus_cycle + (load ? 1U : 0U);
+}
+
 [[nodiscard]] bool thumb_prefetch_overlaps_internal_data_load_cycle(
     const DecodedThumbMemoryTransferInstruction& decoded, std::uint32_t address,
     bool waitcnt_prefetch_enabled) {
@@ -3884,9 +3905,20 @@ ArmStepResult Arm7tdmi::step_arm(
       !estimate_arm_elapsed_cycles(instruction, data_address.value(), waitcnt).has_value()) {
     return {ExecuteStatus::unsupported, 0, elapsed_cycles_, false, false};
   }
-  const std::optional<ArmElapsedCycleEstimate> runtime_override =
+  std::optional<ArmElapsedCycleEstimate> runtime_override =
       elapsed_override.has_value() ? elapsed_override
                                    : runtime_multiply_elapsed_cycles(instruction);
+  if (!runtime_override.has_value() && data_address.has_value() &&
+      !can_decode_swap(instruction) &&
+      transfer_access_width(instruction) == AccessWidth::byte &&
+      bits(instruction, 12, 0xFU) != kPc) {
+    const auto byte_cycles = iwram_byte_transfer_cycles(
+        registers_.at(kPc), data_address.value(), (instruction & (1U << 20)) != 0,
+        waitcnt);
+    if (byte_cycles.has_value()) {
+      runtime_override = ArmElapsedCycleEstimate{byte_cycles.value(), false, true};
+    }
+  }
   const ExecuteStatus status = execute_arm(instruction, memory);
   return finish_step(instruction, data_address, status, &waitcnt, runtime_override);
 }
@@ -3957,10 +3989,17 @@ ArmStepResult Arm7tdmi::step_thumb(std::uint16_t instruction, MemoryBus& memory,
         MemoryBus::timing(address, thumb_transfer_access_width(decoded.kind), waitcnt);
     if (has_elapsed_timing_for_estimate(address, timing, true)) {
       std::uint32_t cycles = thumb_memory_cycles(decoded, timing);
+      const auto iwram_byte_cycles =
+          thumb_transfer_access_width(decoded.kind) == AccessWidth::byte
+              ? iwram_byte_transfer_cycles(registers_.at(kPc), address,
+                                            decoded.load, waitcnt)
+              : std::nullopt;
+      cycles = iwram_byte_cycles.value_or(cycles);
       if (thumb_word_load_from_game_pak_rom(decoded, address)) {
         cycles += 3U;
       }
-      if (thumb_prefetch_overlaps_internal_data_load_cycle(
+      if (!iwram_byte_cycles.has_value() &&
+          thumb_prefetch_overlaps_internal_data_load_cycle(
               decoded, address,
               waitcnt.prefetch_enabled() && prefetch_internal_load_overlap)) {
         --cycles;
