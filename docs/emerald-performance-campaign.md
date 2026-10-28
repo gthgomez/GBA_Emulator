@@ -378,7 +378,38 @@ oracle over five signed scale pairs and an explicit positive-overflow case.
 Fresh independent read-only review finds no introduced defects, with all five
 source/test hashes matching before and after review. All 36 core verifiers
 pass (228.5 s), including the corrected SWI cases, and mandatory benchmarks
-pass. Fresh optimized-host verification remains pending at this point.
+pass.
+
+VERIFIED: the fresh optimized normal executable for `2dba57f` has SHA256
+`7fc7c7aa3095745ea8337a59cce33cf9a2e059e9c2a15654890adaa0291441fe`.
+A 1,200-frame ABBA comparison gives 80.5211/81.1938/81.6907/81.6725 FPS
+(previous/wide/wide/previous), with p95 13.6771/13.4822/13.4047/13.3063 ms.
+All five logical artifact sections and serialized final states match in every
+run. No material speedup or regression is established.
+
+VERIFIED: its complete 3,600-frame runtime intro video and final serialized
+state are byte-identical to the preceding integer-math candidate. Core-step
+p50/p95/p99 are 11.9023/12.7353/13.2484 ms, maximum 15.2067 ms. Reference-match
+counts remain 2,654 nearby and 783 at the same frame. All three fresh desktop
+smoke evaluators pass with unchanged assertions and only path assignments
+overridden.
+
+OBSERVED: the actual story approaches the next Route 104 trainer at (24,24),
+frame 222,840. The viewed screen shows the challenge, awaiting battle entry.
+Two 600-frame runs complete at 80.2455/80.6128 FPS, p95 13.1680/12.9890 ms,
+with identical saved states, no execution errors/core underruns and no steps
+above 16.67 ms.
+
+OBSERVED: the fresh normal native journey from the earlier free-movement
+checkpoint completes all 18,000 frames at 59.7286 FPS (last window 59.7291),
+zero reported empty-audio-queue events, p95/p99 interval upper bounds 18/18 ms,
+maximum 22.5766 ms and no intervals above 25 ms. The owned-window driver verifies
+actual completion and exit 0. This extends bounded native coverage to five
+minutes for the corrected build, at the GBA's nominal 60 FPS rate
+(16,777,216 / 280,896 = 59.7275 Hz). Aggregate queue counters do not measure
+physical audio output. Earlier failed runs remain in this record, and this
+pass does not establish an entire playthrough or physical-hardware accuracy.
+All four CI jobs pass for source commit `2dba57f`.
 Agreement with the public integer model does not independently establish
 physical-hardware equivalence.
 
