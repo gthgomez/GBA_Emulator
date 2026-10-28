@@ -794,6 +794,9 @@ int DesktopApp::run() {
       return 3;
     }
     push_audio();
+    // Present at the scheduled deadline. Waiting after presentation makes
+    // each interval include the change in work duration between two frames.
+    pace_frame(fast_forward);
     present_frame();
     if (options_.frame_timing) {
       const auto presented = Clock::now();
@@ -804,7 +807,6 @@ int DesktopApp::run() {
       previous_present = presented;
     }
     flush_cartridge_save(false);
-    pace_frame(fast_forward);
 
     if (options_.reset_after_frames != 0 &&
         stats_.frames_presented == options_.reset_after_frames) {
