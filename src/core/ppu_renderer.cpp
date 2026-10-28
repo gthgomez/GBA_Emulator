@@ -11,6 +11,7 @@ constexpr std::uint16_t kWin0Enable = 0x2000;
 constexpr std::uint16_t kWin1Enable = 0x4000;
 constexpr std::uint16_t kObjWindowEnable = 0x8000;
 constexpr std::uint16_t kCharacterMapping1D = 0x0040;
+constexpr std::uint16_t kHblankIntervalFree = 0x0020;
 constexpr std::uint16_t kWindowLayerMask = 0x003FU;
 constexpr std::uint16_t kWindowEffectsBit = 0x0020U;
 constexpr std::uint8_t kBackdropLayerBit = 5;
@@ -275,7 +276,16 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   }
 
   std::array<SpriteAttributes, PpuSpriteFetcher::kSpriteCount> active_sprites{};
+  std::array<std::uint16_t, PpuSpriteFetcher::kSpriteCount> active_sprite_ends{};
   std::size_t active_sprite_count = 0;
+  // Nominal per-line OBJ allowance (GBATEK LCD OBJ overview). Transparent
+  // texels still cost work; affine double-size uses its drawing-area width.
+  // The last OBJ keeps the prefix that fits this nominal allowance. Exact OAM
+  // fetch overlap and the hardware's final-pixel cutoff remain unmodeled,
+  // as does preceding-line fetch timing in this snapshot renderer. Do not
+  // treat this work model as a cycle-exact pipeline.
+  std::uint16_t obj_cycles_remaining =
+      (control.dispcnt & kHblankIntervalFree) != 0 ? 954U : 1210U;
   if (obj_enabled || obj_window_enabled) {
     for (std::uint16_t index = 0; index < PpuSpriteFetcher::kSpriteCount; ++index) {
       const std::optional<SpriteAttributes> sprite =
@@ -284,7 +294,43 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
           !line_intersects_sprite(sprite.value(), scanline)) {
         continue;
       }
-      active_sprites.at(active_sprite_count++) = sprite.value();
+      if (obj_cycles_remaining == 0) {
+        break;
+      }
+      const auto width = static_cast<std::uint16_t>(sprite_screen_width(*sprite));
+      // Skip the invisible left prefix before spending pixel-fetch work.
+      // Normal fetches produce pairs, so an edge-crossing pair still costs
+      // work; affine fetches produce individual pixels. Right overflow keeps
+      // consuming work. OAM scanning/setup for fully clipped OBJs is not modeled.
+      std::uint16_t left_prefix = 0;
+      if (sprite->x < 0) {
+        const auto offscreen = static_cast<std::uint16_t>(-sprite->x);
+        left_prefix = offscreen < width ? offscreen : width;
+        if (!sprite->affine) {
+          left_prefix &= 0xFFFEU;
+        }
+      }
+      const auto fetch_width = static_cast<std::uint16_t>(width - left_prefix);
+      if (fetch_width == 0) {
+        continue;
+      }
+      const std::uint16_t cycles = sprite->affine ? 10U + fetch_width * 2U : fetch_width;
+      std::uint16_t admitted_width = fetch_width;
+      if (cycles > obj_cycles_remaining) {
+        admitted_width = sprite->affine
+                             ? (obj_cycles_remaining > 10U
+                                    ? (obj_cycles_remaining - 10U) / 2U
+                                    : 0U)
+                             : obj_cycles_remaining;
+      }
+      if (admitted_width == 0) {
+        break;
+      }
+      active_sprites.at(active_sprite_count) = sprite.value();
+      active_sprite_ends.at(active_sprite_count++) = left_prefix + admitted_width;
+      obj_cycles_remaining = cycles >= obj_cycles_remaining
+                                 ? 0U
+                                 : obj_cycles_remaining - cycles;
     }
   }
 
@@ -328,7 +374,12 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     for (std::size_t index = 0; index < active_sprite_count; ++index) {
       const SpriteAttributes& sprite = active_sprites.at(index);
       if (sprite.obj_window && column_intersects_sprite(sprite, x)) {
-        return true;
+        const auto local_x = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(x) - static_cast<std::uint16_t>(sprite.x)) &
+            0x1FFU);
+        if (local_x < active_sprite_ends.at(index)) {
+          return true;
+        }
       }
     }
     return false;
@@ -452,6 +503,9 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
               (static_cast<std::uint32_t>(scanline) -
                static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.y))) &
               0xFFU);
+          if (local_x >= active_sprite_ends.at(index)) {
+            continue;
+          }
           if (sprite.mosaic_enabled) {
             local_x = static_cast<std::uint8_t>(mosaic_block(local_x, obj_mosaic_w));
             local_y = static_cast<std::uint8_t>(mosaic_block(local_y, obj_mosaic_h));

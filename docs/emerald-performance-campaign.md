@@ -21,19 +21,19 @@ interactive goal. Record median, p95, p99, maximum frame step duration and count
 over the 16.67 ms budget; validate the SDL host separately. Existing core timing
 conformance gaps remain relevant even when a game appears to work.
 
-## Current checkpoint (2026-10-27)
+## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #51 merged as `b79da42cd29a`; 36 local verifiers, benchmarks, four CI jobs and two independent code reviews passed |
-| Presentation candidate | PR #52 waits before presenting; independently reviewed and exercised in diagnostic and normal hosts |
-| Story | Frame 200,040: Devon employee/Aqua grunt event in Petalburg Woods, after the Cascoon battle |
+| Integration | PR #52 merged as `4db5171067b1`; all four Linux/Windows CI jobs passed final head `9f9425bd7239` |
+| Current candidate | OBJ work limit with left clipping: 36 core verifiers, benchmarks and renewed review pass; 11 ripple frames recover exactly; native pacing validation required before integration |
+| Story | Frame 207,240: Aqua grunt defeated; Devon employee dialogue in Petalburg Woods; Torchic level 10, HP 11/29 |
 | Repeat throughput | Two exact 10,800-frame normal-host replays: 88.22 / 88.29 FPS; three / two steps over 16.67 ms |
-| SDL delivery | Latest candidate: 10,800 diagnostic + 10,800 normal frames at 59.7290 / 59.7291 FPS; zero intervals over 25 ms, maxima 17.96 / 20.45 ms |
-| Determinism | Both normal replay states byte-identical to the recorded SDL state |
+| SDL delivery | Integrated pacing build: 10,800 diagnostic + 10,800 normal frames at 59.7290 / 59.7291 FPS; zero intervals over 25 ms, maxima 17.96 / 20.45 ms |
+| Determinism | New 10,800-frame exact-input replay byte-identical to the post-pacing diagnostic checkpoint; six additional story segments repeat identically |
 | Audio | No queue-empty proxy or additional-input requests; finite postmix data; no physical output claim |
-| Intro | Every image in each 600-frame capture has an exact nearby match; residual end/VBlank lags are one/two frames |
-| Status | Active: isolate remaining timing/phase differences, presentation outliers and the original unreproduced unsupported stop |
+| Intro | Initial 600-frame lag explained by reference HLE accounting; longer 3,600-frame capture exposes further differences, starting with an extra ripple sprite |
+| Status | Active: verify OBJ work-limit candidate, investigate later intro differences, extend story/native soak coverage; original unsupported stop remains unexplained |
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
@@ -1806,3 +1806,151 @@ caller's ROM prefetch state remains active. Relative to normal read/write
 costs, the difference is four cycles per backreference byte and three per stored
 halfword. The fixed call/fetch offsets remain open. This is an oracle limitation;
 physical BIOS timing remains unverified.
+
+## Pacing integration and later intro coverage (2026-10-27)
+
+VERIFIED: PR #52 merged as `4db5171067b1dce56ce6610d18199f5f74627096`
+after all four Linux/Windows core and desktop jobs passed final head
+`9f9425bd7239d7787720c482add7786a2f337579`. The canonical checkout was clean
+and fast-forwarded to that merge. The final documentation commit did not change
+the independently reviewed production source.
+
+VERIFIED: the post-change diagnostic host's recorded inputs replay for 10,800
+frames in the normal headless executable at 87.8712 FPS, with no execution
+failure or core audio underrun. Its final state is byte-identical to the SDL
+checkpoint, SHA256
+`62830ea943736c801f3941321981969d3f6bb4b7d85d3cdcdbd3477e88a21a05`.
+This particular replay has one run, so its repeated-run acceptance flag remains
+false; the cross-host state comparison is separate evidence.
+
+OBSERVED: six further 1,200-frame story segments each repeat twice from a frozen
+checkpoint with identical final states and no execution failures/core audio
+underruns. The route reaches the Aqua battle, defeats Poochyena, and returns to
+the Devon employee. Frame 207,240 is still in post-battle dialogue at Woods
+(26,23), with Torchic level 10 and HP 11/29. These headless runs do not measure
+native presentation intervals.
+
+### Initial intro offset: reference accounting experiment
+
+VERIFIED: tracing the first 220 frames captures ten LZ77 calls, totalling
+1,153,427 pending work cycles (4.1062 frame periods). Independently parsing the
+local compressed inputs predicts every call's work exactly. Twenty-four private
+isolated timer fixtures cover these ten payloads with ROM/IWRAM callers and
+four empty controls. All decompressed outputs verify. Each IWRAM timer equals
+queued work plus nine modulo 65,536, and all ten caller differences match the
+reference RAM-stall prediction modulo 65,536 after fixed-control adjustment.
+The 16-bit timer does not independently measure unwrapped multi-frame duration.
+
+INFERRED from the pinned reference's previously documented prefetch behavior:
+the aggregate payload-dependent difference is 283,245 cycles, or 1.00836 frame
+periods. EWRAM accesses saturate the prefetch queue, so treating all RAM accesses
+as having the same negative cost gives an incorrect total. Direct fixtures
+reject that initial simplification. The corrected aggregate is arithmetic,
+not a physical BIOS measurement.
+
+VERIFIED: a private diagnostic changes only pending LZ work by those derived
+RAM-accounting differences. It adjusts ten calls by 283,245 cycles. All 600
+frame-end images then match the reference at the same frame; the VBlank capture
+retains a one-frame phase difference. Production timing is unchanged. This
+explains the original bounded comparison; it does not establish accuracy of the
+entire intro or justify copying an oracle's prefetch quirk into the core.
+
+### Longer intro and missing OBJ work limit
+
+OBSERVED: a new 3,610-frame reference capture and 3,600-frame production capture
+extend coverage past the original 600 frames. For frame-end snapshots, 1,975 of
+3,600 frames have an exact match within 120 reference frames, and 848 match at
+the same frame. VBlank counts are 1,979 and 672. The first unmatched frame-end
+image is core 637 versus reference 636, differing at 30 pixels in a water ripple.
+Later scenes also diverge; the complete capture is not an accuracy pass.
+
+VERIFIED: at that first mismatch, palette, VRAM, OAM and the relevant display
+controls are identical. Rendering the reference memory snapshot with our
+renderer reproduces the extra 30 pixels. Disabling only OAM entry 5 in that
+private snapshot removes all 30 differences. Thus the initial discrepancy is
+in rendering rather than different decompressed assets or sprite attributes.
+
+DOCUMENTED: [GBATEK's OBJ work limits](https://mgba-emu.github.io/gbatek/#maximum-number-of-sprites-per-line)
+provide nominal 1,210/954-cycle allowances selected by DISPCNT bit 5. Normal
+objects cost their width; affine objects cost ten plus twice their drawing-area
+width, including double-size bounds. Transparent pixels still require work.
+The previous renderer admitted every vertically intersecting object without a
+work limit. Six overlapping affine ripple objects expose that missing behavior.
+
+The candidate applies that nominal work model in OAM order before texture
+transparency, occlusion or window selection. It retains the estimated prefix of
+the last object and excludes later objects. This is a bounded accuracy increment.
+Exact OAM fetch overlap, horizontal clipping savings, the hardware's last-pixel
+endpoint and preceding-line fetch timing remain unmodeled. The
+[hardware research description](https://nba-emu.github.io/hw-docs/ppu/sprite.html)
+shows overlapping OAM/VRAM stages; its detailed endpoint and the reference
+renderer's partial-object behavior cannot serve as exact hardware proof here.
+No third-party implementation was copied into the candidate.
+
+VERIFIED: the focused regression fails before the change on nineteen transparent
+64-pixel objects followed by an opaque sentinel. It passes after, together with
+reduced HBlank allowance, doubled affine width, disabled/other-line exclusion,
+and explicit nominal-prefix checks. These prefix assertions verify the selected
+model, not a measured hardware cutoff. All 36 core verifiers pass (38.8 s), and
+the benchmark checksum suite passes. A fresh independent read-only review finds
+no actionable issue within the stated nominal-model scope, binding renderer
+SHA256 `95fc81eb03d1ae3e1132088af8964a3de9ffccdf2e6abbee7d748fa6b14e420d`
+and test SHA256
+`da5e17d1a259f9eb2a6fcb2d89ea3cc1d5ddb7a4b9b31c4663df59004643b57d`.
+Optimized build and extended runtime comparison remain pending here. The review
+also notes a separate pre-existing OBJ-window transparency defect; it is not
+part of this budget change.
+
+### Left-edge validation and correction
+
+OBSERVED: the first optimized candidate (`0aa0dac28594`, executable SHA256
+`f2e8d5df00520faea13a843c3156c101ba41bc7d7a27617416097b4a13b741ca`)
+builds successfully. Its boot and story training fields match the older control,
+but runtime validation rejects its clipping behavior: the original 30 extra
+pixels become 29 differing pixels, and exact nearby frame-end matches fall from
+1,975 to 1,965. That candidate remains unmerged. Checking the full capture before
+integration exposed a missing left-edge work saving.
+
+The correction skips completely invisible left prefixes before charging pixel
+work: normal fetches skip whole pairs, while affine fetches skip individual
+pixels. An odd pair crossing the edge still costs work. The admitted endpoint
+remains in original object coordinates. Right overflow retains full cost;
+fully clipped OAM scan/setup and exact pipeline timing remain outside this
+nominal model. This rule is inferred from the hardware researcher's
+[fetch implementation](https://raw.githubusercontent.com/nba-emu/NanoBoyAdvance/master/src/nba/src/hw/ppu/sprite.cc),
+not an independently captured physical-hardware trace. Its complete horizontal
+culling and pipeline behavior are not claimed here.
+
+VERIFIED: the added regression fails before correction on nineteen transparent
+64-pixel objects at X=-8 followed by an opaque sentinel. The corrected focused
+verifier passes, including X=-1/-2 pair boundaries and affine X=-16 consumers.
+A renewed independent read-only review finds no blocking issue and confirms the
+updated renderer/test manifests. Raw X=240..255 handling and precise final-pixel
+timing remain stated limitations, not resolved hardware claims.
+
+VERIFIED: rendering the reference frame-636 memory snapshot with the corrected
+renderer now matches every pixel. In the complete 3,600-frame comparison,
+frame-end exact nearby matches rise to 1,986, recovering frames 637..647;
+VBlank matches rise to 1,990, recovering frames 638..648. No previously exact
+nearby frame becomes unmatched. Both captures retain the same final machine
+hash `03a0a5fa907228c7`; this change affects rendering, not guest execution.
+The private visual probe links the corrected renderer without profile data to
+the previous optimized core. It establishes visual behavior, not the final
+normal executable's performance. Later intro differences remain unresolved.
+
+VERIFIED: refreshed full core verification passes all 36 tests in 37.5 s, and
+the benchmark checksum suite passes. Renewed independent review binds renderer
+SHA256 `a5d877aac88b69e5c16b738ae2cbb166343003972e70082d4791e7839eff7146`
+and test SHA256
+`966fc3953c3ae8578a3d5d4d472b6a6326e585c54efaf70d03d093adf557a578`.
+No blocking finding remains within the stated scope.
+
+VERIFIED: a fresh optimized build of that correction succeeds, with normal
+executable SHA256
+`8ad7eb925deb226c3c229ec1cddebecb5e5864d22aac583ec358f2764e045e08`.
+Its 600-frame boot and 600-frame checkpoint-207,240 training ROM/run/video/audio/
+state fields match the older controls. The buffered diagnostic host linked to
+this core has SHA256
+`a996f1fe51000bfdfd0d5a92f054cc8fea7997209e87adea4295f819fe3bdb0a`.
+New native desktop delivery measurements are still pending at this point in
+the chronological record; they are required before integrating the PR.
