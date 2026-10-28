@@ -200,6 +200,17 @@ struct PixelCandidate {
   std::uint8_t priority;
 };
 
+[[nodiscard]] bool precedes(const PixelCandidate& candidate,
+                            const PixelCandidate& other) {
+  if (candidate.priority != other.priority) {
+    return candidate.priority < other.priority;
+  }
+  // At equal priority OBJ precedes BG0, BG1, BG2, BG3, then backdrop.
+  const unsigned candidate_order = candidate.layer_bit == 4 ? 0 : candidate.layer_bit + 1U;
+  const unsigned other_order = other.layer_bit == 4 ? 0 : other.layer_bit + 1U;
+  return candidate_order < other_order;
+}
+
 struct AffineParams {
   bool present = false;
   std::int32_t pa = 0;
@@ -406,12 +417,14 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     PixelCandidate second{backdrop, kBackdropLayerBit, 4};
     bool winner_is_semi_transparent = false;
     const auto consider = [&](PixelCandidate candidate) {
-      if (candidate.priority <= best.priority) {
+      if (precedes(candidate, best)) {
         second = best;
         best = candidate;
-      } else if (candidate.priority <= second.priority) {
+        return true;
+      } else if (precedes(candidate, second)) {
         second = candidate;
       }
+      return false;
     };
 
     if (layer_mask != 0) {
@@ -438,13 +451,12 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
           }
           const PixelCandidate candidate{
               normalize_color(bg_pixel->color), bg_index, bg.priority};
-          const std::uint16_t prior_best_priority = best.priority;
-          consider(candidate);
-          if (candidate.priority <= prior_best_priority) {
+          if (consider(candidate)) {
             ++bg_pixels;
           }
         }
-      } else {
+      }
+      if (mode == 1 || mode == 2) {
         for (std::uint8_t bg_index = 2; bg_index < 4; ++bg_index) {
           const AffineParams& params = affine_params.at(bg_index);
           if (!params.present ||
@@ -475,9 +487,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
           }
           const PixelCandidate candidate{
               normalize_color(affine_pixel->color), bg_index, bg.priority};
-          const std::uint16_t prior_best_priority = best.priority;
-          consider(candidate);
-          if (candidate.priority <= prior_best_priority) {
+          if (consider(candidate)) {
             ++bg_pixels;
           }
         }
@@ -500,9 +510,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
         const auto& obj_candidate = obj_row[x];
         const bool obj_semi_transparent = obj_semi_row[x];
         if (obj_candidate.has_value()) {
-          const std::uint16_t prior_best_priority = best.priority;
-          consider(*obj_candidate);
-          if (obj_candidate->priority <= prior_best_priority) {
+          if (consider(*obj_candidate)) {
             ++obj_pixels;
             winner_is_semi_transparent = obj_semi_transparent;
           }

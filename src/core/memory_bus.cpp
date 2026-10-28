@@ -253,7 +253,9 @@ MemoryAccessTiming MemoryBus::timing(std::uint32_t address, AccessWidth width) {
     case Region::game_pak_save:
       return {1, 1, false, false};
     case Region::unknown:
-      return {0, 0, false, false};
+      // Unused addresses have no external wait states. Raw reads still need
+      // CPU pipeline context; this describes the bus cycle, not readable data.
+      return {1, 1, false, false};
   }
   return {0, 0, false, false};
 }

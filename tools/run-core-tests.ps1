@@ -503,6 +503,7 @@ $coreTests = @(
             "src\core\ppu_timing.cpp",
             "src\core\timers.cpp",
             "src\core\wait_state_control.cpp",
+            "src\core\save_state_codec.cpp",
             "tests\android_runtime_test.cpp"
         )
     },

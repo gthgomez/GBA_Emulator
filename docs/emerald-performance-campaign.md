@@ -25,18 +25,474 @@ conformance gaps remain relevant even when a game appears to work.
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #53 merged as `f903979056c0`; all four Linux/Windows CI jobs passed final head `0a6867bc88e3` |
-| Current candidate | PR #54 head `463521a764fd` passes four CI jobs; native playback exposes stalls and audio starvation; audio resume repair under verification |
-| Story | Route 104 reached at frame 211,260; frame 211,680 shows the two-Oran-Berry pickup text; Torchic level 10, HP 11/29; checkpoints retained |
-| Repeat throughput | Two exact 10,800-frame diagnostic replays: 87.58 / 85.95 FPS; two / one steps over 16.67 ms; every frame's logical instruction counts identical |
-| SDL delivery | Row candidate normal/diagnostic 10,800-frame runs: 59.68/57.17 FPS, 20/631 queue-empty events, maxima 42.00/114.55 ms; smoothness target remains unmet |
+| Integration | PR #54 merged as `7751705dff14`; draft PR #55 at `74aab105e364` passes all four Linux/Windows CI jobs and remains held for native acceptance |
+| Current iteration | Raster repairs are committed; BIOS affine quantization follow-up passes local checks/review, with optimized ROM verification pending |
+| Story | Winston defeated at frame 221,340; Torchic reaches level 11 with 23/31 HP through normal level-up; victory-text checkpoint retained |
+| Repeat throughput | Latest two exact 10,800-frame diagnostic replays: 78.36 / 79.24 FPS; 15 / 12 steps over 16.67 ms; every frame's logical instruction counts identical to native |
+| SDL delivery | Event-guard candidate: 10,800 frames at 59.6837 FPS, 23 queue-empty reports, p95/p99 upper bounds 18/18 ms, maximum 30.9679 ms and eight gaps over 25 ms; further optimization pending |
 | Determinism | Both exact-input profiling replays byte-identical to the diagnostic SDL checkpoint; latest 1,200-frame story pair also identical |
-| Audio | Latest diagnostic has 1,099 additional-input requests; repeated pause tests expose an empty-queue resume condition; finite postmix data alone does not prove glitch-free sound |
-| Intro | Initial lag explained by reference HLE accounting; OBJ limit recovers 11 ripple frames; reference snapshot 1,244 renders exactly, locating its remaining 852-pixel difference in game state |
-| Status | Active: repair and verify audio resume, diagnose native stalls, investigate intro timing/random choices and extend story; PR remains held |
+| Audio | Pause repair verified: settled missing-input requests 5→0 and first-three-second queue-empty events 7→0; identical guest states; general stall recovery remains open |
+| Intro | Actual runtime nearby exact matches increase 1,986→2,655 of 3,600; selected wave/title scenes match exactly at offsets of 5–8 frames; timing/randomized scenes remain |
+| Status | Active: diagnose remaining native hitch, investigate intro timing/random choices and extend story from Route 104; broad smoothness target remains open |
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
+
+VERIFIED: PR #54 passed all four CI jobs on `aa705c7aaea2` and merged through
+the exact-candidate normal path as `7751705dff14`. The canonical checkout was
+fast-forwarded cleanly. The normal optimized executable completed 10,800 frames
+at 59.7291 FPS with zero reported queue-empty events; presentation p95/p99 upper
+bounds were 17/18 ms, with one interval over 25 ms (26.2076 ms maximum).
+The specific rendering and resume repairs are integrated. This bounded result
+does not resolve all historical native stalls or establish smooth whole-game
+coverage. The campaign remains active.
+
+### Scanline rendering investigation and candidate
+
+OBSERVED: an additional native diagnostic completed 10,800 frames at 59.7291
+FPS with zero queue-empty events. Presentation p95/p99 were 16.9403/17.2567 ms,
+maximum 23.1047 ms, with no intervals above 25 ms. All 16,931 postmix blocks
+were finite, with no additional-input requests. This instrumented run adds
+thread cycle counts, accounted thread CPU time and process page-fault deltas;
+its overhead prevents treating it as the normal executable's performance.
+Frame 8,877 was the only step above 16.67 ms: 22.662 ms, 127,364 executed
+instructions, four skipped steps, and zero process faults in the sampled
+interval. Thread-time accounting was quantized in 15.625 ms increments.
+INFERRED: these measurements do not establish OS descheduling or paging as
+the cause of the remaining normal-run hitch. Exact-input replay is pending.
+
+OBSERVED: the unchanged renderer, supplied with later reference video memory
+and final LCD registers, differs from the reference's actual rendered frame:
+
+| Reference frame | Different pixels | Different rows | HBlank DMA destination |
+| --- | ---: | ---: | --- |
+| 2,400 | 11,188 | 90 | BG1 horizontal scroll |
+| 2,600 | 7,468 | 91 | BG1 vertical scroll |
+| 3,400 | 5,067 | 55 | BG1 horizontal scroll |
+
+The same snapshot method matches frames 2,800, 3,000 and 3,200 exactly, with
+that DMA disabled. The runtime renders all rows after frame execution from
+the final memory and register values. Public
+[intro source](https://raw.githubusercontent.com/pret/pokeemerald/master/src/intro.c)
+also configures scanline scroll effects in these scenes. INFERRED: sampling
+each row during execution is necessary; rendering the final snapshot cannot
+reproduce the per-line register values.
+
+VERIFIED: a legal synthetic ARM loop with an eight-color text tile and
+repeating halfword HBlank DMA to BG0 horizontal scroll executes all 160
+transfers. The added assertion that row 1 uses the first transfer fails
+against the merged implementation. A candidate now samples each visible row
+at cycle 960, before the existing cycle-1004 HBlank flag/DMA edge, and passes
+this focused check. The visible drawing interval follows
+[GBATEK's timing table](https://mgba-emu.github.io/gbatek/#lcd-dimensions-and-timings);
+this change preserves the project's separately calibrated HBlank flag edge.
+
+The candidate splits scheduler advancement at presentation and PPU event
+boundaries during both CPU and DMA time. Its observer belongs to the
+scheduler and is installed only during a runtime call; snapshots contain no
+presentation callback. A separate accumulating surface prevents partial or
+aborted calls from exposing mixed rows. A nonserialized session generation
+invalidates accumulation after reset or state restore, including same-cycle
+restores through the existing session API. A midframe restore keeps the last
+completed image until a subsequent coherent visible frame is available.
+
+VERIFIED: all 36 core tests and the required benchmarks pass for the candidate.
+The regressions cover bulk CPU advancement, long DMA spanning more than 32
+visible rows, a transfer crossing multiple frames, partial calls, fetch failure,
+reset/reload and same-cycle codec restore. The first suite attempt exposed a
+missing codec link dependency; both runner manifests were corrected. A later
+unoptimized test run exposed excessive stack use in the added fixture, resolved
+by allocating its large runtime instances on the heap. No verifier was relaxed.
+Independent candidate review, actual runtime intro comparisons and optimized
+native performance remain pending before integration.
+Per-scanline sampling does not implement pixel-level writes, affine reference
+accumulators, or per-unit DMA/HLE memory-write timing; these limits remain open.
+
+OBSERVED: direct runtime captures of all 3,600 intro frames increase nearby
+exact matches from 1,986 to 2,011 with the initial scanline candidate. At own
+frames 2,400 and 2,600, nearest-reference differing pixels fall from
+10,950 to 5,992 and from 7,443 to 5,056. Capture phase shifts by roughly one
+frame; same-frame equality falls from 848 to 672, so the counts do not establish
+globally correct timing. Visual inspection exposes a separate defect: the
+large affine background figures are missing from both baseline and candidate.
+
+VERIFIED: a new synthetic mode-1 scene fails because the text-background branch
+excludes the affine BG2 branch. Enabling both exposes a second failing
+regression: equal-priority BG2 incorrectly covers BG1. The candidate now
+composes both background types and orders equal-priority layers as OBJ,
+BG0, BG1, BG2, BG3, backdrop, consistent with
+[GBATEK](https://mgba-emu.github.io/gbatek/#lcd-io-bg-control).
+Focused renderer tests pass for mixed layers, transparency, alpha's second
+target, and equal-priority text/affine backgrounds. Full verification and a new
+optimized build are required after this additional correction; the initial
+scanline build remains retained as a separate comparison.
+
+VERIFIED: after both rendering corrections, all 36 core tests, mandatory
+benchmarks and the three desktop smoke evaluators pass. The smoke copies retain
+all assertions and override only the executable, repository and private evidence
+directories. The fresh optimized normal executable's SHA-256 is
+`8140ac1eccae1574615ee280976107de7dd0d92887d15d9dea391bc161f3c7ae`.
+The new 3,600-frame actual-runtime capture matches 2,655 nearby reference frames,
+up from 1,986: 717 gain an exact nearby match, while 48 lose one. Own frames
+2,400, 2,600 and 3,400 match reference frames 2,395, 2,593 and 3,392 exactly.
+The final serialized machine state is byte-identical to the earlier scanline
+candidate, establishing that the mode-1/priority rendering changes did not alter
+guest execution in this workload.
+
+OBSERVED: the instrumented intro capture has median/p95/p99 step times
+13.1933/14.7266/17.3113 ms (nearest-rank p95/p99), maximum 41.6853 ms, and
+48 steps over 16.67 ms. Forty occur in frames 1,800–2,399; the largest cluster
+is around frames 2,263–2,301. These outliers require replay/profiling rather
+than attribution to the host from aggregate throughput alone. The 945 frames
+without a nearby exact match are concentrated in the randomized cycling scene
+and several scene transitions; 36 of the 48 lost matches occur around
+2,293–2,330. Neither full intro timing nor sustained smoothness is established.
+
+OBSERVED: actual item-menu inputs planted one Oran Berry while facing empty
+soil. After moving away, using the remaining berry through the party menu
+healed Torchic from 11/29 to 21/29 HP at frame 215,700, confirmed on screen.
+Repeated segments produce identical final states with no execution errors or
+core underruns. The 360-frame segment leaving the soil averages 75.16/72.73 FPS
+but fails the p95 headless target in one repetition; that failed performance
+result is retained. Independent read-only candidate review remains queued
+under the host's memory admission limit.
+
+OBSERVED: the fresh normal candidate completed all 10,800 native frames but
+failed smoothness acceptance: 59.3931 FPS average, 138 queue-empty reports,
+presentation p95/p99 upper bounds 18/23 ms, maximum 41.9583 ms and 62 intervals
+over 25 ms. Admission measured 2,327 MiB available and 91% commit usage, with
+21% CPU load. The correctness fixes are not integrated. A normal baseline
+control and private render-versus-other-time profiles are the next diagnostics;
+neither a candidate regression nor a host-only cause is established by this
+single comparison against historical runs.
+
+OBSERVED: a subsequent normal baseline control completed 10,800 frames at
+59.7357 FPS with zero queue-empty reports, p95/p99 upper bounds 17/18 ms,
+maximum 22.6444 ms and no intervals over 25 ms. A private four-run phase
+comparison used the same 600-frame checkpoint workload in baseline/candidate/
+candidate/baseline order. Every frame's executed/skipped counts matched.
+Mean total step times were 11.4300/12.6032/12.6920/11.5259 ms; render time
+remained 1.5073/1.5342/1.5300/1.5123 ms. A counterfactual retaining the new
+scheduler with frame-end rendering still took 12.7871/12.7890 ms. INFERRED:
+the added scheduler bookkeeping is the demonstrated performance problem;
+the experiment does not identify host stalls as its sole cause.
+
+The next candidate skips DMA event-queue accounting only when a tick has no
+HBlank/VBlank DMA event and no timer-0/1 overflow. Timers, PPU, IO, APU and
+the scanline observer retain their chronological execution. All 36 core tests
+and mandatory benchmarks pass. The fresh optimized executable's SHA-256 is
+`3d41745158a633d163d8fc667c6ccfaed91ffa753cfaf580dd8bad2e0497fd6d`.
+Four normal 1,200-frame runs with the same recorded inputs completed at
+76.6005/81.2031/81.5249/76.9466 FPS (control/candidate/candidate/control),
+with p95 steps 14.3002/13.3761/13.5333/14.0958 ms. ROM, run, video, audio,
+state sections and serialized state hashes all match across the four runs.
+This is about a 6% throughput improvement over the preceding raster candidate,
+not a comparison against the original merged renderer's work.
+
+VERIFIED: the optimized candidate's entire 3,600-frame raw intro stream and
+final serialized state are byte-identical to the preceding mode-1 candidate.
+Its instrumented capture reports p50/p95/p99 upper-index step times
+11.9427/12.8398/13.2631 ms and maximum 19.2964 ms. The earlier failed native
+run remains part of the evidence. The optimized normal native repeat and
+fresh independent review are still required before integration.
+
+OBSERVED: the event-guard candidate's normal native repeat completes all
+10,800 frames at 59.6837 FPS, with 23 queue-empty reports, presentation p95/p99
+upper bounds 18/18 ms, maximum 30.9679 ms and eight intervals over 25 ms.
+This improves the preceding 138 reports and 62 long gaps but still fails the
+smoothness target. Integration remains held.
+
+The next refactor ticks the first bounded interval through a shared helper.
+An ordinary interval with no DMA event can then finish through the shared
+IRQ/master-time helper before constructing a DMA drain context. Intervals
+that cross boundaries or trigger DMA use those same helpers in the drain
+loop. This targets the measured common-call overhead without introducing a
+different device model. All 36 core tests and required benchmarks pass
+(236.2 s suite, including 229.0 s compilation and 7.0 s execution). Its fresh
+optimized build, exact-output comparison and normal native verification are
+in progress; no speedup or target acceptance is claimed yet.
+
+OBSERVED: that larger refactor was rejected after normal optimized ABBA runs
+completed at 76.5015/74.2446/73.5973/79.4349 FPS
+(retained guard/refactor/refactor/retained guard). Forcing its device helper
+inline removed a measured call but did not establish a repeatable useful gain:
+ABBA gave 79.3368/80.0897/80.6979/79.0469 FPS, and reverse BAAB gave
+79.4040/79.7379/79.5706/80.9619 FPS. All comparisons retained identical output
+sections and serialized states. Both experiments were removed; the simpler
+event guard remains the candidate. No native improvement is inferred from
+these rejected experiments.
+
+VERIFIED: the restored guard candidate passes all 36 core tests (233.3 s,
+including 226.3 s compilation and 6.8 s execution), and the required benchmark
+checksum suite passes. A fresh independent read-only review finds no actionable
+introduced defect, with all twelve source/test/runner hashes unchanged before
+and after review. It covers observer lifetime, surface staging, restore
+invalidation, DMA/FIFO/IRQ ordering and accounting, and layer composition.
+Review does not establish native performance. A new private instrumented native
+run is measuring step, presentation and pacing intervals alongside actual SDL
+additional-input requests; the failed normal run remains the acceptance result.
+
+OBSERVED: the new instrumented native run completes all 10,800 frames at
+59.7262 FPS, with one queue-empty proxy report. All 16,932 captured postmix
+blocks are finite; one block records a 232-byte additional-input request at
+29.628 s. Thus the proxy coincides with a measured SDL input shortage in this
+run, not merely an empty-queue inference. Presentation p95/p99 are
+17.0559/17.4099 ms (nearest rank), maximum 24.9443 ms, with no gaps above
+25 ms. Step p50/p95/p99 are 12.9220/14.0693/15.0435 ms, maximum 24.2469 ms;
+33 steps exceed 16.67 ms. Slow clusters appear around frames 1,765, 6,687
+and 9,506. Their ordinary instruction counts do not isolate the cause.
+Two exact-input headless replays are pending; neither this diagnostic run
+nor its changed host conditions supersedes the failed normal-run acceptance.
+
+VERIFIED: a read-only version-6 wire-layout audit of the baseline versus
+initial raster intro states assigns all 24 non-header differing bytes to
+the APU's stored sample array. The other eight changed bytes are the header's
+state hash. Every other serialized byte is identical, including CPU, RAM,
+video memory, device counters and scheduler state. This identifies the state
+difference; it does not establish physical audio correctness.
+
+VERIFIED: both exact-input replays complete all 10,800 frames, at
+78.363955/79.236820 FPS, with p95 steps 13.8334/13.7212 ms and p99
+14.8557/14.7814 ms. Every frame's executed/skipped instruction counts match
+the native trace. Both final serialized states are byte-identical to native,
+and ROM/run/video/audio/state artifact sections match between replays.
+There are 15/12 over-budget steps, with maxima 21.4416/21.8024 ms. Neither
+replay's over-budget set overlaps the native run's 33 over-budget frames.
+The largest native delays replay at ordinary step times. INFERRED: the
+experiments do not establish a deterministic guest-frame hotspot, nor do they
+identify a host scheduling, paging or clock cause. Native smoothness remains
+open, and the diagnostic executable is not the normal production host.
+
+VERIFIED: the retained optimized guard passes all three desktop smoke
+evaluators: deterministic headless completion, cartridge-save lifecycle and
+error preservation, and interactive nonuniform rendering/error exit. Only
+the three path assignments differ from the checked-in evaluators; all other
+lines and assertions are identical. A second fresh independent read-only
+review finds no actionable introduced defect, including in actual consumers
+of the changed rendered-scanline contract. All twelve pinned source hashes
+match before and after both reviews.
+
+OBSERVED: actual story inputs close the bag and continue east along Route 104.
+A northward approach stops at the lake/trees; the route is adjusted from the
+observed screen rather than treating the incomplete collision-only route
+planner as ground truth. The eastward approach reaches Rich Boy Winston's
+challenge at frame 217,260 and the battle opening at 217,920. The latter two
+paired segments run at 79.46/79.15 and 80.48/80.68 FPS, with identical final
+states, no execution errors/core underruns and no steps over 16.67 ms. These
+are bounded story measurements; the earlier native delivery failures remain.
+
+### Further intro isolation and BIOS affine precision
+
+OBSERVED: the paired story reaches Winston's defeated message at frame
+221,340. Torchic levels from 10 to 11 and increases naturally to 23/31 HP.
+The final 900-frame pair completes at 76.58/78.83 FPS with identical states,
+no execution errors/core underruns and no steps over 16.67 ms. The checkpoint
+still awaits the victory/payout text before free movement resumes.
+
+OBSERVED: a broader private profile trains 3,600 intro frames, 2,400 recorded
+movement frames and 720 battle frames. Separate movement-input ABBA runs give
+80.1314/80.8800/80.7233/80.0379 FPS (retained/broader/broader/retained).
+Reverse BAAB gives 81.7290/82.0998/81.4904/81.9865 FPS, removing a repeatable
+advantage. Full-intro ABBA gives 82.3963/83.9876/83.0366/79.8119 FPS. All five
+logical artifact sections and saved states match within each comparison.
+Intro results include order-dependent drift; their reverse-order repeat was
+not run. The broader profile is not adopted; no new native gain is claimed.
+
+OBSERVED: selected cycling differences have distinct causes. Frames
+1,750/1,950 differ from nearby reference frames by 442/469 pixels, all within
+the rider's rectangle; backgrounds and other creatures match. At own frame
+2,200 versus reference 2,197, all 3,189 differences exchange two colors.
+The game's [palette-cycle routine](https://github.com/pret/pokeemerald/blob/master/src/intro_credits_graphics.c)
+uses the VBlank counter. INFERRED: palette phase explains that selected
+exchange; this does not classify every unmatched frame.
+
+VERIFIED: a new reference capture reproduces all twelve selected videos
+exactly. Our renderer supplied with its video memory/registers matches every
+pixel in eleven selected Poké Ball frames, including 2,293–2,298, 2,300,
+2,310, 2,320 and 2,330. The additional frame-2,400 static snapshot still
+differs for its known per-line DMA effect. This separates static affine
+rendering from the values supplied by execution.
+
+OBSERVED: our corresponding matrices differ by single fixed-point units
+after phase alignment. Our BIOS helper rounds floating-point products;
+the pinned reference uses a different floating-point approximation, which
+is not physical-hardware proof. DOCUMENTED: the public
+[emibios integer model](https://github.com/coolbho3k/emibios/blob/3087d40c0ec59e67ff556db148cbec0d57d10d17/src/swi/math/affine_set.s)
+uses 2.14 trigonometric values, arithmetic-shifted products and Pb negation
+after shifting. Its [generator](https://github.com/coolbho3k/emibios/blob/3087d40c0ec59e67ff556db148cbec0d57d10d17/tools/gen/sine_lut.zig)
+specifies mathematical truncation. The follow-up independently implements
+that model with a mathematically generated 65-entry quarter wave and the
+existing ASR helper. No BIOS payload or third-party implementation is copied.
+
+VERIFIED: the positive fractional-angle regression fails before correction
+and passes after. Negative-product/Pb-order cases, halfword wrapping, ignored
+low angle bits and all 256 angles over five signed scale pairs pass; the sweep
+uses an independent long-double oracle. BgAffineSet and strided ObjAffineSet
+integration checks pass, together with all 36 core tests (188.5 s) and
+mandatory benchmarks. Fresh independent read-only review verifies the three
+pinned source hashes and finds no introduced defect.
+
+VERIFIED: commit `912aac3` receives a fresh optimized build (executable SHA256
+`42a2e647d6a4b00281d67cc2f1d6c3d6c64c80df01035bb5e28672df16f81fb1`).
+Normal-build 1,200-frame ABBA gives 82.0668/81.3764/80.9465/80.5788 FPS
+(previous/integer/integer/previous). All five logical artifact sections and
+serialized final states match across the four runs. No material gain or
+regression is established. All three desktop smoke evaluators pass using
+path-only overrides and unchanged assertions.
+
+OBSERVED: its full 3,600-frame runtime intro completes with core-step p50/p95/
+p99 11.7523/12.5330/13.1028 ms, maximum 14.1401 ms. There are 2,654 exact nearby
+reference matches and 783 at the same frame. The reference uses different HLE
+floating arithmetic; these counts do not establish physical accuracy.
+
+OBSERVED: the normal desktop build completes all 10,800 frames at 59.7286 FPS
+(last window 59.7255), zero reported empty-audio-queue events, p95/p99 interval
+upper bounds 18/18 ms, maximum 23.2283 ms and no intervals over 25 ms. This is
+a bounded native delivery pass at the GBA's nominal 60 FPS rate. It does not
+erase earlier failed runs or establish whole-game sustained smoothness.
+
+OBSERVED: actual story resumes from frame 221,340, finishes Winston's payout,
+and returns to free movement at Route 104 coordinates (21,24), frame 222,240.
+Two 900-frame runs complete at 80.1435/81.1047 FPS, p95 13.5708/13.3199 ms,
+with identical serialized final states and no execution errors/core underruns.
+One first-run step exceeds 16.67 ms (20.2462 ms); the second has none.
+
+### BG affine translation overflow follow-up
+
+VERIFIED: a focused regression linked against commit `912aac3` fails because
+BG translation uses already narrowed coefficients. For scales -32,768,
+angle 0x8000, origin (0,0) and center (1,1), both full coefficients are
++32,768 and references must be 0xFFFF8000. Premature narrowing produces
+0x00008000 instead. The expected assertion fails with exit 1.
+
+The correction gives the canonical coefficient calculation a full-width
+result. The existing eight-byte AffineMatrix and helper retain their layout,
+signature and halfword behavior; ObjAffineSet continues using that helper.
+BgAffineSet uses full coefficients for translation and narrows only the four
+halfword writes. This avoids separate cardinal-angle correction logic or
+changing the legacy matrix representation.
+
+VERIFIED: the corrected SWI regression passes for overflow in PA/PD, PB and
+PC at three cardinal angles. The wide helper has an independent full-circle
+oracle over five signed scale pairs and an explicit positive-overflow case.
+Fresh independent read-only review finds no introduced defects, with all five
+source/test hashes matching before and after review. All 36 core verifiers
+pass (228.5 s), including the corrected SWI cases, and mandatory benchmarks
+pass.
+
+VERIFIED: the fresh optimized normal executable for `2dba57f` has SHA256
+`7fc7c7aa3095745ea8337a59cce33cf9a2e059e9c2a15654890adaa0291441fe`.
+A 1,200-frame ABBA comparison gives 80.5211/81.1938/81.6907/81.6725 FPS
+(previous/wide/wide/previous), with p95 13.6771/13.4822/13.4047/13.3063 ms.
+All five logical artifact sections and serialized final states match in every
+run. No material speedup or regression is established.
+
+VERIFIED: its complete 3,600-frame runtime intro video and final serialized
+state are byte-identical to the preceding integer-math candidate. Core-step
+p50/p95/p99 are 11.9023/12.7353/13.2484 ms, maximum 15.2067 ms. Reference-match
+counts remain 2,654 nearby and 783 at the same frame. All three fresh desktop
+smoke evaluators pass with unchanged assertions and only path assignments
+overridden.
+
+OBSERVED: the actual story approaches the next Route 104 trainer at (24,24),
+frame 222,840. The viewed screen shows the challenge, awaiting battle entry.
+Two 600-frame runs complete at 80.2455/80.6128 FPS, p95 13.1680/12.9890 ms,
+with identical saved states, no execution errors/core underruns and no steps
+above 16.67 ms.
+
+OBSERVED: the fresh normal native journey from the earlier free-movement
+checkpoint completes all 18,000 frames at 59.7286 FPS (last window 59.7291),
+zero reported empty-audio-queue events, p95/p99 interval upper bounds 18/18 ms,
+maximum 22.5766 ms and no intervals above 25 ms. The owned-window driver verifies
+actual completion and exit 0. This extends bounded native coverage to five
+minutes for the corrected build, at the GBA's nominal 60 FPS rate
+(16,777,216 / 280,896 = 59.7275 Hz). Aggregate queue counters do not measure
+physical audio output. Earlier failed runs remain in this record, and this
+pass does not establish an entire playthrough or physical-hardware accuracy.
+All four CI jobs pass for source commit `2dba57f`.
+Agreement with the public integer model does not independently establish
+physical-hardware equivalence.
+
+### Further battle coverage exposes unused-data timing rejection
+
+OBSERVED: continuing the real story reaches Haley's Lotad battle at frame
+224,160, with Torchic level 11 at 23/31 HP. A 900-frame Ember input sequence
+stops after 451 completed frames, reported as an unsupported instruction.
+The current normal executable and the previous integer-affine executable
+stop at the same instruction and produce byte-identical serialized failure
+states. The bounded native delivery passes above do not cover this failure;
+integration is held while it is investigated.
+
+VERIFIED: the stopped opcode is a valid post-indexed byte load from an unused
+address. A private trace follows the game's compressed reverse-sample path
+through a negative sample index. Its arithmetic forms the unused address.
+The CPU already implements pipeline open-bus data for this load, but the
+cycle-estimation preflight rejects the access first because unused bus
+metadata reports zero cycles. The synthetic untimed load succeeds, while its
+timed counterpart fails; the focused regression exits 1 before correction.
+No ROM, trace or machine-state payload is included in the repository.
+
+DOCUMENTED: [GBATEK's unused-memory rules](https://github.com/mgba-emu/gbatek/blob/master/gba.md#reading-from-unused-memory-00004000-01ffffff10000000-ffffffff)
+return prefetched instruction data, with ARM sourcing the word at PC+8 and
+narrow reads selecting the addressed lane. The pinned reference's
+[load implementation](https://github.com/mgba-emu/mgba/blob/7a12d6d/src/gba/memory.c)
+also supplies pipeline data without external wait states for unused loads.
+The candidate assigns a one-cycle unused bus access and permits the existing
+CPU fallback to execute. Raw memory reads and policy flags remain unchanged;
+unreadable pipeline sources and unused instruction fetches still fail.
+Detailed Thumb pipeline history and DMA-driven open bus remain separate
+accuracy limits; this is not a complete hardware open-bus implementation.
+
+VERIFIED: focused CPU tests pass after correction for byte lanes, post-index
+wraparound, flags, word rotation, halfword selection, plain/WAITCNT-aware
+steps, Thumb timing and an unreadable pipeline. New scheduler and raw timing
+checks cover actual fetch/execute and unchanged unsupported fetch behavior.
+A diagnostic runtime compiled with the corrected CPU and memory implementation
+completes all 900 formerly failing battle frames without execution errors.
+This establishes functional progress, not normal-build speed or sustained
+performance. All 36 core verifiers pass (220.6 s), including the new scheduler
+and memory cases, and mandatory benchmarks pass. A fresh independent read-only
+review finds no introduced defect across the five pinned source/test files,
+including actual DMA and scheduler timing consumers; hashes match before and
+after review. A second fresh read-only review independently checks CPU timing,
+raw-memory permissions, pipeline failure, stores and tests against committed
+head `9d28a8b`; all five hashes again match and no introduced defect is found.
+
+VERIFIED: a fresh optimized normal executable for that source has SHA256
+`2f5e11f72f5a4dd239b749cae7bc9ba41f704121b4fc073a216c44742b4a6f49`.
+The formerly failing 900-frame battle segment now completes twice, with
+identical serialized states that also match the corrected diagnostic replay.
+Throughput is 76.8155/76.2900 FPS, p95 13.6355/13.6874 ms, maxima
+16.6837/16.0009 ms and one/zero steps over 16.67 ms. The viewed screen returns
+to the command menu with Lotad damaged and Torchic still at 23/31 HP.
+
+OBSERVED: 1,200-frame normal ABBA gives 82.3570/81.0590/80.8804/81.9881 FPS
+(previous/fixed/fixed/previous), suggesting about 1.5% lower throughput in
+that ordering. Reverse BAAB gives 80.9563/82.0496/79.0561/81.1412 FPS and does
+not repeat a uniform gap. All five logical artifact sections and serialized
+states match throughout both comparisons. No speedup is claimed; the observed
+ordering variation limits interpretation of the small difference.
+
+VERIFIED: the full 3,600-frame intro video and saved state remain byte-identical
+to the preceding build. Core-step p50/p95/p99 are 12.0058/12.6876/13.1726 ms,
+maximum 16.3464 ms; reference matches remain 2,654 nearby and 783 at the same
+frame. All three fresh desktop smoke evaluators pass with unchanged assertions
+and path-only overrides. All four CI jobs pass for `9d28a8b`.
+
+OBSERVED: actual story testing defeats Lotad, declines a party switch and
+defeats Haley's Shroomish. At frame 227,760, Torchic remains level 11 at
+23/31 HP and the viewed screen shows 82 EXP received. The last 900-frame pair
+completes at 76.5865/76.7056 FPS, p95 13.9486/13.6832 ms, identical states and
+no execution errors/core underruns. One second-run step reaches 16.78 ms;
+the first has none above 16.67 ms. Victory/payout dialogue still remains.
+
+OBSERVED: the normal desktop executable for this correction completes all
+18,000 frames at 59.7286 FPS (last window 59.7268), zero reported audio queue underruns, p95/p99 interval upper bounds 18/18 ms,
+maximum 20.3601 ms and
+no gaps above 25 ms. Actual frame count and exit 0 are verified. This is a
+five-minute bounded native delivery pass for the source that also completes
+the formerly failing battle; it does not establish a full playthrough or
+physical audio-output equivalence. Earlier failed runs remain retained.
 
 ### Post-integration profiling and next rendering correction
 

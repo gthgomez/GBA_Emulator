@@ -29,6 +29,13 @@ struct CoreDeviceTickResult {
   DmaRunResult triggered_dma = {};
 };
 
+// Presentation only: not part of CoreSchedulerState or a guest save state.
+// The callback runs at visible completion, before the later HBlank DMA edge.
+struct CoreScanlineObserver {
+  void* context = nullptr;
+  void (*completed)(void*, std::uint16_t) = nullptr;
+};
+
 struct CoreDataAccessTrace {
   std::uint32_t address = 0;
   std::uint8_t width_bytes = 0;
@@ -158,6 +165,7 @@ class CoreScheduler {
   // Injectable diagnostics sink for deterministic-core tracing (SWI Halt
   // entry, etc.). Null by default; the core never reads environment state.
   void set_debug_trace_sink(std::function<void(const char*)> sink);
+  CoreScanlineObserver set_scanline_observer(CoreScanlineObserver observer);
 
   [[nodiscard]] CoreDeviceTickResult advance_devices(std::uint32_t cycles);
   [[nodiscard]] DmaRunResult run_immediate_dma();
@@ -221,6 +229,7 @@ class CoreScheduler {
   std::uint32_t thumb_misfetch_recovery_count_;
   std::vector<HleWorkFrame> hle_work_frames_;
   std::function<void(const char*)> debug_trace_sink_;
+  CoreScanlineObserver scanline_observer_{};
 
   [[nodiscard]] std::uint32_t apply_fetch_timing(std::uint32_t fetch_address,
                                                  std::uint8_t width_bytes,

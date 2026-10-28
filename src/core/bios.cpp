@@ -16,6 +16,34 @@ constexpr std::uint32_t kBiosHleLongTimerChainedPostReturnExtraCycles = 5;
 constexpr std::uint32_t kBiosHleSlowTimer0ActiveReturnExtraCycles = 1;
 constexpr std::uint32_t kLooseTimerIoIrqDispatchGapCycles = 12;
 
+// Mathematically generated quarter wave: trunc(16384*sin(pi*i/128)), i=0..64.
+// Reflect/sign the quarter wave to avoid host floating-point rounding and to
+// retain the BIOS's 8-bit angle and 2.14 trigonometric precision. The integer
+// contract is documented by the emibios affine-set research implementation:
+// https://github.com/coolbho3k/emibios/blob/3087d40c0ec59e67ff556db148cbec0d57d10d17/src/swi/math/affine_set.s
+constexpr std::array<std::int16_t, 65> kAffineQuarterSine{
+    0, 402, 803, 1205, 1605, 2005, 2404, 2801,
+    3196, 3589, 3980, 4369, 4756, 5139, 5519, 5896,
+    6269, 6639, 7005, 7366, 7723, 8075, 8423, 8765,
+    9102, 9434, 9759, 10079, 10393, 10701, 11002, 11297,
+    11585, 11866, 12139, 12406, 12665, 12916, 13159, 13395,
+    13622, 13842, 14053, 14255, 14449, 14634, 14810, 14978,
+    15136, 15286, 15426, 15557, 15678, 15790, 15892, 15985,
+    16069, 16142, 16206, 16260, 16305, 16339, 16364, 16379,
+    16384};
+
+[[nodiscard]] std::int32_t affine_sine(std::uint8_t angle) {
+  const unsigned quadrant = angle >> 6U;
+  const unsigned offset = angle & 0x3FU;
+  const auto value = kAffineQuarterSine.at((quadrant & 1U) ? 64U - offset : offset);
+  return (quadrant & 2U) ? -value : value;
+}
+
+[[nodiscard]] std::int16_t affine_halfword(std::int32_t value) {
+  const std::int32_t bits = static_cast<std::uint16_t>(value);
+  return static_cast<std::int16_t>(bits < 0x8000 ? bits : bits - 0x10000);
+}
+
 [[nodiscard]] std::int32_t wrap_i32(std::uint32_t value) {
   return static_cast<std::int32_t>(value);
 }
@@ -281,17 +309,23 @@ std::int32_t BiosController::hle_arc_tan2(std::int32_t x, std::int32_t y,
 
 BiosController::AffineMatrix BiosController::hle_affine_matrix(
     std::int16_t scale_x, std::int16_t scale_y, std::uint16_t rotation) {
-  const double theta =
-      static_cast<double>(rotation >> 8U) * (2.0 * 3.141592653589793 / 256.0);
-  const double sin_t = std::sin(theta);
-  const double cos_t = std::cos(theta);
-  const double sx = static_cast<double>(scale_x);
-  const double sy = static_cast<double>(scale_y);
-  AffineMatrix matrix{};
-  matrix.pa = static_cast<std::int16_t>(std::lround(sx * cos_t));
-  matrix.pb = static_cast<std::int16_t>(std::lround(-(sx * sin_t)));
-  matrix.pc = static_cast<std::int16_t>(std::lround(sy * sin_t));
-  matrix.pd = static_cast<std::int16_t>(std::lround(sy * cos_t));
+  const WideAffineMatrix matrix = hle_affine_matrix_wide(scale_x, scale_y, rotation);
+  return {affine_halfword(matrix.pa), affine_halfword(matrix.pb),
+          affine_halfword(matrix.pc), affine_halfword(matrix.pd)};
+}
+
+BiosController::WideAffineMatrix BiosController::hle_affine_matrix_wide(
+    std::int16_t scale_x, std::int16_t scale_y, std::uint16_t rotation) {
+  const auto angle = static_cast<std::uint8_t>(rotation >> 8U);
+  const std::int32_t sine = affine_sine(angle);
+  const std::int32_t cosine = affine_sine(static_cast<std::uint8_t>(angle + 64U));
+  WideAffineMatrix matrix{};
+  // Products fit signed 32 bits even at both signed-halfword scale limits.
+  // Pb negates after ASR; moving the sign inside changes negative rounding.
+  matrix.pa = wrap_asr_i32(scale_x * cosine, 14);
+  matrix.pb = -wrap_asr_i32(scale_x * sine, 14);
+  matrix.pc = wrap_asr_i32(scale_y * sine, 14);
+  matrix.pd = wrap_asr_i32(scale_y * cosine, 14);
   return matrix;
 }
 

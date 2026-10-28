@@ -21,6 +21,9 @@ struct AndroidRuntimeFrameResult {
   AndroidRuntimeStatus status = AndroidRuntimeStatus::ok;
   CoreSchedulerRunResult run = {};
   std::uint16_t rendered_scanlines = 0;
+  // A midframe state restore retains the last completed surface until a full
+  // visible frame is observed. Such a call can complete guest time/audio with
+  // rendered_scanlines == 0; partial rows are never exposed to consumers.
   std::uint32_t audio_samples = 0;
   std::uint32_t audio_underruns = 0;
   // True only when the frame cycle budget was fully met and stepping stopped
@@ -93,6 +96,13 @@ class AndroidRuntime {
  private:
   CoreSession session_;
   PpuRenderer renderer_;
+  PpuRenderer accumulating_renderer_;
+  std::uint64_t presentation_generation_ = 0;
+  std::uint64_t presentation_cycles_ = 0;
+  std::uint16_t next_scanline_ = 0;
+  std::uint16_t supported_scanlines_ = 0;
+  bool raster_ready_ = false;
+  void capture_scanline(std::uint16_t scanline);
   PpuRenderControl render_control_;
   std::vector<ApuMixedSample> last_audio_batch_;
   // Scratch histogram reused across video_diagnostics() calls to avoid a

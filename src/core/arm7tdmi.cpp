@@ -801,7 +801,10 @@ mirrored_oam_cross_rom_block_load_elapsed_cycles(
   }
 
   const Region region = MemoryBus::classify(address).region;
-  if (region == Region::io && timing.nonsequential != 0 && timing.sequential != 0) {
+  if ((region == Region::io || region == Region::unknown || region == Region::bios) &&
+      timing.nonsequential != 0 && timing.sequential != 0) {
+    // A CPU load can resolve unused data from its pipeline even though the
+    // raw memory view cannot. Do not reject that execution path for timing.
     return true;
   }
   if (!waitcnt_aware || timing.nonsequential == 0 || timing.sequential == 0) {

@@ -184,7 +184,41 @@ void fill_unsupported_dump(AndroidRuntimeUnsupportedDump& dump, const CoreSessio
   }
 }
 
+class ScopedScanlineObserver {
+ public:
+  ScopedScanlineObserver(CoreScheduler& scheduler, CoreScanlineObserver observer)
+      : scheduler_(scheduler), previous_(scheduler.set_scanline_observer(observer)) {}
+  ~ScopedScanlineObserver() { scheduler_.set_scanline_observer(previous_); }
+  ScopedScanlineObserver(const ScopedScanlineObserver&) = delete;
+  ScopedScanlineObserver& operator=(const ScopedScanlineObserver&) = delete;
+ private:
+  CoreScheduler& scheduler_;
+  CoreScanlineObserver previous_;
+};
+
 }  // namespace
+
+void AndroidRuntime::capture_scanline(std::uint16_t scanline) {
+  // A completed scratch frame is frozen until a normally completed call can
+  // publish it. A long DMA may advance into a later frame in the same step.
+  if (raster_ready_) {
+    return;
+  }
+  if (scanline != next_scanline_) {
+    next_scanline_ = 0;
+    supported_scanlines_ = 0;
+  }
+  // After a midframe restore, wait for row zero instead of filling missing
+  // rows from an unrelated memory snapshot.
+  if (scanline != next_scanline_) {
+    return;
+  }
+  const auto stats = accumulating_renderer_.render_scanline(
+      session_.memory(), session_.ppu().render_control(), scanline);
+  supported_scanlines_ += stats.supported_mode ? 1U : 0U;
+  ++next_scanline_;
+  raster_ready_ = next_scanline_ == PpuRenderer::kScreenHeight;
+}
 
 AndroidRuntimeFrameResult AndroidRuntime::step_frame_with_fetch_trace(
     std::uint32_t max_steps, AndroidRuntimeUnsupportedDump* dump_on_unsupported) {
@@ -197,6 +231,17 @@ AndroidRuntimeFrameResult AndroidRuntime::step_frame_with_fetch_trace(
 
   AndroidRuntimeFrameResult result{};
   const std::uint64_t scheduler_cycles = session_.scheduler().scheduler_cycles();
+  if (presentation_generation_ != session_.state_generation() ||
+      presentation_cycles_ != scheduler_cycles) {
+    next_scanline_ = 0;
+    supported_scanlines_ = 0;
+    raster_ready_ = false;
+  }
+  presentation_generation_ = session_.state_generation();
+  const ScopedScanlineObserver observer(session_.scheduler(),
+      {this, [](void* context, std::uint16_t line) {
+         static_cast<AndroidRuntime*>(context)->capture_scanline(line);
+       }});
   const std::uint64_t frame_index =
       scheduler_cycles / static_cast<std::uint64_t>(PpuTiming::kCyclesPerFrame);
   const std::uint64_t cycle_start =
@@ -245,17 +290,14 @@ AndroidRuntimeFrameResult AndroidRuntime::step_frame_with_fetch_trace(
   // cycle budget was met and stepping stopped for a normal reason; otherwise
   // the presentation surfaces are stale and frame_complete stays false.
   result.frame_complete = frame_cycle_budget_met && !abnormal_stop;
-  if (frame_cycle_budget_met && !abnormal_stop) {
-    const PpuRenderControl control = session_.ppu().render_control();
-    render_control_ = control;
-    for (std::uint16_t y = 0; y < PpuRenderer::kScreenHeight; ++y) {
-      const PpuRenderStats stats =
-          renderer_.render_scanline(session_.memory(), control, y);
-      if (stats.supported_mode) {
-        ++result.rendered_scanlines;
-      }
-    }
+  if (result.frame_complete && raster_ready_) {
+    renderer_ = accumulating_renderer_;
+    result.rendered_scanlines = supported_scanlines_;
+    raster_ready_ = false;
+    next_scanline_ = 0;
+    supported_scanlines_ = 0;
   }
+  presentation_cycles_ = result.run.scheduler_cycles;
 
   last_audio_batch_.clear();
   while (true) {

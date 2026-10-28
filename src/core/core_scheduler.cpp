@@ -41,7 +41,7 @@ constexpr std::uint8_t kAutoIrqLatencyCycles = 5;  // trace-fitted (a729e69, 202
 // repeating HBlank DMA whose own bus cycles cross further HBlank edges) must
 // not hang the scheduler. Remaining triggers past the cap are dropped
 // deterministically.
-constexpr std::uint32_t kMaxDmaDrainIterations = 16;
+constexpr std::uint32_t kMaxDmaChainExpansion = 16;
 
 [[nodiscard]] bool cpu_thumb_misfetch_region(std::uint32_t pc) {
   const Region region = MemoryBus::classify(pc).region;
@@ -1517,49 +1517,49 @@ void CoreScheduler::set_debug_trace_sink(std::function<void(const char*)> sink) 
   debug_trace_sink_ = std::move(sink);
 }
 
+CoreScanlineObserver CoreScheduler::set_scanline_observer(CoreScanlineObserver observer) {
+  const CoreScanlineObserver previous = scanline_observer_;
+  scanline_observer_ = observer;
+  return previous;
+}
+
 CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
   if (cycles == 0) {
     return {0, std::nullopt, 0, {}, {}};
   }
 
-  const std::uint64_t timer0_overflows_before = timers_.overflow_count_at(0);
-  const std::uint64_t timer1_overflows_before = timers_.overflow_count_at(1);
   const bool irq_line_active_before =
       interrupts_.irq_line_active() && !cpu_.irq_disabled();
-  const Timers::TickResult timer_tick = timers_.tick(cycles, interrupts_);
-  if (io_ != nullptr) {
-    io_->tick(cycles);
-  }
-  const PpuTickEvents ppu_events = ppu_.tick(cycles, interrupts_);
+  Timers::TickResult timer_tick{};
+  std::optional<ApuFrameStep> apu_frame_step;
   std::uint32_t apu_timer_events = 0;
   DirectSoundTimerResult last_direct_sound{};
-  DmaRunResult triggered_dma{0, 0, false, 0};
+  DmaRunResult total_dma_result{0, 0, false, 0};
+  std::uint32_t cpu_remaining = cycles;
+  std::uint32_t dma_remaining = 0;
+  std::uint32_t elapsed = 0;
+  std::uint64_t dma_chain_budget = 0;
+  std::uint64_t dma_chain_generated = 0;
+  bool allow_new_dma = true;
   const auto accumulate_dma = [&](const DmaRunResult& event_result) {
-    triggered_dma.channels_executed = static_cast<std::uint8_t>(
-        std::min<std::uint32_t>(255U, triggered_dma.channels_executed +
+    total_dma_result.channels_executed = static_cast<std::uint8_t>(
+        std::min<std::uint32_t>(255U, total_dma_result.channels_executed +
                                           event_result.channels_executed));
-    triggered_dma.units_transferred += event_result.units_transferred;
-    triggered_dma.bus_cycles += event_result.bus_cycles;
-    triggered_dma.unsupported_request =
-        triggered_dma.unsupported_request || event_result.unsupported_request;
+    total_dma_result.units_transferred += event_result.units_transferred;
+    total_dma_result.bus_cycles += event_result.bus_cycles;
+    total_dma_result.unsupported_request =
+        total_dma_result.unsupported_request || event_result.unsupported_request;
+    dma_remaining += event_result.bus_cycles;
   };
-  for (std::uint16_t event = 0; event < ppu_events.hblank_entries; ++event) {
-    accumulate_dma(dma_.run_trigger(DmaTrigger::hblank, memory_, interrupts_,
-                                    waitcnt_));
-  }
-  for (std::uint16_t event = 0; event < ppu_events.vblank_entries; ++event) {
-    accumulate_dma(dma_.run_trigger(DmaTrigger::vblank, memory_, interrupts_,
-                                    waitcnt_));
-  }
   const auto consume_direct_sound_timer = [&](std::uint8_t timer_index,
                                               std::uint64_t overflow_delta) {
     for (std::uint64_t event = 0; event < overflow_delta; ++event) {
       last_direct_sound = apu_.timer_overflow(timer_index);
-      if (last_direct_sound.fifo_a.refill_request) {
+      if (allow_new_dma && last_direct_sound.fifo_a.refill_request) {
         accumulate_dma(dma_.run_sound_fifo(DmaTrigger::fifo_a, memory_, apu_,
                                            interrupts_, waitcnt_));
       }
-      if (last_direct_sound.fifo_b.refill_request) {
+      if (allow_new_dma && last_direct_sound.fifo_b.refill_request) {
         accumulate_dma(dma_.run_sound_fifo(DmaTrigger::fifo_b, memory_, apu_,
                                            interrupts_, waitcnt_));
       }
@@ -1568,96 +1568,77 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
       }
     }
   };
-  consume_direct_sound_timer(
-      0, timers_.overflow_count_at(0) - timer0_overflows_before);
-  consume_direct_sound_timer(
-      1, timers_.overflow_count_at(1) - timer1_overflows_before);
 
-  // Iterative event/DMA drain loop.
-  // DMA bus_cycles may generate new PPU events (HBlank/VBlank) or timer
-  // overflows that trigger FIFO DMA. Each iteration advances all devices
-  // through the pending DMA cycles and collects any new DMA, continuing
-  // until the event/DMA queue is quiescent.
-  DmaRunResult total_dma_result{0, 0, false, 0};
-  std::optional<std::uint32_t> dma_first_irq_cycle;
-  std::uint32_t dma_time_base = 0;
-  std::uint32_t drain_iterations = 0;
-  while (triggered_dma.bus_cycles != 0) {
-    if (++drain_iterations > kMaxDmaDrainIterations) {
-      triggered_dma = {0, 0, false, 0};
-      break;
+  // Stop at each presentation/PPU edge, including while charging DMA time.
+  // Running a bulk PPU tick followed by all its HBlank transfers loses the
+  // register values that should be visible to the intervening scanlines.
+  while (cpu_remaining != 0 || dma_remaining != 0) {
+    const bool dma_interval = dma_remaining != 0;
+    const std::uint16_t line_cycle = ppu_.line_cycle();
+    const std::uint16_t boundary =
+        line_cycle < PpuTiming::kVisibleCycles ? PpuTiming::kVisibleCycles
+        : line_cycle < PpuTiming::kHblankFlagCycles ? PpuTiming::kHblankFlagCycles
+                                                   : PpuTiming::kCyclesPerLine;
+    const std::uint32_t interval = std::min<std::uint32_t>(
+        dma_interval ? dma_remaining : cpu_remaining, boundary - line_cycle);
+    if (dma_interval) {
+      dma_remaining -= interval;
+    } else {
+      cpu_remaining -= interval;
+      dma_chain_budget = 0;
+      dma_chain_generated = 0;
     }
-    const std::uint32_t pending_dma = triggered_dma.bus_cycles;
-    // Accumulate DMA metadata before resetting
-    total_dma_result.channels_executed = static_cast<std::uint8_t>(
-        std::min<std::uint32_t>(255U, total_dma_result.channels_executed +
-                                          triggered_dma.channels_executed));
-    total_dma_result.units_transferred += triggered_dma.units_transferred;
-    total_dma_result.unsupported_request =
-        total_dma_result.unsupported_request || triggered_dma.unsupported_request;
-    triggered_dma = {0, 0, false, 0};
-
-    const std::uint64_t iter_timer0_before = timers_.overflow_count_at(0);
-    const std::uint64_t iter_timer1_before = timers_.overflow_count_at(1);
-    const Timers::TickResult dma_timer_tick =
-        timers_.tick(pending_dma, interrupts_);
+    const std::uint64_t timer0_before = timers_.overflow_count_at(0);
+    const std::uint64_t timer1_before = timers_.overflow_count_at(1);
+    const Timers::TickResult interval_timers = timers_.tick(interval, interrupts_);
+    if (interval_timers.first_irq_cycle.has_value() &&
+        !timer_tick.first_irq_cycle.has_value()) {
+      timer_tick.first_irq_cycle = elapsed + interval_timers.first_irq_cycle.value();
+    }
     if (io_ != nullptr) {
-      io_->tick(pending_dma);
+      io_->tick(interval);
     }
-    const PpuTickEvents dma_ppu_events =
-        ppu_.tick(pending_dma, interrupts_);
-    (void)apu_.tick(pending_dma);
-
-    // Capture the earliest IRQ cycle from DMA time. first_irq_cycle is
-    // relative to this iteration's tick window, so offset it by the CPU
-    // interval plus all DMA cycles consumed by prior iterations.
-    if (dma_timer_tick.first_irq_cycle.has_value()) {
-      const std::uint32_t dma_irq_abs = cycles + dma_time_base +
-                                        dma_timer_tick.first_irq_cycle.value();
-      if (!dma_first_irq_cycle.has_value() ||
-          dma_irq_abs < dma_first_irq_cycle.value()) {
-        dma_first_irq_cycle = dma_irq_abs;
-      }
+    const PpuTickEvents ppu_events = ppu_.tick(interval, interrupts_);
+    if (ppu_.line_cycle() == PpuTiming::kVisibleCycles &&
+        ppu_.vcount() < PpuTiming::kVisibleLines &&
+        scanline_observer_.completed != nullptr) {
+      scanline_observer_.completed(scanline_observer_.context, ppu_.vcount());
     }
 
-    // Process PPU events generated during DMA time
-    for (std::uint16_t event = 0; event < dma_ppu_events.hblank_entries; ++event) {
-      accumulate_dma(dma_.run_trigger(DmaTrigger::hblank, memory_, interrupts_,
-                                      waitcnt_));
-    }
-    for (std::uint16_t event = 0; event < dma_ppu_events.vblank_entries; ++event) {
-      accumulate_dma(dma_.run_trigger(DmaTrigger::vblank, memory_, interrupts_,
-                                      waitcnt_));
-    }
-
-    // Process timer overflows from DMA time (may trigger FIFO DMA)
-    const auto consume_dma_direct_sound = [&](std::uint8_t timer_index,
-                                             std::uint64_t overflow_delta) {
-      for (std::uint64_t event = 0; event < overflow_delta; ++event) {
-        last_direct_sound = apu_.timer_overflow(timer_index);
-        if (last_direct_sound.fifo_a.refill_request) {
-          accumulate_dma(dma_.run_sound_fifo(DmaTrigger::fifo_a, memory_, apu_,
-                                             interrupts_, waitcnt_));
+    const auto timer0_delta = timers_.overflow_count_at(0) - timer0_before;
+    const auto timer1_delta = timers_.overflow_count_at(1) - timer1_before;
+    // Most instruction intervals cannot trigger DMA. Keep their path free of
+    // event-queue accounting while still ticking every device above/below.
+    if (ppu_events.hblank_entries != 0 || ppu_events.vblank_entries != 0 ||
+        timer0_delta != 0 || timer1_delta != 0) {
+      // Bound pathological self-sustaining DMA chains. Transfers already run
+      // retain their charged time; after the guard, only new triggers are held.
+      allow_new_dma = !dma_interval || dma_chain_generated < dma_chain_budget;
+      const std::uint32_t dma_cycles_before = total_dma_result.bus_cycles;
+      if (allow_new_dma) {
+        for (std::uint16_t event = 0; event < ppu_events.hblank_entries; ++event) {
+          accumulate_dma(dma_.run_trigger(DmaTrigger::hblank, memory_, interrupts_,
+                                          waitcnt_));
         }
-        if (last_direct_sound.fifo_b.refill_request) {
-          accumulate_dma(dma_.run_sound_fifo(DmaTrigger::fifo_b, memory_, apu_,
-                                             interrupts_, waitcnt_));
-        }
-        if (apu_timer_events != std::numeric_limits<std::uint32_t>::max()) {
-          ++apu_timer_events;
+        for (std::uint16_t event = 0; event < ppu_events.vblank_entries; ++event) {
+          accumulate_dma(dma_.run_trigger(DmaTrigger::vblank, memory_, interrupts_,
+                                          waitcnt_));
         }
       }
-    };
-    consume_dma_direct_sound(
-        0, timers_.overflow_count_at(0) - iter_timer0_before);
-    consume_dma_direct_sound(
-        1, timers_.overflow_count_at(1) - iter_timer1_before);
-
-    total_dma_result.bus_cycles += pending_dma;
-    dma_time_base += pending_dma;
-    // Loop continues if new DMA was triggered (triggered_dma.bus_cycles > 0)
+      consume_direct_sound_timer(0, timer0_delta);
+      consume_direct_sound_timer(1, timer1_delta);
+      const std::uint32_t generated_dma = total_dma_result.bus_cycles - dma_cycles_before;
+      if (!dma_interval) {
+        dma_chain_budget = std::uint64_t(generated_dma) * kMaxDmaChainExpansion;
+      } else {
+        dma_chain_generated += generated_dma;
+      }
+    }
+    if (const auto step = apu_.tick(interval); step.has_value()) {
+      apu_frame_step = step;
+    }
+    elapsed += interval;
   }
-  std::optional<ApuFrameStep> apu_frame_step = apu_.tick(cycles);
   scheduler_cycles_ += cycles + total_dma_result.bus_cycles;
   const std::uint32_t total_visible_cycles = cycles + total_dma_result.bus_cycles;
   if (total_visible_cycles != 0) {
@@ -1670,8 +1651,7 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
   const bool irq_line_active_after =
       interrupts_.irq_line_active() && !cpu_.irq_disabled();
   // Combine IRQ cycle information from both the CPU interval and DMA time
-  const bool any_timer_irq =
-      timer_tick.first_irq_cycle.has_value() || dma_first_irq_cycle.has_value();
+  const bool any_timer_irq = timer_tick.first_irq_cycle.has_value();
   if (irq_line_active_before || !any_timer_irq || !irq_line_active_after) {
     update_auto_irq_latency(total_visible_cycles);
   } else {
@@ -1712,16 +1692,12 @@ CoreDeviceTickResult CoreScheduler::advance_devices(std::uint32_t cycles) {
     hle_irq_post_return_latency_armed_ = post_hle_return_irq;
     hle_irq_return_latency_pending_ = false;
     // Use the earliest IRQ cycle from either the CPU interval or DMA time
-    std::uint32_t event_cycle = cycles;
+    std::uint32_t event_cycle = total_visible_cycles;
     if (timer_tick.first_irq_cycle.has_value()) {
       // Timers::TickResult::first_irq_cycle is u64; clamp the min back into
       // the scheduler's u32 cycle domain.
       event_cycle = static_cast<std::uint32_t>(
           std::min<std::uint64_t>(event_cycle, timer_tick.first_irq_cycle.value()));
-    }
-    if (dma_first_irq_cycle.has_value()) {
-      // dma_first_irq_cycle is already absolute within this call
-      event_cycle = std::min(event_cycle, dma_first_irq_cycle.value());
     }
     const std::uint32_t cycles_after_event = total_visible_cycles - event_cycle;
     if (cycles_after_event != 0) {
@@ -3705,7 +3681,7 @@ bool CoreScheduler::hle_bg_affine_set() {
     if (!origin_x || !origin_y || !center_x || !center_y || !scale_x || !scale_y || !rotation) {
       return false;
     }
-    const BiosController::AffineMatrix matrix = BiosController::hle_affine_matrix(
+    const BiosController::WideAffineMatrix matrix = BiosController::hle_affine_matrix_wide(
         static_cast<std::int16_t>(scale_x.value()),
         static_cast<std::int16_t>(scale_y.value()), rotation.value());
     const std::int64_t x = static_cast<std::int16_t>(center_x.value());

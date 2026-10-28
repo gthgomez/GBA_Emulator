@@ -9,6 +9,107 @@
 
 #include "test_helpers.hpp"
 
+namespace {
+
+struct RasterTrace {
+  gba::core::CoreSession* session;
+  std::vector<std::uint16_t> lines;
+  std::vector<std::uint16_t> scroll;
+};
+
+void trace_scanline(void* context, std::uint16_t line) {
+  auto& trace = *static_cast<RasterTrace*>(context);
+  trace.lines.push_back(line);
+  trace.scroll.push_back(trace.session->ppu().render_control().bg_scroll_x[0]);
+  expect(trace.session->ppu().line_cycle() == gba::core::PpuTiming::kVisibleCycles,
+         "presentation callback occurs at visible completion");
+  expect(!trace.session->ppu().hblank(), "presentation precedes HBlank flag");
+}
+
+void test_raster_event_ordering(bool long_dma) {
+  using namespace gba::core;
+  auto session = std::make_unique<CoreSession>();
+  RasterTrace trace{session.get(), {}, {}};
+  session->scheduler().set_scanline_observer({&trace, trace_scanline});
+  for (std::uint32_t line = 0; line < 160; ++line) {
+    expect(session->memory().write16(0x02000000U + line * 2U,
+                                    static_cast<std::uint16_t>(line + 1U)),
+           "bulk raster scroll table seeds");
+  }
+  // DMA1 scrolls once per visible HBlank, including HBlanks crossed by DMA0.
+  session->dma().write_source(1, 0x02000000U);
+  session->dma().write_destination(1, 0x04000010U);
+  session->dma().write_word_count(1, 1);
+  session->dma().write_control(1, 0xA240U);
+  if (long_dma) {
+    session->dma().write_source(0, 0x02001000U);
+    session->dma().write_destination(0, 0x03000000U);
+    session->dma().write_word_count(0, 400);
+    session->dma().write_control(0, 0xA000U);  // One shot; spans a scanline.
+  }
+  (void)session->scheduler().advance_devices(959);
+  expect(trace.lines.empty(), "cycle 959 has no completed visible row");
+  (void)session->scheduler().advance_devices(1);
+  expect(trace.lines.size() == 1 && trace.scroll[0] == 0,
+         "cycle 960 completes row zero with initial scroll");
+  (void)session->scheduler().advance_devices(43);
+  expect(session->ppu().render_control().bg_scroll_x[0] == 0,
+         "cycle 1003 has not run HBlank DMA");
+  const auto edge = session->scheduler().advance_devices(1);
+  expect(session->ppu().render_control().bg_scroll_x[0] >= 1,
+         "cycle 1004 triggers HBlank DMA");
+  if (long_dma) {
+    expect(edge.triggered_dma.units_transferred >= 402,
+           "long DMA crosses a second HBlank and triggers its scroll transfer");
+    expect(trace.lines.size() >= 2 && trace.scroll[1] == 1,
+           "row one completes during long DMA with the previous HBlank scroll");
+  }
+  const auto bulk = session->scheduler().advance_devices(5U * PpuTiming::kCyclesPerLine);
+  expect(bulk.triggered_dma.channels_executed >= 5,
+         "bulk scheduler call executes multiple HBlank transfers");
+  expect(trace.lines.size() >= 5, "bulk scheduler call completes multiple rows");
+  for (std::size_t index = 0; index < trace.lines.size(); ++index) {
+    expect(trace.lines[index] == index && trace.scroll[index] == index,
+           "bulk CPU and DMA intervals interleave each row with its scroll DMA");
+  }
+  expect(session->ppu().frame_cycle() == session->scheduler().scheduler_cycles(),
+         "raster event splitting preserves charged master time");
+  const auto previous = session->scheduler().set_scanline_observer({});
+  expect(previous.context == &trace && previous.completed == trace_scanline,
+         "observer ownership can be restored by scoped runtime calls");
+}
+
+void test_long_dma_with_many_hblanks() {
+  using namespace gba::core;
+  auto session = std::make_unique<CoreSession>();
+  RasterTrace trace{session.get(), {}, {}};
+  session->scheduler().set_scanline_observer({&trace, trace_scanline});
+  for (std::uint32_t line = 0; line < 160; ++line) {
+    expect(session->memory().write16(0x02000000U + line * 2U,
+                                    static_cast<std::uint16_t>(line + 1U)),
+           "long DMA scroll table seeds");
+  }
+  session->dma().write_source(0, 0x02000000U);
+  session->dma().write_destination(0, 0x04000010U);
+  session->dma().write_word_count(0, 1);
+  session->dma().write_control(0, 0xA240U);
+  session->dma().write_source(3, 0x02001000U);
+  session->dma().write_destination(3, 0x02002000U);
+  session->dma().write_word_count(3, 8'000);
+  session->dma().write_control(3, 0xA540U); // One-shot fixed-address 32-bit HBlank DMA.
+  const auto result = session->scheduler().advance_devices(PpuTiming::kHblankFlagCycles);
+  expect(trace.lines.size() > 32, "long DMA spans more than 32 visible completions");
+  for (std::size_t index = 0; index < trace.lines.size(); ++index) {
+    expect(trace.lines[index] == index && trace.scroll[index] == index,
+           "ordinary short HBlank transfers keep running throughout long DMA time");
+  }
+  expect(session->scheduler().scheduler_cycles() ==
+             PpuTiming::kHblankFlagCycles + result.triggered_dma.bus_cycles,
+         "all long DMA time remains charged");
+}
+
+}  // namespace
+
 int main() {
   using gba::core::Arm7tdmi;
   using gba::core::CoreDeviceTickResult;
@@ -731,6 +832,9 @@ int main() {
               << " cycle=" << session->ppu().line_cycle() << '\n';
   }
 
+  test_raster_event_ordering(false);
+  test_raster_event_ordering(true);
+  test_long_dma_with_many_hblanks();
   std::cout << "dma_ppu_invariant_test: PASS\n";
   return 0;
 }
