@@ -147,13 +147,7 @@ bool DesktopApp::init_audio() {
               << "); continuing without sound\n";
     return false;
   }
-  // Start with about 62.5 ms of silence so normal frame scheduling jitter
-  // does not immediately drain an otherwise empty playback queue.
-  const std::array<gba::core::ApuMixedSample, 2048> initial_silence{};
-  if (!SDL_PutAudioStreamData(audio_stream_, initial_silence.data(),
-                              static_cast<int>(sizeof(initial_silence)))) {
-    std::cerr << "gba-desktop: cannot prime audio queue (" << SDL_GetError() << ")\n";
-  }
+  prime_audio_queue();
   SDL_ResumeAudioStreamDevice(audio_stream_);
   return true;
 }
@@ -590,6 +584,7 @@ void DesktopApp::handle_event(const union SDL_Event& event) {
             if (paused_) {
               clear_queued_audio();
             } else {
+              clear_queued_audio();
               next_frame_deadline_ = Clock::now();
             }
             break;
@@ -637,6 +632,22 @@ void DesktopApp::handle_event(const union SDL_Event& event) {
 void DesktopApp::clear_queued_audio() {
   if (audio_stream_ != nullptr) {
     SDL_ClearAudioStream(audio_stream_);
+    if (!paused_ && !mute_) {
+      prime_audio_queue();
+    }
+  }
+}
+
+void DesktopApp::prime_audio_queue() {
+  if (audio_stream_ == nullptr) {
+    return;
+  }
+  // Restore the same 62.5 ms lead after a queue reset as at startup. Without
+  // this lead, resuming can repeatedly starve the device even on timely frames.
+  const std::array<gba::core::ApuMixedSample, 2048> initial_silence{};
+  if (!SDL_PutAudioStreamData(audio_stream_, initial_silence.data(),
+                              static_cast<int>(sizeof(initial_silence)))) {
+    std::cerr << "gba-desktop: cannot prime audio queue (" << SDL_GetError() << ")\n";
   }
 }
 
