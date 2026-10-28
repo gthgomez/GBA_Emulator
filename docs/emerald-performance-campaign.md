@@ -26,9 +26,10 @@ conformance gaps remain relevant even when a game appears to work.
 | Area | Latest bounded evidence |
 | --- | --- |
 | Integration | PR #51 merged as `b79da42cd29a`; 36 local verifiers, benchmarks, four CI jobs and two independent code reviews passed |
+| Presentation candidate | PR #52 waits before presenting; independently reviewed and exercised in diagnostic and normal hosts |
 | Story | Frame 200,040: Devon employee/Aqua grunt event in Petalburg Woods, after the Cascoon battle |
 | Repeat throughput | Two exact 10,800-frame normal-host replays: 88.22 / 88.29 FPS; three / two steps over 16.67 ms |
-| SDL delivery | 10,800 frames at 59.7243 FPS against native 59.7275 Hz; five intervals over 25 ms, maximum 26.03 ms |
+| SDL delivery | Latest candidate: 10,800 diagnostic + 10,800 normal frames at 59.7290 / 59.7291 FPS; zero intervals over 25 ms, maxima 17.96 / 20.45 ms |
 | Determinism | Both normal replay states byte-identical to the recorded SDL state |
 | Audio | No queue-empty proxy or additional-input requests; finite postmix data; no physical output claim |
 | Intro | Every image in each 600-frame capture has an exact nearby match; residual end/VBlank lags are one/two frames |
@@ -1760,3 +1761,48 @@ and the benchmark checksum suite passes. One fresh independent read-only review
 of the frozen desktop source found no actionable defect, binding SHA256
 `a90d8bc02dae6751309f9415447e8c0504970d46024883a2d8d827da8645352a`.
 Optimized desktop build and post-change SDL validation remain pending here.
+
+VERIFIED: the optimized build from `7e5546bba52922f22e2a8bc1757339189d56b716`
+completed successfully. Normal executable SHA256:
+`a30938c24c0f880166e9434c394bfae421ff95e3160d5e57f8907972847b8b67`.
+Its 600-frame boot and 600-frame checkpoint training artifacts have identical
+ROM/run/video/audio/state fields to the previous build. The diagnostic host
+linked to this core has SHA256
+`17be3e1df1d3ed14bb660d2ca8e77d9d209bd985b467c5bdbd8babe2879d371d`.
+
+OBSERVED: the post-change diagnostic run completes 10,800 frames at 59.7290 FPS.
+
+| Presentation measurement | Before | After |
+| --- | ---: | ---: |
+| Raw p95 interval (ms) | 17.5476 | 16.9231 |
+| Raw p99 interval (ms) | 18.4297 | 17.2557 |
+| Raw p99.9 interval (ms) | 22.2876 | 17.6564 |
+| Maximum interval (ms) | 25.8484 | 17.9604 |
+| Intervals over 25 ms | 4 | 0 |
+| Fast-to-slow work transition median interval (ms) | 25.4542 | 16.7614 |
+
+There are twelve fast-to-slow work transitions in the new recording, with maximum
+interval 16.9958 ms. Correlation between interval and work-duration change falls
+from 0.910 to 0.086. This supports the measured ordering repair. The recordings
+use the same timed input pattern but different recorded frame positions and
+separate profile training, so they are not a controlled core-speedup comparison.
+The new run has no emulation steps over 16.67 ms and 16,931 finite postmix blocks,
+with no overflow, additional-input requests/bytes or queue-empty proxy events.
+
+OBSERVED: a separate run of the normal executable completes another 10,800 frames
+at 59.7291 FPS, with measured last-window rate 59.7204 FPS. Interval p95/p99 upper
+bounds are 17/18 ms, maximum 20.4454 ms, zero intervals over 25 ms and zero
+reported audio underruns. It uses movement/battle input and the same checkpoint;
+the normal host has no diagnostic postmix capture or automatic final-state dump.
+These two bounded runs establish native-rate delivery with improved pacing in
+the tested scenario; the campaign's remaining accuracy investigations stay open.
+
+VERIFIED: a separate arithmetic check explains the payload-dependent delta in
+all twelve nonempty ROM-caller controls, using their six zero-length controls
+to isolate the fixed call/fetch offset. INFERRED from the pinned reference
+[RAM-stall calculation](https://raw.githubusercontent.com/mgba-emu/mgba/7a12d6d/src/gba/memory.c):
+its eager HLE decoder charges VRAM halfword accesses at -2 cycles while the
+caller's ROM prefetch state remains active. Relative to normal read/write
+costs, the difference is four cycles per backreference byte and three per stored
+halfword. The fixed call/fetch offsets remain open. This is an oracle limitation;
+physical BIOS timing remains unverified.
