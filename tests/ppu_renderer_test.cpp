@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string_view>
 
 #include "test_helpers.hpp"
@@ -27,9 +28,82 @@ bool write_vram_byte(gba::core::MemoryBus& memory, std::uint32_t address,
   return memory.write16(aligned, halfword);
 }
 
+void obj_line_budget_test() {
+  using gba::core::MemoryBus;
+  using gba::core::PpuRenderer;
+  auto memory = std::make_unique<MemoryBus>();
+  auto renderer = std::make_unique<PpuRenderer>();
+  constexpr std::uint16_t kColor = 0x001F;
+  const auto scene = [&](unsigned consumers, bool affine, bool disabled,
+                         bool different_line) {
+    memory->reset();
+    for (unsigned index = 0; index < 128; ++index) {
+      expect(memory->write16(0x07000000U + index * 8U, 0x0200),
+             "disable unused budget fixture objects");
+    }
+    expect(memory->write16(0x05000202, kColor), "seed budget fixture palette");
+    // Transparent wide objects still consume rendering time. The final
+    // object uses a separate solid tile set so its admission is observable.
+    for (unsigned offset = 0; offset < 2048; offset += 2) {
+      expect(memory->write16(0x06011000U + offset, 0x1111),
+             "seed solid budget fixture tiles");
+    }
+    for (unsigned index = 0; index <= consumers; ++index) {
+      const auto base = 0x07000000U + index * 8U;
+      const bool target = index == consumers;
+      std::uint16_t attr0 = affine ? 0x0300 : 0;
+      if (!target && disabled) attr0 = 0x0200;
+      if (!target && different_line) attr0 |= 64;
+      expect(memory->write16(base, attr0), "seed budget fixture attr0");
+      expect(memory->write16(base + 2, target ? 0xC080 : 0xC000),
+             "seed budget fixture attr1");
+      expect(memory->write16(base + 4, target ? 128 : 0),
+             "seed budget fixture tile index");
+    }
+    expect(memory->write16(0x07000006, 0x0100), "seed budget affine PA");
+    expect(memory->write16(0x0700000E, 0), "seed budget affine PB");
+    expect(memory->write16(0x07000016, 0), "seed budget affine PC");
+    expect(memory->write16(0x0700001E, 0x0100), "seed budget affine PD");
+  };
+  scene(19, false, false, false);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 0);
+  expect(renderer->pixel(128, 0) == 0,
+         "nineteen transparent 64px objects exhaust the normal line budget");
+  // These prefix endpoints verify the documented nominal model, not exact
+  // hardware OAM/VRAM pipeline overlap or offscreen clipping behavior.
+  scene(18, false, false, false);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 0);
+  expect(renderer->pixel(185, 0) == kColor && renderer->pixel(186, 0) == 0,
+         "normal budget retains the final object's nominal 58px prefix");
+  scene(15, false, false, false);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 0);
+  expect(renderer->pixel(128, 0) == kColor,
+         "normal allowance admits the sixteenth wide object");
+  (void)renderer->render_scanline(*memory, control(0x1060, 0), 0);
+  expect(renderer->pixel(128, 0) == 0,
+         "HBlank-free allowance is exhausted before the sixteenth wide object");
+  scene(5, true, false, false);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 48);
+  expect(renderer->pixel(176, 48) == 0,
+         "five transparent double-area affine objects exhaust the line budget");
+  scene(4, true, false, false);
+  (void)renderer->render_scanline(*memory, control(0x1040, 0), 48);
+  expect(renderer->pixel(195, 48) == kColor && renderer->pixel(196, 48) == 0,
+         "affine budget retains the final object's nominal 68px drawing prefix");
+  scene(19, false, true, false);
+  (void)renderer->render_scanline(*memory, control(0x1060, 0), 0);
+  expect(renderer->pixel(128, 0) == kColor,
+         "disabled objects do not consume full pixel-rendering work");
+  scene(19, false, false, true);
+  (void)renderer->render_scanline(*memory, control(0x1060, 0), 0);
+  expect(renderer->pixel(128, 0) == kColor,
+         "objects on another line do not consume full pixel-rendering work");
+}
+
 }  // namespace
 
 int main() {
+  obj_line_budget_test();
   using gba::core::MemoryBus;
   using gba::core::PpuRenderer;
 
