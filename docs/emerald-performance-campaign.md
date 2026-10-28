@@ -1432,3 +1432,118 @@ OBSERVED: one fresh read-only review of the cumulative integration candidate
 found no actionable defects after this repair. Its 37-file production/test/tooling
 manifest remained unchanged throughout the review. A second fresh perspective is
 still required for the accumulated persisted-format and CI changes.
+
+### Integration and Petalburg Woods checkpoint (2026-10-27)
+
+OBSERVED: PR #49 integrated the accumulated stack into `main` as
+`449d13cf9fb17d97601950a2ccef292a39202350`. All four Linux/Windows core and
+desktop CI jobs passed on candidate `7819099bb2f3b3a7768672576827cfc31b2fad67`.
+Two fresh independent read-only cumulative reviews found no actionable defects.
+The first bound the 37 production/test/tool/CI files to manifest SHA256
+`E5C8E2C0A304C8DDBF874FBB697F9CC9668C9573F0AFF6D23F6D55458604BA70`, unchanged
+after committing; the second checked the exact committed candidate before and
+after review. The merge gate confirmed that head and a clean merge state.
+The canonical checkout was fast-forwarded and observed clean on `main`.
+
+VERIFIED: a new profile-guided executable built from `7819099bb2f3` has SHA256
+`642987d8dd91c76ec562ccb1758a2d70ea1817f858a2cd2d01d6bd26d8221781`. Training
+used 600 boot frames and 600 frames from the latest battle checkpoint. The
+changed training workload means these measurements are not a controlled
+source-speedup comparison. Four unexercised translation units reported missing
+profile counts; the build completed successfully.
+
+Three paired story segments (1,000 / 1,000 / 800 frames) loaded the existing
+v4 checkpoint, finished the Lady Cindy battle, raised Torchic to level 10 and
+entered Petalburg Woods at frame 193,340. Every pair produced identical final
+states. The six runs measured 85.93–89.49 FPS with fourteen steps over 16.67 ms
+across 5,600 steps, zero execution failures and zero reported core audio
+underruns. The final 800-frame pair had no over-budget steps. A read-only
+checkpoint inspection observed v5, released buttons and no active IRQ context
+at the new checkpoint. Earlier private notes naming Rich Boy Winston were a
+trainer-identification mistake; the victory screen and public map identify
+Lady Cindy.
+
+VERIFIED: a diagnostic host using the same profile-guided core repeated the
+earlier recorded 10,800-frame movement workload twice with matching final
+states. Throughput was 90.65 / 88.16 FPS, p95 11.92 / 12.39 ms and p99
+12.73 / 13.29 ms. Nineteen steps exceeded 16.67 ms across the two runs;
+none occurred at the same game frame in both repetitions. Buffered raw thread
+cycle counts accompany the per-frame wall measurements. They are not converted
+to elapsed time, as required by [Microsoft's API documentation](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime).
+The changing outlier locations weaken a deterministic guest-frame hotspot
+hypothesis but do not identify a host scheduling or cache cause.
+
+OBSERVED: another instrumented SDL run completed 10,800 frames at 59.7245 FPS
+against native 59.7275 Hz. Both p95/p99 presentation-interval upper bounds were
+18 ms; the maximum interval was 23.0567 ms, with no intervals over 25 ms and
+no queue-empty proxy events. Step p95/p99 were 11.64 / 12.15 ms, maximum
+18.74 ms, with four steps over 16.67 ms. The capture contained 16,932 blocks
+of finite 44.1 kHz stereo float output, no overflow and no additional-input
+requests. Five startup blocks and blocks 54–56 were fully silent, matching
+the earlier capture's silent-block positions. Exact source-silence alignment
+was established for the earlier capture, not repeated for this one. All PCM,
+states, screenshots and profiles remain private ignored evidence.
+
+VERIFIED: the normal executable replayed all 360 input changes from that
+desktop run and produced a byte-identical final state (SHA256
+`2ffdaf326c631f556eadce08687c2f4e607b4363b96405825944b4cdbf3c9226`). It
+completed 10,800 frames at 90.99 FPS, p95 11.77 ms and p99 12.45 ms, with
+twelve steps over 16.67 ms. This is one cross-host replay, so the helper
+correctly leaves its repeated-run acceptance flag false.
+
+The campaign remains active: missing HLE decompression work time, the remaining
+intro timing offset and the original unexplained unsupported stop are open.
+These bounded successful runs do not establish their resolution.
+
+### Wider IWRAM transfers and LZ77 cost isolation (2026-10-27)
+
+VERIFIED: 44 independent synthetic decompression cases produced the expected
+bytes on the reference and current core. They vary literal/backreference tokens,
+ROM/EWRAM/IWRAM sources, VRAM/EWRAM/IWRAM destinations and four cartridge wait
+settings. This core still reports 9 timer cycles for every one, confirming
+that successful output alone does not establish work timing. For example:
+
+| Source / destination | 64-byte payload | Reference timer |
+| --- | --- | ---: |
+| ROM / VRAM | literals | 2,705 |
+| ROM / VRAM | backreferences | 1,377 |
+| EWRAM / VRAM | literals | 2,559 |
+| IWRAM / VRAM | literals | 2,410 |
+| ROM / EWRAM | backreferences | 1,413 |
+| ROM / IWRAM | backreferences | 1,161 |
+
+A further 54 caller cases vary ARM/Thumb execution, IWRAM/EWRAM/ROM code,
+prefetch and wait settings. All payloads verified correctly. This exposed an
+independent CPU defect: prefetch reduced an ARM IWRAM-to-IWRAM word load by
+one cycle, although no cartridge instruction fetch was involved. The timing
+helper now handles wider single transfers when both instruction and data are
+in IWRAM: loads take three cycles and stores two. Its existing byte behavior
+is shared with the new path. Block transfers, swaps and ARM PC destinations
+are outside this helper.
+
+VERIFIED: new ARM/Thumb word, halfword and signed-halfword load assertions and
+word/halfword store assertions cover four WAITCNT settings, including a forced
+Thumb overlap request. They failed before the repair and pass afterward. The
+actual CPU object linked into the synthetic caller runner now yields the same
+9-cycle baseline for all IWRAM ARM/Thumb caller cases. All 35 core verifiers
+pass (197.7 seconds), as does the benchmark checksum suite. A fresh independent
+read-only review found no actionable defect in the frozen source/test candidate.
+
+VERIFIED: a separate token/memory cost model predicts all 44 data cases and
+all 18 IWRAM caller cases exactly after that CPU correction. It accounts for
+flag groups, literal tokens, backreference lengths, typed memory reads/writes
+and fixed call overhead. The arithmetic was cross-checked against the public
+[reference BIOS handler](https://raw.githubusercontent.com/mgba-emu/mgba/master/src/gba/bios.c)
+and [memory timing implementation](https://raw.githubusercontent.com/mgba-emu/mgba/master/src/gba/memory.c).
+ROM callers with prefetch and EWRAM callers expose additional differences in
+the existing call/fetch timing; the IWRAM agreement is not generalized to them.
+The model has not yet been installed as production HLE work timing. That change
+must also handle frame progression, IRQ interruption, nested calls and state
+restoration while work remains pending.
+
+VERIFIED: a fresh 600-frame intro capture linked to the corrected CPU object
+completed without a fetch/unsupported stop. Every end-of-frame and VBlank
+image still has an exact nearby reference match after five-bit conversion.
+Same-frame matches remain 249 / 267; uniquely matched images retain the
+four-frame / three-frame lead respectively. This CPU repair does not resolve
+that remaining HLE/render-phase timing offset.
