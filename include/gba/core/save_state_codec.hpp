@@ -34,7 +34,7 @@ struct SaveStateDecodeResult {
 //   MemoryBus RAM regions + cartridge blobs + flash FSM + open-bus latch +
 //   debug surfaces, InterruptController IE/IF/IME, Timers, DMA channels,
 //   PPU timing registers, APU channels/FIFOs/buffers, keypad, WAITCNT, BIOS
-//   mode, serial/SIO IO state, and all 28 CoreSchedulerState fields.
+//   mode, serial/SIO IO state, and the complete scheduler state.
 // Version history:
 //   1-2: partial snapshots (visible CPU regs + CPSR, WAITCNT, keypad, IE/IF/
 //        IME, scheduler_cycles + halted, Timers incl. prescaler_remainder,
@@ -44,10 +44,11 @@ struct SaveStateDecodeResult {
 //   4  : adds saved outer HLE IRQ frames. Version 3 remains readable.
 //   5  : hashes all bytes of active/outer IRQ registers and wave RAM words.
 //        Layout unchanged; v3/v4 retain their historical integrity calculation.
+//   6  : adds pending HLE work and its owning IRQ depth. Versions 3-5 readable.
 class SaveStateCodec {
  public:
   static constexpr std::uint32_t kMagic = 0x53534247;  // GBSS, little-endian.
-  static constexpr std::uint32_t kVersion = 5;
+  static constexpr std::uint32_t kVersion = 6;
 
   [[nodiscard]] static std::vector<std::uint8_t> encode(const CoreSession& session);
   [[nodiscard]] static SaveStateDecodeResult decode_into(

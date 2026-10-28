@@ -1547,3 +1547,75 @@ image still has an exact nearby reference match after five-bit conversion.
 Same-frame matches remain 249 / 267; uniquely matched images retain the
 four-frame / three-frame lead respectively. This CPU repair does not resolve
 that remaining HLE/render-phase timing offset.
+
+### Pending LZ77 work and checkpoint migration (2026-10-27)
+
+OBSERVED: PR #50 merged the IWRAM transfer correction into `main` as
+`c3a98985ce691e11bc7f562b1aa0f02e42cc11db`. Its exact candidate
+`0c75e4bbf25a13784f3e4be82267750ab18b3f2f` passed all four Linux/Windows
+core and desktop CI jobs and a fresh independent read-only review.
+
+VERIFIED: the profile-guided executable from that candidate completed another
+800-frame paired story segment, reaching frame 194,140 in Petalburg Woods
+(map 24/11, x19/y31). Final states match. Throughput was 87.40 / 87.58 FPS,
+p95 12.41 / 12.08 ms, p99 14.84 / 12.50 ms and maximum 32.56 / 20.23 ms;
+three / one steps exceeded 16.67 ms. Execution failures and reported core audio
+underruns were zero. This segment adds playthrough evidence but does not explain
+the outliers or prove a sustained absence of hitches.
+
+VERIFIED: a new synthetic regression failed because the caller executed its
+next store immediately after large LZ77 decompression. The pending-work
+implementation passes the same regression: a 32 KiB EWRAM-to-VRAM literal
+stream holds the caller across four complete frames and resumes it in the fifth.
+Timers continue advancing and every decompressed byte is checked.
+
+The shared scheduler now holds remaining work cycles and the IRQ depth that
+owns them. Device advances are bounded by the next frame, PPU transition,
+timer/serial event and IRQ admission delay. DMA time advances devices without
+consuming work cycles. Interrupting handlers pause the caller's work and can
+queue their own work; completion resumes the appropriate interrupted context.
+Raw ARM, raw Thumb and fetched stepping enter the same work path.
+
+VERIFIED: focused assertions cover raw/fetched equivalence, IRQ admission,
+handler-owned decompression, pause/resume, deterministic nested snapshot
+continuation, immediate/HBlank DMA, timer accounting, APU sample production,
+reset and rejected pending-work corruption without target mutation.
+
+VERIFIED: all 98 independent synthetic payloads still match their expected
+output. Timer results now match the reference exactly for all 44 data-region
+cases and all 18 IWRAM ARM/Thumb caller cases. EWRAM callers retain differences
+of +1/+8/+10 cycles; ROM callers range from -4 to +350 cycles across the tested
+prefetch/wait configurations. These remain open call/fetch timing differences.
+
+The v6 writer appends work frames and includes their complete cycle/depth values
+in integrity hashing. Readers retain v3/v4 historical hashes and the v5 full-word
+hash. Empty work leaves the existing machine hash unchanged. Zero-duration,
+out-of-context and unordered work owners are structurally rejected. Earlier
+builds cannot read v6 checkpoints.
+
+Scope: output memory and clobbered registers are updated eagerly, followed by
+charged device time, as in the reference HLE architecture. Intermediate BIOS
+write visibility to DMA or an IRQ handler is not modeled. This is bounded HLE
+timing evidence, not physical BIOS fidelity. Full core gates, fresh persisted
+format reviews and new intro/performance measurements are pending at this point.
+
+OBSERVED: two fresh independent read-only reviews covered the code, tests and
+both runner registrations. The first identified a missed HBlank DMA boundary:
+with HBlank IRQs disabled, a work chunk could pass cycle 1004 before running
+the transfer. The repair explicitly bounds that event. VERIFIED: a synthetic
+HBlank DMA that starts Timer0 failed its timing assertion before the repair and
+passes afterward. The first reviewer refreshed the affected review; both final
+code/test/tool manifests matched and had no outstanding findings.
+
+INFERRED: the reference's remaining ROM-prefetch discrepancies include an HLE
+artifact worth isolating before further tuning. Its eager decoder calls
+`GBAMemoryStall` for RAM transfers while the caller's ROM region and prefetch
+state are still active. The inspected calculation can reduce those charged
+costs, consistent with payload-dependent deltas in the synthetic fixtures.
+This source inference does not establish hardware timing or resolve the
+remaining call/fetch differences.
+
+VERIFIED: the repaired candidate passes all 36 core verifiers (183.9 seconds)
+and the benchmark checksum suite. The optional ROM video smoke was skipped.
+These gates include v3/v4/v5 migration and the new v6 pending-work round trips;
+optimized host intro and story measurements remain separate observations.

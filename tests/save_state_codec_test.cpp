@@ -58,6 +58,7 @@ void wave_integrity_test() {
   // Golden hash from the v4 encoder for this nonzero two-bank wave fixture.
   for (const unsigned version : {3U, 4U}) {
     auto legacy = encoded;
+    legacy.resize(legacy.size() - 4); // Pending-work count was added in v6.
     legacy[4] = version;
     constexpr std::uint64_t legacy_hash = 839431053314699171ULL;
     for (unsigned i = 0; i < 8; ++i) legacy[8 + i] = (legacy_hash >> (8 * i)) & 0xff;
@@ -68,6 +69,14 @@ void wave_integrity_test() {
     expect(target->state_hash() == source->state_hash(),
            "legacy wave RAM migrates to the full machine hash");
   }
+  auto version5 = encoded;
+  version5[4] = 5;
+  version5.resize(version5.size() - 4);
+  expect(SaveStateCodec::decode_into(*target, version5).status ==
+             SaveStateDecodeStatus::ok,
+         "v5 full-word hash snapshot remains readable");
+  expect(target->state_hash() == source->state_hash(),
+         "v5 state migrates without pending work");
 }
 }  // namespace
 

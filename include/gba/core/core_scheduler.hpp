@@ -19,6 +19,7 @@ class IoRegisters;
 class PpuTiming;
 class Timers;
 class WaitStateControl;
+enum class AccessWidth : std::uint8_t;
 
 struct CoreDeviceTickResult {
   std::uint32_t cycles = 0;
@@ -93,6 +94,11 @@ struct HleIrqFrame {
   bool slow_timer0_return_pending = false;
 };
 
+struct HleWorkFrame {
+  std::uint64_t remaining_cycles = 0;
+  std::uint32_t owner_irq_depth = 0;
+};
+
 struct CoreSchedulerState {
   std::uint64_t scheduler_cycles = 0;
   bool halted = false;
@@ -123,6 +129,7 @@ struct CoreSchedulerState {
   std::uint32_t timer_io_access_gap_cycles = 0;
   std::uint32_t thumb_misfetch_recovery_count = 0;
   std::vector<HleIrqFrame> hle_irq_outer_frames;
+  std::vector<HleWorkFrame> hle_work_frames;
 };
 
 class CoreScheduler {
@@ -212,6 +219,7 @@ class CoreScheduler {
   std::uint8_t auto_irq_latency_cycles_;
   std::uint32_t timer_io_access_gap_cycles_;
   std::uint32_t thumb_misfetch_recovery_count_;
+  std::vector<HleWorkFrame> hle_work_frames_;
   std::function<void(const char*)> debug_trace_sink_;
 
   [[nodiscard]] std::uint32_t apply_fetch_timing(std::uint32_t fetch_address,
@@ -256,8 +264,16 @@ class CoreScheduler {
   // by chunked advancement during the copy (deducted from the SWI's charged
   // cycles to preserve final-cycle totals).
   [[nodiscard]] std::optional<std::uint32_t> hle_cpu_set(bool fast);
-  [[nodiscard]] bool hle_lz77_decompress_from_source(std::uint32_t source,
-                                                     std::vector<std::uint8_t>& output);
+  [[nodiscard]] bool hle_lz77_decompress_from_source(
+      std::uint32_t source, std::uint32_t destination, bool vram,
+      std::vector<std::uint8_t>& output, std::uint64_t& cycles,
+      std::uint32_t& source_end);
+  [[nodiscard]] std::uint64_t hle_memory_cycles(std::uint32_t address,
+                                               AccessWidth width, bool load) const;
+  [[nodiscard]] std::uint32_t hle_irq_depth() const;
+  void queue_hle_work(std::uint64_t cycles);
+  [[nodiscard]] std::optional<CoreSchedulerStepResult> advance_hle_work();
+  [[nodiscard]] std::optional<CoreSchedulerFetchStepResult> step_hle_work_from_pc();
   [[nodiscard]] bool hle_rle_decompress_from_source(std::uint8_t expected_type,
                                                     std::uint32_t source,
                                                     std::vector<std::uint8_t>& output);

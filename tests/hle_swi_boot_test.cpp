@@ -67,8 +67,16 @@ int main() {
            "zero-length LZ77 leaves destination unchanged");
     expect(lz.cpu().register_value(Arm7tdmi::kPc) == kProgramBase + 4,
            "zero-length LZ77 advances past SWI");
+    for (unsigned i = 0; i < 8 &&
+         !lz.scheduler().save_state().hle_work_frames.empty(); ++i) {
+      expect(lz.step().step.has_value(), "zero-length LZ77 call work advances");
+    }
+    expect(lz.scheduler().save_state().hle_work_frames.empty(),
+           "zero-length LZ77 work finishes before next independent call");
     expect(lz.memory().write32(source, 0x00000100U), "invalid nonempty LZ77 header");
     lz.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+    lz.cpu().set_register(0, source);
+    lz.cpu().set_register(1, destination);
     const auto invalid = lz.step();
     expect(invalid.step.has_value() && invalid.step->cpu_step.status == ExecuteStatus::unsupported,
            "nonempty LZ77 still requires its signature");
