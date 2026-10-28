@@ -1340,3 +1340,52 @@ The reference capture was extended to 610 frames to avoid truncating matches
 for the last candidate images; its first 600 images match the prior reference
 capture exactly. The remaining lead is consistent with the separately observed
 missing HLE decompression/copy time, but that causal model is not yet verified.
+
+OBSERVED: the profile-guided build of `c6bd681719fa` reached Route 104 in two
+matching 1,200-frame runs at 91.30 FPS, with p95 step times 11.72–11.88 ms
+and no steps over 16.67 ms. Draft PR #48's four core/desktop CI jobs passed.
+An instrumented 10,800-frame desktop run from that checkpoint averaged
+59.7237 FPS versus native 59.7275, with p95/p99 interval upper bounds of
+18/19 ms. Two of 10,799 presentation-return intervals exceeded 25 ms; the
+maximum was 27.2611 ms. No unsupported stop or queue-empty proxy occurred.
+Both hitches include extended `step_frame` wall times (19.50 and 21.61 ms),
+with event/presentation spans below 1 ms. This does not separate emulator CPU
+work from operating-system scheduling delays inside the measured span.
+
+OBSERVED: that run's SDL capture contained 16,933 blocks, all finite samples,
+no overflow and no additional-input requests. Five fully silent blocks were
+at startup; three more occurred around 0.58 seconds. A 120-frame core replay
+using the recorded input masks produced matching source silence. After
+resampling and alignment, the first second correlates 0.9987 with delivered
+audio, with gain 0.9982 and a 62.49 ms sample lag. Each of the three later
+silent blocks maps entirely into an all-zero source PCM interval. This
+supports source-generated silence there rather than a delivery starvation
+diagnosis. Physical speakers and waveform accuracy remain unverified.
+
+VERIFIED: replaying all 360 recorded input changes through a diagnostic lab
+host with the same profile-guided core produced a byte-identical final state
+to the desktop capture. It completed 10,800 frames at 88.98 headless FPS,
+p95 12.25 ms and p99 13.82 ms, with 14 steps above 16.67 ms. The two desktop
+hitch frames took 11.25 and 11.16 ms in this replay; their slowdown did not
+repeat at those game frames. This single replay establishes cross-host state
+agreement, not repeated-run performance acceptance. The helper correctly
+reports its repeated-run target flag as false for one run. Per-frame timings
+were written from the existing measurement buffer after the timed region.
+
+VERIFIED: a separate synthetic LZ77-to-VRAM fixture outputs the correct
+literal bytes on both cores, but exposes missing work timing. For 8, 64 and
+128 output bytes, this core's timer reads 9 cycles in every case; the reference
+reads 409, 2,705 and 5,329. A 32 KiB reference fixture remains in its BIOS
+stall through five frame captures and completes by the sixth. A replacement
+HLE model therefore needs to preserve frame-boundary progression, device/IRQ
+events and checkpoint restoration while work is pending. Merely adding one
+large atomic cycle charge would not establish those properties. No LZ77
+production timing change has been made yet.
+
+OBSERVED: six further paired story segments from the desktop's frame-186,540
+checkpoint reached frame 189,540, including Route 104 movement, a trainer
+encounter and the battle introduction. All twelve runs matched replay and
+saved-state identities. Across 6,000 frame steps, throughput was 84.00–91.13
+FPS, p95 step time 11.54–12.68 ms, and thirteen steps exceeded 16.67 ms. The
+original unsupported stop remains unreproduced and unexplained; these bounded
+successes do not establish that it is fixed.
