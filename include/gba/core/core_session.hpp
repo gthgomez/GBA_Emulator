@@ -75,6 +75,9 @@ class CoreSession {
 
   [[nodiscard]] CoreSessionState save_state() const;
   void load_state(const CoreSessionState& state);
+  // Host presentation invalidation; deliberately excluded from serialization
+  // and state hashes. Changes even when a restore has identical guest cycles.
+  [[nodiscard]] std::uint64_t state_generation() const;
   [[nodiscard]] std::uint64_t state_hash() const;
 
  private:
@@ -90,6 +93,7 @@ class CoreSession {
   WaitStateControl waitcnt_;
   IoRegisters io_;
   CoreScheduler scheduler_;
+  std::uint64_t state_generation_ = 0;
 };
 
 }  // namespace gba::core

@@ -52,6 +52,7 @@ void CoreSession::configure_for_game_boot() {
 }
 
 void CoreSession::reset() {
+  ++state_generation_;
   cpu_.reset();
   memory_.reset();
   memory_.clear_game_pak_rom();
@@ -188,6 +189,7 @@ CoreSessionState CoreSession::save_state() const {
 }
 
 void CoreSession::load_state(const CoreSessionState& state) {
+  ++state_generation_;
   cpu_ = state.cpu;
   memory_ = state.memory;
   memory_.set_io_callbacks(io_callbacks(io_));
@@ -202,6 +204,10 @@ void CoreSession::load_state(const CoreSessionState& state) {
   io_.load_state(state.io);
   scheduler_.load_state(state.scheduler);
   scheduler_.set_io_registers(io_);
+}
+
+std::uint64_t CoreSession::state_generation() const {
+  return state_generation_;
 }
 
 std::uint64_t CoreSession::state_hash() const {

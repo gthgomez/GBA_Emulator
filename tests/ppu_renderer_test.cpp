@@ -232,9 +232,67 @@ void obj_window_texel_test() {
          "OBJ-window texel coverage retains the admitted nominal prefix");
 }
 
+void mixed_background_test() {
+  using namespace gba::core;
+  auto memory = std::make_unique<MemoryBus>();
+  auto renderer = std::make_unique<PpuRenderer>();
+  for (unsigned offset = 0; offset < 32; offset += 2) {
+    expect(memory->write16(0x06000000U + offset, 0x2222), "seed BG1 text tile");
+    expect(memory->write16(0x06000020U + offset, 0x1111), "seed BG0 text tile");
+  }
+  for (unsigned offset = 0; offset < 64; offset += 2) {
+    expect(memory->write16(0x06004000U + offset, 0x0303), "seed BG2 affine tile");
+    expect(memory->write16(0x06004040U + offset, 0x0404), "seed BG3 affine tile");
+  }
+  expect(memory->write16(0x0600F800U, 1), "select BG0 text tile one");
+  expect(memory->write16(0x0600E000U, 0x0101), "select BG3 affine tile one");
+  expect(memory->write16(0x05000002U, 0x001F), "seed red BG0 palette");
+  expect(memory->write16(0x05000004U, 0x03E0), "seed green BG1 palette");
+  expect(memory->write16(0x05000006U, 0x7C00), "seed blue BG2 palette");
+  expect(memory->write16(0x05000008U, 0x7FFF), "seed white BG3 palette");
+  PpuRenderControl c{};
+  c.dispcnt = 0x0701;
+  c.bg_control[0] = 0x1F02;
+  c.bg_control[1] = 0x1E01;
+  c.bg_control[2] = 0x1D84;
+  c.bg_control[3] = 0x1C84;
+  c.bg_affine_pa[2] = c.bg_affine_pd[2] = 0x0100;
+  c.bg_affine_pa[3] = c.bg_affine_pd[3] = 0x0100;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0x7C00,
+         "mode1 combines affine BG2 with text backgrounds");
+  expect(memory->write16(0x06004000U, 0x0003), "make second affine texel transparent");
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(1, 0) == 0x03E0,
+         "mode1 transparent affine texel reveals text BG1");
+  c.bg_control[2] |= 2;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0x03E0, "text BG1 can cover lower-priority affine BG2");
+  c.bg_control[2] = 0x1D85;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0x03E0,
+         "equal-priority text BG1 precedes affine BG2");
+  c.bldcnt = 0x0442;
+  c.bldalpha = 0x0808;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0x3DE0,
+         "mixed backgrounds retain the correct second alpha target");
+  c.bldcnt = 0;
+  c.dispcnt = 0x0300;
+  c.bg_control[0] = 0x1F01;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0x001F, "equal-priority mode0 backgrounds favor BG0");
+  c.dispcnt = 0x0C02;
+  c.bg_control[2] = 0x1D84;
+  (void)renderer->render_scanline(*memory, c, 0);
+  expect(renderer->pixel(0, 0) == 0x7C00,
+         "equal-priority affine backgrounds favor BG2 over BG3");
+}
+
 }  // namespace
 
 int main() {
+  mixed_background_test();
   obj_line_budget_test();
   obj_window_texel_test();
   using gba::core::MemoryBus;
