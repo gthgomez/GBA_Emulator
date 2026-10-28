@@ -57,15 +57,6 @@ constexpr std::uint16_t kColorMask = 0x7FFF;
          static_cast<std::uint32_t>(sprite_screen_height(sprite));
 }
 
-[[nodiscard]] bool column_intersects_sprite(const SpriteAttributes& sprite,
-                                            std::uint16_t x) {
-  const std::uint32_t delta =
-      static_cast<std::uint32_t>(static_cast<std::uint16_t>(x) -
-                                 static_cast<std::uint16_t>(sprite.x));
-  return (delta & 0x1FFU) <
-         static_cast<std::uint32_t>(sprite_screen_width(sprite));
-}
-
 [[nodiscard]] bool bg_enabled(std::uint16_t dispcnt, std::uint8_t bg_index) {
   return (dispcnt & static_cast<std::uint16_t>(kBgEnableBase << bg_index)) != 0;
 }
@@ -367,46 +358,44 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     }
   }
 
-  const auto obj_pixel_at = [&](std::size_t index,
-                                std::uint16_t x) -> std::optional<SpritePixel> {
-    const SpriteAttributes& sprite = active_sprites.at(index);
-    if (!column_intersects_sprite(sprite, x)) {
-      return std::nullopt;
-    }
-    std::uint8_t local_x = static_cast<std::uint8_t>(
-        (static_cast<std::uint32_t>(x) -
-         static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.x))) &
-        0x1FFU);
-    std::uint8_t local_y = static_cast<std::uint8_t>(
+  // Resolve each OBJ row once, in OAM order, before background composition.
+  // Work admission above still accounts for occluded and transparent objects.
+  std::array<std::optional<PixelCandidate>, kScreenWidth> obj_row{};
+  std::array<bool, kScreenWidth> obj_semi_row{};
+  std::array<bool, kScreenWidth> obj_window_row{};
+  for (std::size_t index = 0; index < active_sprite_count; ++index) {
+    const auto& sprite = active_sprites.at(index);
+    if (sprite.obj_window && !obj_window_enabled) continue;
+    const int start_x = sprite.x < 0 ? 0 : sprite.x;
+    const int right = sprite.x + active_sprite_ends.at(index);
+    const int end_x = right < kScreenWidth ? right : kScreenWidth;
+    auto local_y = static_cast<std::uint8_t>(
         (static_cast<std::uint32_t>(scanline) -
-         static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.y))) &
-        0xFFU);
-    if (local_x >= active_sprite_ends.at(index)) {
-      return std::nullopt;
-    }
-    // Window coverage uses texture opacity without the color-layer mosaic.
-    if (sprite.mosaic_enabled && !sprite.obj_window) {
-      local_x = static_cast<std::uint8_t>(mosaic_block(local_x, obj_mosaic_w));
+         static_cast<std::uint32_t>(static_cast<std::uint16_t>(sprite.y))) & 0xFFU);
+    const bool color_mosaic = sprite.mosaic_enabled && !sprite.obj_window;
+    if (color_mosaic) {
       local_y = static_cast<std::uint8_t>(mosaic_block(local_y, obj_mosaic_h));
     }
-    return PpuSpriteFetcher::fetch_sprite_pixel(memory, sprite, local_x, local_y,
-                                               character_mapping_1d);
-  };
-  const auto obj_window_hit_at = [&](std::uint16_t x) {
-    if (!obj_enabled || !obj_window_enabled) return false;
-    for (std::size_t index = 0; index < active_sprite_count; ++index) {
-      const SpriteAttributes& sprite = active_sprites.at(index);
-      if (!sprite.obj_window) continue;
-      const auto pixel = obj_pixel_at(index, x);
-      if (pixel.has_value() && !pixel->transparent) {
-        return true;
+    for (int x = start_x; x < end_x; ++x) {
+      if (sprite.obj_window ? obj_window_row[x] : obj_row[x].has_value()) continue;
+      auto local_x = static_cast<std::uint8_t>(x - sprite.x);
+      if (color_mosaic) {
+        local_x = static_cast<std::uint8_t>(mosaic_block(local_x, obj_mosaic_w));
+      }
+      const auto pixel = PpuSpriteFetcher::fetch_sprite_pixel(
+          memory, sprite, local_x, local_y, character_mapping_1d);
+      if (!pixel.has_value() || pixel->transparent) continue;
+      if (sprite.obj_window) {
+        obj_window_row[x] = true;
+      } else {
+        obj_row[x] = PixelCandidate{normalize_color(pixel->color), 4, sprite.priority};
+        obj_semi_row[x] = sprite.semi_transparent;
       }
     }
-    return false;
-  };
+  }
 
   for (std::uint16_t x = 0; x < kScreenWidth; ++x) {
-    const bool obj_window_hit = obj_window_hit_at(x);
+    const bool obj_window_hit = obj_window_row[x];
     const std::uint16_t layer_mask =
         window_layer_mask(control, x, scanline, obj_window_hit);
     if (layer_mask == 0) {
@@ -508,22 +497,8 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
           (layer_mask & static_cast<std::uint16_t>(1U << 4)) != 0) {
         // Hardware resolves OBJ-to-OBJ priority before mixing the OBJ layer
         // with backgrounds. Only the lowest-numbered opaque OBJ survives.
-        std::optional<PixelCandidate> obj_candidate;
-        bool obj_semi_transparent = false;
-        for (std::size_t index = 0; index < active_sprite_count; ++index) {
-          const SpriteAttributes& sprite = active_sprites.at(index);
-          if (sprite.obj_window) {
-            continue;
-          }
-          const std::optional<SpritePixel> obj_pixel = obj_pixel_at(index, x);
-          if (!obj_pixel.has_value() || obj_pixel->transparent) {
-            continue;
-          }
-          obj_candidate = PixelCandidate{
-              normalize_color(obj_pixel->color), 4, sprite.priority};
-          obj_semi_transparent = sprite.semi_transparent;
-          break;
-        }
+        const auto& obj_candidate = obj_row[x];
+        const bool obj_semi_transparent = obj_semi_row[x];
         if (obj_candidate.has_value()) {
           const std::uint16_t prior_best_priority = best.priority;
           consider(*obj_candidate);
