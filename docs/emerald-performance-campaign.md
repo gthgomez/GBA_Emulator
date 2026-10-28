@@ -989,3 +989,249 @@ units. Two 600-frame headless replays of the previously failing IRQ segment
 completed with matching saved-state, video and audio hashes against the prior
 build. They measured 89.59 and 90.08 FPS; those headless numbers do not measure
 desktop pacing.
+
+### Sound FIFO DMA investigation
+
+OBSERVED: a local PCM capture from a saved route scene contained nonzero
+samples only 0.97% of the time; separate lab and battle captures showed about
+1% nonzero samples. The route capture's sample count and audio hash matched the
+headless runner. A separate no-input boot capture covering frames 600–1199
+was 0.99% nonzero, while the mGBA libretro reference was 98.07% nonzero over
+the same nominal frame interval. The reference emitted 65,536 samples/second
+and this core emits 32,768; frame phase and amplitude also differ, so this is
+not a sample-aligned waveform comparison. Captures remain local.
+
+OBSERVED: the saved scene configured both sound DMA channels with control
+`0xB600`, which programs an incrementing destination. The core rejected such
+FIFO requests because it required fixed destination mode, leaving the FIFO
+empty. The [mGBA sound DMA implementation](https://github.com/mgba-emu/mgba/blob/master/src/gba/audio.c)
+forces the transfer width and destination stepping for FIFO requests. The core
+now accepts the programmed width and destination fields and uses its existing
+four-word fixed-FIFO transfer; unsupported source increment/reload remains
+unchanged.
+
+VERIFIED: direct DMA regressions for both sound channels, four destination
+modes and two programmed widths, plus a scheduler timer/refill regression,
+failed against the old implementation and passed with the change. All 35 core
+verifiers and the benchmark checksum suite passed; optional ROM video smoke
+was not included. A corrected local route capture was 93.63% nonzero and its
+hash matched the corrected headless runner. The corrected boot capture was
+97.00% nonzero. These measurements show the previous near-silence was reduced;
+they do not establish hardware-accurate waveform or audible quality.
+
+OBSERVED: a fresh profile-guided build with this correction reported four
+missing-profile translation units. Two 1,800-frame battle replays matched
+within the pair, completed at 85.55 and 81.14 headless FPS with p95 steps of
+12.24 and 12.32 ms, and returned to the victory screen. Two 3,600-frame
+replays from a later checkpoint also matched and completed at 88.36 and 88.82
+headless FPS. These are single-host headless measurements.
+
+OBSERVED: the first 3,600-frame desktop attempt stopped early on an unsupported
+instruction at `0x03002158`. The wall-clock input sequence was not recorded
+frame by frame, and two subsequent desktop runs did not reproduce the stop.
+One repeat with eight save-state checkpoints finished at 59.7247 FPS average,
+recorded eight presentation intervals over 25 ms (maximum 69.41 ms), and one
+audio queue-empty proxy event; saving states perturbs pacing. A second repeat
+without checkpoint writes finished at 59.7247 FPS average, with 18 ms p95 and
+19 ms p99 interval upper bounds, no interval over 25 ms (maximum 24.25 ms),
+and zero queue-empty proxy events. It used directional and Z-key (GBA A)
+messages for about 46 seconds, then idle time. The original unsupported stop,
+audio fidelity, audible output and longer active play remain unresolved.
+
+OBSERVED: a further desktop retry used a locally instrumented host that would
+record registers and a private checkpoint on an unsupported stop. It completed
+3,600 frames without reproducing the stop. Because the host was rebuilt with
+diagnostic changes and the input is wall-clock timed, this run does not rule
+out the original failure or provide a controlled pacing comparison. The
+diagnostic executable and any captured state are local only.
+
+OBSERVED: for four one-second windows of the captured boot interval, the mGBA
+65,536 Hz PCM was downsampled to 32,768 Hz using polyphase filtering, and each
+candidate window was compared over a ±0.5-second lag range. The corrected
+capture's highest absolute normalized correlations were 0.867, 0.885, 0.889
+and 0.909, each at a reference lag of approximately -113.10 ms. A linear
+least-squares level fit gave candidate/reference gains of 1.03–1.12 across
+those windows. The pre-fix capture's best absolute correlations were
+0.073–0.111. This is one boot scene, one reference implementation and an
+estimated time alignment; filtering, phase and gain differences remain, and
+these statistics do not establish hardware accuracy or audible quality.
+Before-and-after WAV files derived from the local ROM remain under ignored
+`build/` for listening; they must not be published.
+
+OBSERVED: an extended run of that diagnostic host completed 10,800 frames
+without reproducing the unsupported stop. It reported 59.7265 FPS average,
+18 ms p95 and 19 ms p99 presentation-return interval upper bounds, four
+intervals over 25 ms (maximum 26.6608 ms), and zero queue-empty proxy events.
+Directional and Z-key messages were posted for about 172 seconds. This is a
+single run with an instrumented host and wall-clock input; it does not prove
+the original stop is fixed, physical display timing, audible audio quality, or
+that every posted input produced movement.
+
+OBSERVED: thirty-one further screenshot-enabled segments continued with the
+corrected sound DMA build from Route 102 to Petalburg City. The player healed
+the party (Torchic 27/27 HP and Wurmple 16/16 HP), entered the gym and followed
+Wally's catching tutorial. Screenshots show the capture of Ralts and the
+return to Norman's dialogue. All 62 runs completed with matching run, video,
+audio, machine-state and saved-state identities within each pair and zero
+reported unsupported instructions, fetch failures or engine audio underruns.
+Across 49,600 frame steps, individual headless runs measured 81.86–93.93 FPS,
+with p95 step times of 11.45–13.19 ms; 139 steps exceeded 16.67 ms. The
+post-tutorial checkpoint and captures remain local. These short, single-host
+replays do not resolve the earlier desktop stop or verify physical display
+timing and audible audio quality.
+
+### Extended desktop replay and buffered timing diagnostics
+
+VERIFIED: a diagnostic desktop run recorded all 360 input-mask changes over
+10,800 frames from the post-tutorial checkpoint. Replaying those frame-indexed
+inputs headlessly produced a byte-identical final save state. The headless run
+completed at 92.02 FPS, with a p95 step time of 11.58 ms and 12 steps above
+16.67 ms. This verifies that session's input replay and final-state equality;
+one headless run does not establish repeat determinism or smooth presentation.
+
+OBSERVED: the recording desktop run averaged 59.5036 FPS, with six of 10,799
+presentation intervals over 25 ms, a maximum of 238.771 ms and 35 audio
+queue-empty proxy events. A subsequent synchronously logged timing probe
+averaged 59.3814 FPS, with four intervals over 25 ms, a maximum of 655.101 ms
+and 36 proxy events. Its 655.101 ms and 287.305 ms gaps included 638.060 ms and
+270.958 ms respectively before frame stepping. That measured region included
+SDL event handling, input pumping and synchronous diagnostic output; it did
+not isolate event processing or establish the cause.
+
+OBSERVED: a repeat buffered diagnostic records in memory and separated event,
+input, logging, core, audio and presentation timing. It completed 10,800 frames
+at 59.7242 FPS with zero queue-empty proxy events. One interval exceeded 25 ms
+(25.159 ms); its core step took 19.949 ms, events 0.0064 ms and presentation
+0.3691 ms. The earlier long pre-step pauses did not recur. This sequential,
+single-host comparison with wall-clock inputs cannot attribute the difference
+to logging alone. The local diagnostics have not changed the production host.
+These runs used directional keys and X (GBA B). Production controls map Z to
+GBA A and X to GBA B; the desktop controls table has been corrected accordingly.
+
+### Continuous intro comparison
+
+OBSERVED: a fresh no-input boot capture with the corrected FIFO build was
+compared against all 600 existing mGBA reference frames. After five-bit channel
+conversion, every candidate frame had an exact image match within twelve
+reference frames; 240 matched at the same frame number. Thus no unmatched
+image was found in this interval under that alignment search. Static images
+can match several reference frames, so the result does not determine a unique
+time mapping or explain the remaining animation phase offset. The comparison,
+reference images and candidate screenshots remain local.
+
+### FIFO count and completion follow-up
+
+OBSERVED: fresh independent read-only review found no introduced defect in the
+width/destination correction at commit `46c8a4d699f0`. It identified inherited
+COUNT handling: the FIFO path transferred four words per request but deferred
+completion and IRQ until the programmed count was exhausted. With COUNT=16,
+repeat and IRQ enabled, the first request incorrectly omitted its IRQ.
+[GBATEK's FIFO mode and sound buffer notes](https://mgba-emu.github.io/gbatek/)
+describe ignoring programmed COUNT and sound DMA interrupts per sixteen bytes.
+
+VERIFIED: the replacement regression fails against the previous implementation
+at the first four-word completion IRQ assertion. With the countdown removed,
+it passes across both sound DMA channels, counts 0, 1, 3, 4, 16 and 16383,
+IRQ on/off and repeat on/off. IRQ flags are acknowledged between requests to
+check fresh completion notifications; source continuation, fixed four-word
+transfers and non-repeat completion are also covered. The previous regression
+had asserted the incorrect programmed-block IRQ behavior and has been replaced.
+Full-suite and ROM follow-up observations are recorded below.
+
+OBSERVED: of those 600 intro comparisons, 267 had exactly one reference match
+within the search window, and every such match was six frames earlier. The
+first same-frame mismatch in this fresh capture is at frame 15: the initial
+fade is one frame ahead of the reference on alternating fade steps through
+frame 29. This refines the older first-divergence observation from a prior
+candidate; the offset is not constant over the entire boot. The repeated
+static images and frame-boundary sampling require a timing investigation
+before adjusting emulated cycles.
+
+OBSERVED: a second fresh independent read-only review of the count/completion
+code and test delta found no introduced actionable defect. It confirmed the
+manual's ignored-COUNT/four-word rules and noted that repeat-off FIFO operation
+is outside the manual's required setup. The non-repeat regression preserves a
+defined emulator behavior for that configuration; hardware fidelity there is
+not established. Neither source review ran the local tests or accessed the ROM.
+
+VERIFIED: the count/completion candidate passed all 35 native core verifiers
+and the benchmark checksum suite. Optional ROM video smoke was not included.
+The focused failure-before and passing-after executables and full logs are
+retained locally. This corrects completion behavior; it is not a measured
+throughput optimization.
+
+### FIFO stop transition and early fade sampling
+
+OBSERVED: the count/completion-only build changed 918 of 329,149 stereo sample
+frames in a 600-frame boot capture, while sampled video hashes and the final
+PC/cycle count matched the prior build. Swapping only the prior DMA controller
+object into the new core reproduced the prior PCM exactly. A per-instruction
+trace located the first non-counter divergence at a boot immediate DMA:
+16,380 units / 32,762 bus cycles before the completion change, versus 16,384
+units / 32,770 bus cycles afterward. The runtime had retained a large count
+from FIFO initialization with programmed COUNT=0.
+
+DOCUMENTED: the [AGB programming manual, section 12.4.2.2](https://pdfcoffee.com/gameboy-advance-programming-manual-pdf-free.html),
+prescribes stopping FIFO repeat by programming COUNT=4 and selecting immediate,
+32-bit, fixed-destination mode while Enable stays set. COUNT becomes effective
+again on leaving FIFO mode. The core latched COUNT only on a new enable edge,
+so that transition instead used its old internal count. The correction reloads
+COUNT for this specific FIFO-to-immediate transition while preserving stream
+addresses; ordinary enabled DMA control writes retain their prior behavior.
+
+VERIFIED: a new regression failed before this transition fix and passed after
+it. Both sound channels are covered after initial counts 0, 1 and 16, with
+source continuation, four-word completion, bus-cycle accounting and cleared
+Enable/immediate-pending state. The runtime trace motivated the fix; the prior
+PCM comparisons do not prove improved audio fidelity.
+
+OBSERVED: a separate diagnostic captured the first 40 boot images at VBlank
+entry and at the current runtime's end-of-frame rendering point. All 40
+VBlank-entry images matched the reference at the same frame number after
+five-bit conversion. End-of-frame images matched 32, with differences on fade
+frames 15, 17, 19, 21, 23, 25, 27 and 29. This isolates the early fade's sampling
+phase discrepancy in that interval; it does not explain the later logo offset.
+The diagnostic does not change the production runtime's rendering point.
+
+OBSERVED: with the FIFO-stop correction linked into the diagnostic core, both
+boot stop transfers completed as four words and ten bus cycles. The earlier
+large transfer was therefore an incorrect use of the retained internal count,
+not work required by the newly programmed COUNT=4. A 600-frame diagnostic
+capture still found exact reference images for every frame within sixteen
+frames. Of uniquely matched end-of-frame images, all 266 lagged six frames;
+VBlank-entry sampling lagged seven for its 266 unique matches. Same-frame
+matches numbered 240 and 251 respectively. Fixing the FIFO stop does not
+explain the remaining logo phase offset; changing the rendering sample point
+alone also does not remove it.
+
+INFERRED: independent review of this candidate also identified an inherited
+snapshot-validation issue: `DmaController::load_state` compares incoming active
+count against the receiver's existing programmed count. A receiver configured
+with COUNT=1 can reject a valid incoming COUNT=16 snapshot. This is separate
+from the FIFO corrections and remains for a focused follow-up. The same review
+found no introduced blocking defect in the expanded FIFO delta, but did not
+run builds or tests. Source hashes were rechecked before the full suite.
+
+VERIFIED: the final completion-and-stop candidate passed all 35 native core
+verifiers and the benchmark checksum suite after the transition change.
+Optional ROM video smoke was not included. Independent review remained bound
+to the unchanged controller and regression-test file hashes.
+
+OBSERVED: a fresh profile-guided desktop build embeds source commit
+`1c0560007421` and reports four unexercised translation units during profile
+use. Two 400-frame checkpoint replays on that build matched all identities,
+completed at 92.74 and 91.05 headless FPS, and had no frame steps over 16.67 ms.
+Their p95 step times were 11.41 and 11.69 ms. They advanced Norman's dialogue;
+they do not establish sustained performance across the game.
+
+OBSERVED: the same build's unmodified production desktop host then completed
+10,800 frames with directional and X-key input posted for about 172 seconds.
+It averaged 59.6984 FPS against the native target of approximately 59.7275 FPS,
+with 18 ms p95 and 19 ms p99 presentation-return interval upper bounds. None
+of 10,799 intervals exceeded 25 ms; the maximum was 23.8271 ms. It reported
+32 audio queue-empty proxy events. No unsupported stop occurred. The final
+window image shows the player near the gym exit; no desktop final machine
+checkpoint was recorded in this production probe. Inputs were wall-clock timed,
+so this is a bounded interactive observation rather than an exact replay.
+Audio delivery and physical scanout remain unverified; the proxy events require
+further investigation before claiming smooth audible output.

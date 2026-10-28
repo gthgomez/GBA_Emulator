@@ -221,6 +221,43 @@ int main() {
   expect(apu.fifo_size(DirectSoundChannel::a) == 3,
          "scheduler-routed Direct Sound A consumes one FIFO sample");
 
+  // The programmed destination mode in sound DMA can be incrementing even
+  // though each FIFO request uses a fixed destination and word transfers.
+  {
+    Arm7tdmi sound_cpu;
+    MemoryBus sound_memory;
+    InterruptController sound_interrupts;
+    Timers sound_timers;
+    DmaController sound_dma;
+    PpuTiming sound_ppu;
+    Apu sound_apu;
+    CoreScheduler sound_scheduler(sound_cpu, sound_memory, sound_interrupts,
+                                  sound_timers, sound_dma, sound_ppu, sound_apu);
+    for (std::uint32_t word = 0; word < 8; ++word) {
+      expect(sound_memory.write32(0x02000300U + word * 4U, 0x04030201U),
+             "seed scheduler sound DMA source");
+    }
+    sound_apu.write_soundcnt_x(0x0080);
+    sound_apu.write_soundcnt_h(0x0304);
+    sound_dma.write_source(1, 0x02000300);
+    sound_dma.write_destination(1, 0x040000A0);
+    sound_dma.write_word_count(1, 4);
+    sound_dma.write_control(1, 0xB600);  // special, repeat, word, destination increment
+    sound_timers.write_reload(0, 0xFF00);
+    sound_timers.write_control(0, 0x0080);
+    const auto first_refill = sound_scheduler.advance_devices(256);
+    expect(first_refill.triggered_dma.channels_executed == 1 &&
+               !first_refill.triggered_dma.unsupported_request &&
+               sound_apu.fifo_size(DirectSoundChannel::a) == 16,
+           "timer overflow refills FIFO with programmed destination increment");
+    const auto second_refill = sound_scheduler.advance_devices(256);
+    expect(second_refill.last_direct_sound.fifo_a.produced &&
+               second_refill.last_direct_sound.fifo_a.sample == 1 &&
+               second_refill.triggered_dma.channels_executed == 1 &&
+               sound_apu.fifo_size(DirectSoundChannel::a) == 31,
+           "subsequent timer overflow consumes and refills the FIFO");
+  }
+
   scheduler.reset_scheduler_cycles();
   expect(scheduler.scheduler_cycles() == 0, "scheduler cycle reset clears local clock");
   expect(cpu.elapsed_cycles() != 0, "scheduler cycle reset does not reset CPU clock");

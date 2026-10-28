@@ -337,38 +337,124 @@ int main() {
   expect(dma.enabled(1), "repeat FIFO DMA stays enabled for next refill");
   dma.write_control(1, 0);
 
-  // M3 regression: the completion IRQ fires exactly once per full block.
-  // COUNT=16 words at four words per burst means four bursts, one IRQ.
-  interrupts.reset();
+  // Sound FIFO requests force a four-word, fixed-destination transfer even
+  // when the programmed width and destination-control fields differ.
+  for (const std::uint16_t destination_bits : {0x0000U, 0x0020U, 0x0040U, 0x0060U}) {
+    for (const std::uint16_t width_bits : {0x0000U, 0x0400U}) {
+      for (const std::size_t channel : {1U, 2U}) {
+        DmaController sound_dma;
+        gba::core::Apu sound_apu;
+        gba::core::InterruptController sound_interrupts;
+        sound_apu.write_soundcnt_x(0x0080);
+        sound_apu.write_soundcnt_h(0x3304);
+        const auto fifo = channel == 1 ? gba::core::DirectSoundChannel::a
+                                       : gba::core::DirectSoundChannel::b;
+        const auto trigger = channel == 1 ? gba::core::DmaTrigger::fifo_a
+                                          : gba::core::DmaTrigger::fifo_b;
+        sound_dma.write_source(channel, 0x02000100);
+        sound_dma.write_destination(channel, channel == 1 ? 0x040000A0 : 0x040000A4);
+        sound_dma.write_word_count(channel, 4);
+        sound_dma.write_control(
+            channel, static_cast<std::uint16_t>(0xB200U | destination_bits | width_bits));
+        const auto burst = sound_dma.run_sound_fifo(trigger, memory, sound_apu, sound_interrupts);
+        expect(!burst.unsupported_request && burst.channels_executed == 1 &&
+                   burst.units_transferred == 4 && burst.bus_cycles == 28,
+               "FIFO DMA forces word width and fixed destination");
+        expect(sound_apu.fifo_size(fifo) == 16, "forced FIFO burst writes sixteen bytes");
+        const auto popped = sound_apu.timer_overflow(0);
+        const auto sample = channel == 1 ? popped.fifo_a : popped.fifo_b;
+        expect(sample.produced && sample.sample == 1, "forced FIFO burst preserves byte order");
+        expect(sound_dma.save_state().channels.at(channel).current_source == 0x02000110,
+               "forced FIFO burst advances source by four words");
+      }
+    }
+  }
+
+  // FIFO requests complete after four words regardless of programmed COUNT.
+  // Acknowledge each IRQ so a later burst must request a fresh interrupt.
   for (std::uint32_t word = 0; word < 16; ++word) {
     expect(memory.write32(0x02000200 + word * 4U, 0x01000000U + word),
            "seed FIFO block source word");
   }
-  dma.write_source(1, 0x02000200);
-  dma.write_destination(1, 0x040000A0);
-  dma.write_word_count(1, 16);
-  dma.write_control(1, 0xF640);  // enable | irq | special | 32-bit | repeat | dest fixed
-  for (std::uint32_t burst = 1; burst <= 4; ++burst) {
-    const gba::core::DmaRunResult burst_result =
-        dma.run_sound_fifo(gba::core::DmaTrigger::fifo_a, memory, apu, interrupts);
-    expect(burst_result.channels_executed == 1, "FIFO block burst runs");
-    if (burst < 4U) {
-      expect(!interrupts.requested(InterruptSource::dma1),
-             "FIFO DMA holds the completion IRQ until count reaches zero");
-    } else {
-      expect(interrupts.requested(InterruptSource::dma1),
-             "FIFO DMA requests completion IRQ exactly at count-zero");
+  for (const std::size_t channel : {1U, 2U}) {
+    for (const std::uint16_t count : {16U, 0U, 1U, 3U, 4U, 0x3FFFU}) {
+      for (const bool repeating : {true, false}) {
+        for (const bool irq_enabled : {true, false}) {
+          DmaController sound_dma;
+          gba::core::Apu sound_apu;
+          gba::core::InterruptController sound_interrupts;
+          const auto trigger = channel == 1 ? gba::core::DmaTrigger::fifo_a
+                                            : gba::core::DmaTrigger::fifo_b;
+          const auto irq = channel == 1 ? InterruptSource::dma1 : InterruptSource::dma2;
+          sound_dma.write_source(channel, 0x02000200);
+          sound_dma.write_destination(channel, channel == 1 ? 0x040000A0 : 0x040000A4);
+          sound_dma.write_word_count(channel, count);
+          sound_dma.write_control(
+              channel, static_cast<std::uint16_t>(0xB440U |
+                  (repeating ? 0x0200U : 0U) | (irq_enabled ? 0x4000U : 0U)));
+          for (std::uint32_t burst = 1; burst <= 3; ++burst) {
+            const auto result = sound_dma.run_sound_fifo(
+                trigger, memory, sound_apu, sound_interrupts);
+            expect(!result.unsupported_request && result.channels_executed == 1 &&
+                       result.units_transferred == 4,
+                   "FIFO DMA ignores programmed count and transfers four words");
+            expect(sound_interrupts.requested(irq) == irq_enabled,
+                   "each FIFO burst requests its enabled completion IRQ");
+            sound_interrupts.write_interrupt_flags(
+                static_cast<std::uint16_t>(1U << static_cast<unsigned>(irq)));
+            expect(!sound_interrupts.requested(irq), "FIFO completion IRQ is acknowledged");
+            expect(sound_dma.save_state().channels.at(channel).current_source ==
+                       0x02000200U + burst * 16U,
+                   "FIFO source continues across four-word completions");
+            expect(sound_dma.word_count(channel) == count,
+                   "FIFO completion preserves the programmed count register");
+            expect(sound_dma.enabled(channel) == repeating,
+                   "FIFO completion re-arms only a repeating channel");
+            if (!repeating) {
+              expect(sound_dma.active_count(channel) == 0,
+                     "non-repeating FIFO completion clears active count");
+              expect(sound_dma.run_sound_fifo(trigger, memory, sound_apu, sound_interrupts)
+                         .channels_executed == 0,
+                     "non-repeating FIFO DMA ignores later requests");
+              break;
+            }
+          }
+        }
+      }
     }
   }
-  expect(dma.enabled(1), "repeat FIFO DMA re-arms after block completion");
-  expect(dma.active_count(1) == 16, "FIFO DMA reloads full block count at count-zero");
-  interrupts.reset();
-  expect(dma.run_sound_fifo(gba::core::DmaTrigger::fifo_a, memory, apu, interrupts)
-                 .channels_executed == 1,
-         "next FIFO block starts after reload");
-  expect(!interrupts.requested(InterruptSource::dma1),
-         "reloaded FIFO block does not re-raise completion IRQ immediately");
-  dma.write_control(1, 0);
+
+  // The documented FIFO stop sequence writes COUNT=4 and switches to
+  // immediate word DMA while keeping Enable set. COUNT becomes effective
+  // again, without restarting the source stream at its programmed address.
+  for (const std::size_t channel : {1U, 2U}) {
+    for (const std::uint16_t initial_count : {0U, 1U, 16U}) {
+      DmaController sound_dma;
+      gba::core::Apu sound_apu;
+      gba::core::InterruptController sound_interrupts;
+      sound_dma.write_source(channel, 0x02000200);
+      sound_dma.write_destination(channel, channel == 1 ? 0x040000A0 : 0x040000A4);
+      sound_dma.write_word_count(channel, initial_count);
+      sound_dma.write_control(channel, 0xB600);
+      expect(sound_dma.run_sound_fifo(channel == 1 ? gba::core::DmaTrigger::fifo_a
+                                                   : gba::core::DmaTrigger::fifo_b,
+                                     memory, sound_apu, sound_interrupts)
+                     .units_transferred == 4,
+             "seed an enabled FIFO stream before stopping");
+      sound_dma.write_word_count(channel, 4);
+      sound_dma.write_control(channel, 0x8440);
+      expect(sound_dma.active_count(channel) == 4,
+             "FIFO stop uses the newly programmed count in immediate mode");
+      const auto stopped = sound_dma.run_immediate(memory, sound_interrupts);
+      expect(!stopped.unsupported_request && stopped.channels_executed == 1 &&
+                 stopped.units_transferred == 4 && stopped.bus_cycles == 30,
+             "FIFO stop completes one four-word immediate transfer");
+      expect(sound_dma.save_state().channels.at(channel).current_source == 0x02000220U,
+             "FIFO stop continues from the current source address");
+      expect(!sound_dma.enabled(channel) && !sound_dma.immediate_pending(),
+             "FIFO stop completes and clears the immediate queue");
+    }
+  }
 
   // Save-state contract: symmetric snapshot across all channel registers,
   // latched internals, and the immediate queue.
