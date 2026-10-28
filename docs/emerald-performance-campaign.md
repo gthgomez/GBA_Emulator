@@ -25,18 +25,295 @@ conformance gaps remain relevant even when a game appears to work.
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #52 merged as `4db5171067b1`; all four Linux/Windows CI jobs passed final head `9f9425bd7239` |
-| Current candidate | OBJ work limit with left clipping: 36 core verifiers, benchmarks and renewed review pass; 11 ripple frames recover exactly; native pacing validation required before integration |
-| Story | Frame 207,240: Aqua grunt defeated; Devon employee dialogue in Petalburg Woods; Torchic level 10, HP 11/29 |
-| Repeat throughput | Two exact 10,800-frame normal-host replays: 88.22 / 88.29 FPS; three / two steps over 16.67 ms |
-| SDL delivery | Integrated pacing build: 10,800 diagnostic + 10,800 normal frames at 59.7290 / 59.7291 FPS; zero intervals over 25 ms, maxima 17.96 / 20.45 ms |
-| Determinism | New 10,800-frame exact-input replay byte-identical to the post-pacing diagnostic checkpoint; six additional story segments repeat identically |
-| Audio | No queue-empty proxy or additional-input requests; finite postmix data; no physical output claim |
-| Intro | Initial 600-frame lag explained by reference HLE accounting; longer 3,600-frame capture exposes further differences, starting with an extra ripple sprite |
-| Status | Active: verify OBJ work-limit candidate, investigate later intro differences, extend story/native soak coverage; original unsupported stop remains unexplained |
+| Integration | PR #53 merged as `f903979056c0`; all four Linux/Windows CI jobs passed final head `0a6867bc88e3` |
+| Current candidate | PR #54 head `463521a764fd` passes four CI jobs; native playback exposes stalls and audio starvation; audio resume repair under verification |
+| Story | Route 104 reached at frame 211,260; frame 211,680 shows the two-Oran-Berry pickup text; Torchic level 10, HP 11/29; checkpoints retained |
+| Repeat throughput | Two exact 10,800-frame diagnostic replays: 87.58 / 85.95 FPS; two / one steps over 16.67 ms; every frame's logical instruction counts identical |
+| SDL delivery | Row candidate normal/diagnostic 10,800-frame runs: 59.68/57.17 FPS, 20/631 queue-empty events, maxima 42.00/114.55 ms; smoothness target remains unmet |
+| Determinism | Both exact-input profiling replays byte-identical to the diagnostic SDL checkpoint; latest 1,200-frame story pair also identical |
+| Audio | Latest diagnostic has 1,099 additional-input requests; repeated pause tests expose an empty-queue resume condition; finite postmix data alone does not prove glitch-free sound |
+| Intro | Initial lag explained by reference HLE accounting; OBJ limit recovers 11 ripple frames; reference snapshot 1,244 renders exactly, locating its remaining 852-pixel difference in game state |
+| Status | Active: repair and verify audio resume, diagnose native stalls, investigate intro timing/random choices and extend story; PR remains held |
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
+
+### Post-integration profiling and next rendering correction
+
+OBSERVED: PR #53 passed all four CI jobs and merged as `f903979056c0`.
+Its optimized normal desktop binary completed 10,800 frames at 59.7290 FPS,
+with presentation p95/p99 upper bounds 17/18 ms and maximum 25.1269 ms.
+One interval exceeded 25 ms. This rare hitch remains unresolved. The separate
+buffered diagnostic run completed 10,800 frames at 59.7292 FPS, p95/p99
+16.9196/17.2265 ms, maximum 19.3346 ms and no intervals above 25 ms. Its
+16,931 postmix blocks were finite, with no additional-input requests or
+queue-empty proxy events. These are local bounded observations, not proof of
+physical speaker output or an uninterrupted whole-game playthrough.
+
+VERIFIED: two diagnostic headless replays of the 360 recorded SDL input changes
+completed at 87.583940 and 85.954195 FPS, with p99 steps 13.2704/13.5608 ms and
+two/one steps above 16.67 ms. Both final states were byte-identical to the SDL
+state (`023fd79b645674eff94d660b8409efd5741d1923f1e015be1afbbb66596dd334`).
+Every frame's executed/skipped instruction counts matched across both replays.
+Their outlier frames did not overlap. The SDL outliers at frames 2089, 2104,
+2263 and 10251 replayed in 10.9756–12.0654 ms. INFERRED: this evidence does not
+identify a repeatable guest-instruction hotspot; OS scheduling is not proven
+as the cause. Diagnostic throughput is not normal desktop presentation.
+
+OBSERVED: the next 1,200-frame story pair finished Devon's dialogue at frame
+208,440, returning to the free overworld. It completed at 88.777533/90.692514
+FPS, with identical final states, no execution errors and no core underruns.
+The better story checkpoint is retained separately from movement soak loops.
+
+OBSERVED: OBJ-window coverage previously selected an object's whole rectangle,
+including transparent texels and affine margins, and could operate with the
+master OBJ enable clear. The synthetic transparent-window regression failed
+before correction. Coverage now uses the same coordinate calculation, admitted
+budget endpoint and texel fetch as normal color sprites, requires both enable
+bits, and ignores palette RGB when deciding opacity. Window coverage bypasses
+color mosaic. These rules follow [GBATEK's OBJ-window description](https://mgba-emu.github.io/gbatek/#the-obj-window)
+and the [hardware researcher's implementation](https://raw.githubusercontent.com/nba-emu/NanoBoyAdvance/master/src/nba/src/hw/ppu/sprite.cc);
+the latter was inspected as evidence, not copied into this implementation.
+
+OBSERVED: independent review exposed a separate existing decoder defect:
+`mosaic_enabled` read attribute bit 6 (part of Y), instead of bit 12. The initial
+window mosaic assertions therefore did not exercise the flag. A decoder
+regression failed before correction; the decoder now reads bit 12. Focused
+tests verify bit-12 enable, Y=64 without mosaic, normal horizontal/vertical
+color repetition and window exclusion with an explicitly decoded flag.
+The revised four-file candidate passed affected independent read-only review.
+VERIFIED: all 36 core tests pass (39.7 s), and the benchmark checksum suite passes.
+Hardware mosaic phase, exact OBJ pipeline timing and broader affine/mapping
+combinations remain outside these bounded checks.
+
+VERIFIED: fresh optimized window/mosaic executable SHA-256
+`12c5632603e3d29f6ba670c96dbfbac7963172fbd80ece14b482e85f164288df`.
+Boot and checkpoint training artifacts match the previous optimized build's
+ROM/run/video/audio/state fields. A complete 3,600-frame capture produces
+byte-identical frame-end and VBlank image streams to the merged OBJ-limit build,
+with the same final machine hash `03a0a5fa907228c7`. Therefore the window/mosaic
+fix introduces no image changes in this bounded intro sequence. It does not
+resolve the later differences: nearby exact matches remain 1,986/1,990, with
+the first remaining unmatched frame at 1,245/1,246 respectively.
+
+OBSERVED: repeated menu navigation opens the start menu and bag correctly.
+The item and berry pockets are empty, so no healing item was used. These
+local menu checks do not establish general UI or input compatibility.
+
+VERIFIED: a repeated 900-frame north-route segment reaches a wild Poochyena
+level 5 encounter at Woods (7,12). Both runs agree, complete at
+80.218150/82.607449 FPS, report no execution errors/core underruns and have
+maximum steps 14.8269/16.3135 ms. This checkpoint preserves the actual
+encounter; no claim that the planned north exit was reached.
+
+### Performance rejection and video-read repair
+
+OBSERVED: candidate `05420e5f40ca` passed all four CI jobs. Its 10,800-frame
+diagnostic/normal SDL runs completed at 59.7286/59.7285 FPS, with no intervals
+above 25 ms and maxima 22.6460/21.0639 ms. Diagnostic presentation p95/p99 were
+17.1188/17.4567 ms. All 16,931 postmix blocks were finite with no additional-input
+requests; both hosts reported zero queue-empty proxy events. However, diagnostic
+emulation steps were slower than the earlier unpaired run, prompting a controlled
+comparison before integration.
+
+VERIFIED: normal executable ABBA runs used the same checkpoint and 1,200 recorded
+input frames. Baseline runs completed at 86.280845/86.589386 FPS; the candidate
+completed at 79.730430/79.509496 FPS. ROM/run/video/audio/state fields and final
+serialized states matched across all four runs. PR #54 was held despite green
+CI and passing bounded native delivery: the approximately 8% throughput loss
+was a material regression for this campaign.
+
+OBSERVED: diagnostic links replacing only the renderer translation unit,
+against the same optimized remaining core and normal host, reproduced the loss.
+Restoring the previous renderer yielded 86.93/87.39 FPS. Passing the sprite by
+reference, restoring direct color sampling, extracting coordinates, separating
+color-index sampling and adding template specialization did not recover the
+throughput; those alternatives remain private and are not production changes.
+Disassembly shows two out-of-line sprite fetch calls in the original window
+candidate, versus inlined fetching before the change. This is supporting
+compiler evidence, not proof that inlining alone explains every measured cost.
+
+OBSERVED: backgrounds already use `MemoryBus::read_video16`, which retains video
+mapping and mirroring while avoiding generic bus dispatch. The sprite repair
+uses that existing method for an aligned VRAM halfword, selects the addressed
+byte and then its 4bpp nibble or 8bpp value, and uses it for the even palette
+halfword. No memory-map or timing implementation changed. Two private diagnostic
+runs recovered to 86.047942/86.079073 FPS, with ROM/run/video/audio/state fields
+matching the baseline. These probes establish a promising repair, not final
+normal-build performance evidence.
+
+VERIFIED: focused sprite tests pass with a new mirrored-tile fixture covering
+both halfword bytes and all four nibbles. Existing tests cover odd-byte 8bpp,
+palette banks, transparency, flips, affine sampling and mapping strides.
+Affected independent read-only review found no blocking issue in the two-file
+repair. Fresh full gates, optimized build and controlled/native measurements
+must pass before integration.
+
+VERIFIED: all 36 refreshed core tests pass (39.3 s), and benchmarks pass.
+The fresh PGO normal binary has SHA256
+`bdc4a559900c844173f015c8d7b0c8cc6393e95d5ce14640ee074958781937e3`.
+Its controlled 1,200-frame ABBA comparison rejects the proposed performance
+repair: baseline 89.775058/89.483713 FPS versus 78.098138/78.951785 FPS.
+All ROM/run/video/audio/state fields and serialized final states still match;
+all four runs have no steps exceeding 16.67 ms. Thus the private-link improvement
+did not transfer to the full profile-guided build. PR #54 remains held.
+The fresh 3,600-frame intro retains 1,986/1,990 nearby matches and final machine
+hash `03a0a5fa907228c7`; later differences remain unchanged.
+
+OBSERVED: that candidate's native 10,800-frame run timed out without final frame
+statistics. Its process CPU count stopped growing appreciably near the end;
+the cause is UNKNOWN. No complete native result is claimed. A later harness
+revision restores the previous foreground window when emulator launch takes
+focus, validates the actual completed-frame count, and requests normal shutdown
+on timeout so an incomplete run can still leave timing diagnostics. This does
+not change the emulator binary or establish the cause of the earlier timeout.
+
+### Resolve each OBJ row once
+
+The next candidate resolves visible admitted OBJ spans once per scanline, in
+OAM order. It stores the first opaque color pixel and semi-transparency flag,
+and independently accumulates OBJ-window coverage. Composition still applies
+window masks, background priority and blending. Admission remains before
+opacity/occlusion; mosaic sampling remains after the nominal endpoint check.
+This removes repeated full OBJ searches for each output pixel. The existing
+fast video reads remain shared with background rendering. No second public
+renderer, compiler-specific forced-inlining rule or persisted cache was added.
+Fetching pixels later hidden by window masks can add work in such scenes;
+that tradeoff requires representative measurements.
+
+VERIFIED: focused renderer checks and all 36 core tests pass (47.0 s), as do
+benchmark checksums. A private differential verifier compares the previous
+window-correct renderer with this candidate over 6,000 deterministic randomized
+scanlines, covering all six display modes and randomized OAM, windows, mosaic,
+affine parameters and blending. All 240 pixels and all render-statistic fields
+agree for each scanline. This establishes equivalence to the prior implementation
+for those inputs, not hardware conformance. Fresh independent read-only review
+found no actionable defect and bound renderer SHA256
+`19ddac1b8216324bfd5560ccd8e41d08c1e6bf8ef1b5ddfcfaa23455d54059d1`.
+The review retains targeted coverage gaps for partial admission combined with
+color mosaic and color/window overlap in both OAM orders.
+
+VERIFIED: fresh normal PGO executable SHA256
+`9274a5967a5aad0d23a74510d79e7d7eb46bc34312e534de0421c9ada8c41acc`.
+The first controlled ABBA comparison measures baseline 90.038802/88.419698 FPS
+and candidate 89.814600/85.184833 FPS. All output fields and serialized states
+match. Candidate step p99 is 12.4828/15.2633 ms, with zero/seven steps above
+16.67 ms; baseline has zero/one. The first pair is close, while later runs have
+greater variance. A reverse-order comparison and native check remain required
+before clearing the performance hold; the lower result is not discarded.
+
+VERIFIED: continued actual input reaches the battle menu and selects Run.
+Both 360-frame repetitions show the successful escape text at frame 210,300,
+with identical final state, no execution errors/core underruns, throughput
+83.579081/82.929329 FPS and maximum steps 14.3844/14.3936 ms. Torchic retains
+11/29 HP. The overworld exit is not yet established at this checkpoint.
+
+VERIFIED: rendering the pinned reference frame-1,244 snapshot with our renderer
+matches every reference pixel. Rendering our frame-1,245 snapshot instead
+reproduces the 852-pixel difference. Thus the remaining difference at that
+specific frame arises from differing game memory/register state, not a renderer
+disagreement on identical inputs. This does not explain all later intro frames
+or establish which emulator's execution timing agrees with hardware.
+
+### Extended playback rejection and resume diagnosis
+
+VERIFIED: the reverse-order 1,200-frame comparison measures candidate
+89.716740/88.541962 FPS versus baseline 87.624067/88.854088 FPS. All output fields
+and serialized final states agree across both four-run comparisons. The earlier
+approximately 8% throughput regression is not reproduced, but no general
+speedup is established. All four CI jobs pass head `463521a764fd`.
+
+OBSERVED: the actual normal executable completes 10,800 frames at 59.6828 FPS,
+with twenty queue-empty proxy events, seven presentation intervals over 25 ms
+and maximum 41.9956 ms. A subsequent baseline normal control completes at
+59.7289 FPS with no queue-empty events, no intervals over 25 ms and maximum
+20.3280 ms. The candidate's buffered diagnostic completes at 57.1681 FPS,
+with 631 queue-empty events and 467 intervals over 25 ms; maximum step and
+presentation durations are 113.1280/114.5500 ms. Its finite postmix data includes
+1,099 additional-input requests totaling 1,023,856 bytes. These are failed
+smoothness observations. The PR remains held despite green CI.
+
+VERIFIED: exact 10,800-frame input replays of the diagnostic run complete at
+81.801632 FPS for the row candidate and 82.597691 FPS for the baseline. Both
+serialized final states are byte-identical to the native diagnostic
+(`fa8f8c27473cfe28e2599424627970fedc178b7784af30c7804105270fbb333e`),
+and ROM/run/audio/state fields agree. Maximum replay steps are 27.5311 and
+23.5944 ms, with 58/33 steps over 16.67 ms. Video hashes differ at two sampled
+frames, 2,760 and 2,790; a 3,000-frame replay using the earlier window/mosaic
+correction produces the same first 100 sampled hashes as the row candidate.
+Those differences therefore predate the row optimization. The original
+all-video-equal assertion correctly rejected the comparison; it was not waived
+or relabeled as passing. Host paging and available memory varied across these
+runs. The precise cause of the native stalls remains UNKNOWN.
+
+VERIFIED: actual inputs cross the Woods north warp into Route 104, (10,29),
+with two identical 300-frame runs at 97.999228/98.165506 FPS and no execution
+errors/core underruns. Continued paired input reaches the two-Oran-Berry pickup
+text. Story checkpoints preserve these actual inputs; diagnostic memory edits
+are confined to independent intro experiments.
+
+OBSERVED: pausing for 500 ms after approximately five seconds, then resuming,
+reproduces recurring queue-empty events on otherwise timely native frames.
+Separate 1,800-frame pause runs report 17, 15 and 6 such events. The detailed
+trace shows 28 queued input bytes and zero available output bytes at several
+events, including after 10.7–15.2 ms emulation steps. The device is operating
+without its startup lead after pause clears the queue. This is a specific
+reproducible transition problem; it does not explain every long emulation step.
+
+The candidate extracts the existing 2,048-sample startup prime into one private
+helper. Clearing a queue while playback is active and audible restores that
+same 62.5 ms lead; paused and muted clears remain empty. Resume explicitly
+clears/re-primes before resetting the frame deadline. Fresh independent
+read-only review finds no actionable issue across pause, mute, reset, state
+restore and ROM switching, binding host source SHA256
+`f729e96fe84affe511b7e16bccca064df62cf8eb2d85776d220e56784d82da82`
+and header SHA256
+`6f03d4cdb5e732fd40c1f09a548401aa092366eb19da8158949cbbf8b47cf171`.
+VERIFIED: all 36 core checks pass (229.6 s; compile 222.2 s), and benchmarks pass.
+Fresh normal optimized executable SHA256 is
+`961e8575404815cdd99c33f00aa0da95603408d7c6f250cf492d2c170219af95`.
+Its boot/checkpoint training ROM/run/video/audio/state fields match the previous
+row build. The private before/after hosts link that same optimized core and
+differ in the queue-reset repair. Each completes 1,800 native frames with one
+500 ms pause. In the predeclared window from 200 ms to 3.2 s after actual resume,
+the old host has five missing-input requests totaling 524 bytes and seven
+queue-empty events in the first three seconds. The repaired host has none.
+Both postmix streams are finite, and serialized final guest states are identical
+(`e4eb4a284e7d0ed826a89fd422941879db147782d103d254e3863f60a504f32c`).
+The repaired run reports zero queue-empty events over its complete session.
+This verifies the specific resume repair. It does not establish recovery from
+arbitrary host scheduling stalls or change the separate backpressure policy.
+Normal extended delivery and refreshed final-head CI remain required.
+
+VERIFIED: repository desktop, save-lifecycle and interactive smoke checks pass
+against the fresh normal executable. Local script copies change only repository,
+executable and evidence-directory assignments, preserving prior evidence; the
+original scripts remain unchanged. Save checks include reset, corrupt/orphan
+recovery, switch refusal and explicit save-type handling. These checks do not
+replace the measured real-device pause/resume comparison above.
+
+### Intro state and randomized choices
+
+VERIFIED: extending the private reference-HLE accounting counterfactual through
+3,600 frames adjusts 53 calls by 1,659,766 cycles. Nearby exact matches increase
+to 2,087/2,091, with 2,038 same-frame matches at frame end. This is a diagnostic
+counterfactual, not a production timing change or physical BIOS conformance.
+The renderer matches the pinned reference's own snapshots exactly at frames
+1,244, 1,245, 1,253, 1,255 and 1,261. Remaining differences at those frames are
+therefore state differences, rather than disagreement on identical rendering
+inputs.
+
+DOCUMENTED: the game's [intro source](https://raw.githubusercontent.com/pret/pokeemerald/master/src/intro.c)
+randomly chooses the protagonist and later uses randomness for the bicycle
+sprite's vertical wobble. OBSERVED: following the actual intro-load function's
+literal identifies protagonist storage at `0x0203BCC8`: reference value 1,
+our value 0. A private control selecting the reference value changes the
+expected OBJ palette banks; it does not remove every discrepancy. Frame 1,255
+still differs by eight pixels with a one-pixel OBJ position difference. The
+earlier trial at `0x02021834` was overwritten and had no effect; it is rejected
+as an invalid control. Neither variable is altered in production or story
+playthroughs. RNG initialization, scene timing and later intro differences
+remain under investigation.
 
 ## Initial observations
 

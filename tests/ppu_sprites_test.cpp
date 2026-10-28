@@ -60,6 +60,16 @@ int main() {
   expect(!obj0->double_size, "OBJ0 is not double-size");
   expect(!obj0->disabled, "OBJ0 is enabled");
 
+  expect(memory.write16(0x07000000, 0x1000), "seed OBJ mosaic bit 12 at Y zero");
+  const auto mosaic_obj = PpuSpriteFetcher::read_sprite(memory, 0);
+  expect(mosaic_obj.has_value() && mosaic_obj->mosaic_enabled && mosaic_obj->y == 0,
+         "attr0 bit 12 enables mosaic independently of Y");
+  expect(memory.write16(0x07000000, 0x0040), "seed Y bit 6 without mosaic");
+  const auto y64_obj = PpuSpriteFetcher::read_sprite(memory, 0);
+  expect(y64_obj.has_value() && !y64_obj->mosaic_enabled && y64_obj->y == 64,
+         "attr0 Y bit 6 does not enable mosaic");
+  expect(memory.write16(0x07000000, 20), "restore OBJ0 Y position");
+
   expect(write_obj_vram_byte(memory, 0x06010000 + 5U * 32U, 0x09),
          "seed OBJ0 tile pixel");
   expect(memory.write16(0x05000200 + 4U * 32U + 9U * 2U, 0x7FFF),
@@ -198,6 +208,22 @@ int main() {
                1, 0x001F, "1D mapping strides by width/8 tiles per texture row");
   expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj10.value(), 0, 8, false),
                2, 0x03E0, "2D mapping strides by a constant 32 tiles per row");
+
+  expect(memory.write16(0x07000044, 1023), "seed mirrored OBJ tile index");
+  const auto mirrored_obj = PpuSpriteFetcher::read_sprite(memory, 8);
+  expect(mirrored_obj.has_value(), "mirrored OBJ decodes");
+  expect(memory.write16(0x06010020, 0x4321), "seed mirrored tile halfword");
+  expect(memory.write16(0x05000206, 0x7FFF), "seed third mirrored OBJ color");
+  expect(memory.write16(0x05000208, 0x7C00), "seed fourth mirrored OBJ color");
+  // Tile 1023 plus the 1D row stride reaches 0x06018020, mirroring 0x06010020.
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, *mirrored_obj, 0, 8, true),
+               1, 0x001F, "mirrored tile first low nibble fetches color");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, *mirrored_obj, 1, 8, true),
+               2, 0x03E0, "mirrored tile first high nibble fetches color");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, *mirrored_obj, 2, 8, true),
+               3, 0x7FFF, "mirrored tile upper byte low nibble fetches color");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, *mirrored_obj, 3, 8, true),
+               4, 0x7C00, "mirrored tile upper byte high nibble fetches color");
 
   std::cout << "ppu_sprites_test: PASS\n";
   return 0;

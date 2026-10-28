@@ -137,7 +137,7 @@ std::optional<SpriteAttributes> PpuSpriteFetcher::read_sprite(const MemoryBus& m
       !affine && (attr1.value() & 0x2000U) != 0,
       graphics_mode == 1U,
       graphics_mode == 2U,
-      (attr0.value() & 0x0040U) != 0,
+      (attr0.value() & 0x1000U) != 0,
   };
 }
 
@@ -183,20 +183,24 @@ std::optional<SpritePixel> PpuSpriteFetcher::fetch_sprite_pixel(
       kObjTileBase + static_cast<std::uint32_t>(tile_number) * 32U;
   const std::uint32_t pixel_address =
       tile_address + (bpp8 ? in_tile_y * 8U + in_tile_x : in_tile_y * 4U + in_tile_x / 2U);
-  const std::optional<std::uint8_t> packed_pixel = memory.read8(pixel_address);
-  if (!packed_pixel.has_value()) {
+  // Use the renderer's video path, then select the addressed byte. Both
+  // bytes are VRAM; this retains mirroring without generic bus dispatch.
+  const auto packed_word = memory.read_video16(pixel_address & ~1U);
+  if (!packed_word.has_value()) {
     return std::nullopt;
   }
 
+  const auto packed_pixel = static_cast<std::uint8_t>(
+      *packed_word >> ((pixel_address & 1U) * 8U));
   const std::uint8_t color_index =
-      bpp8 ? packed_pixel.value()
-           : static_cast<std::uint8_t>((in_tile_x & 1U) != 0 ? packed_pixel.value() >> 4
-                                                            : packed_pixel.value() & 0xFU);
+      bpp8 ? packed_pixel
+           : static_cast<std::uint8_t>((in_tile_x & 1U) != 0 ? packed_pixel >> 4
+                                                            : packed_pixel & 0xFU);
   const std::uint32_t palette_address =
       kObjPaletteBase + (bpp8 ? static_cast<std::uint32_t>(color_index) * 2U
                               : (static_cast<std::uint32_t>(sprite.palette_bank) * 32U +
                                  static_cast<std::uint32_t>(color_index) * 2U));
-  const std::optional<std::uint16_t> color = memory.read16(palette_address);
+  const std::optional<std::uint16_t> color = memory.read_video16(palette_address);
   if (!color.has_value()) {
     return std::nullopt;
   }

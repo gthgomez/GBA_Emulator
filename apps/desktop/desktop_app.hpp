@@ -104,6 +104,7 @@ class DesktopApp {
   bool capture_window_screenshot();
   void push_audio();
   void clear_queued_audio();
+  void prime_audio_queue();
   void pace_frame(bool fast_forward);
   void toggle_fullscreen();
   // Writes the cartridge save when it is dirty (or always, when `force`).
