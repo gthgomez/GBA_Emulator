@@ -3681,7 +3681,7 @@ bool CoreScheduler::hle_bg_affine_set() {
     if (!origin_x || !origin_y || !center_x || !center_y || !scale_x || !scale_y || !rotation) {
       return false;
     }
-    const BiosController::AffineMatrix matrix = BiosController::hle_affine_matrix(
+    const BiosController::WideAffineMatrix matrix = BiosController::hle_affine_matrix_wide(
         static_cast<std::int16_t>(scale_x.value()),
         static_cast<std::int16_t>(scale_y.value()), rotation.value());
     const std::int64_t x = static_cast<std::int16_t>(center_x.value());

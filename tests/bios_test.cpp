@@ -128,6 +128,12 @@ int main() {
   expect(extreme_scale.pa == 0 && extreme_scale.pb == -32768 &&
              extreme_scale.pc == 32767 && extreme_scale.pd == 0,
          "affine stores wrap to halfwords and ignore the low angle byte");
+  static_assert(sizeof(BiosController::AffineMatrix) == 8,
+                "legacy affine matrix retains four signed halfwords");
+  const auto wide_extreme = BiosController::hle_affine_matrix_wide(-32768, -32768, 0x8000);
+  expect(wide_extreme.pa == 32768 && wide_extreme.pb == 0 &&
+             wide_extreme.pc == 0 && wide_extreme.pd == 32768,
+         "wide affine matrix preserves positive halfword overflow for translation");
 
   // Independent arithmetic oracle: evaluate the mathematical sine at long
   // double precision, quantize it, then floor the exact power-of-two product.
@@ -146,12 +152,20 @@ int main() {
       const auto m = BiosController::hle_affine_matrix(
           static_cast<std::int16_t>(scales[0]), static_cast<std::int16_t>(scales[1]),
           static_cast<std::uint16_t>((angle << 8U) | 0xFFU));
+      const auto wide = BiosController::hle_affine_matrix_wide(
+          static_cast<std::int16_t>(scales[0]), static_cast<std::int16_t>(scales[1]),
+          static_cast<std::uint16_t>((angle << 8U) | 0xFFU));
       const auto sine = trig(angle);
       const auto cosine = trig((angle + 64U) % 256U);
       const auto product = [](int scale, std::int32_t value) {
         return static_cast<std::int32_t>(std::floor(
             static_cast<double>(scale) * value / 16384.0));
       };
+      expect(wide.pa == product(scales[0], cosine) &&
+                 wide.pb == -product(scales[0], sine) &&
+                 wide.pc == product(scales[1], sine) &&
+                 wide.pd == product(scales[1], cosine),
+             "wide affine sweep retains full coefficients before storage");
       expect(static_cast<std::uint16_t>(m.pa) ==
                  static_cast<std::uint16_t>(product(scales[0], cosine)) &&
                  static_cast<std::uint16_t>(m.pb) ==

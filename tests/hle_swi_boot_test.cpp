@@ -197,7 +197,48 @@ int main() {
            "BgAffineSet stores the shared quantized matrix");
     expect(affine.memory().read32(destination + 8).value_or(0) == 29350 &&
                affine.memory().read32(destination + 12).value_or(0) == 49060,
-           "BgAffineSet translates using stored integer coefficients");
+           "BgAffineSet translates using quantized integer coefficients");
+
+    // A coefficient can be +32768 before the halfword store wraps it to
+    // -32768. Translation must consume the original full-width value.
+    struct OverflowCase {
+      std::uint16_t angle;
+      std::uint16_t coefficients[4];
+      std::uint32_t reference_x;
+      std::uint32_t reference_y;
+    };
+    constexpr OverflowCase overflow_cases[] = {
+        {0x8000, {0x8000, 0, 0, 0x8000}, 0xFFFF8000U, 0xFFFF8000U},
+        {0x4000, {0, 0x8000, 0x8000, 0}, 0xFFFF8000U, 0x00008000U},
+        {0xC000, {0, 0x8000, 0x8000, 0}, 0x00008000U, 0xFFFF8000U},
+    };
+    expect(affine.memory().write32(source, 0) &&
+               affine.memory().write32(source + 4, 0) &&
+               affine.memory().write16(source + 8, 1) &&
+               affine.memory().write16(source + 10, 1) &&
+               affine.memory().write16(source + 12, 0x8000) &&
+               affine.memory().write16(source + 14, 0x8000),
+           "BgAffineSet seeds signed-scale overflow cases");
+    for (const auto& test : overflow_cases) {
+      expect(affine.memory().write16(source + 16, test.angle),
+             "BgAffineSet seeds cardinal overflow angle");
+      affine.cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+      affine.cpu().set_register(0, source);
+      affine.cpu().set_register(1, destination);
+      affine.cpu().set_register(2, 1);
+      const auto overflow_result = affine.step();
+      expect(overflow_result.step.has_value() &&
+                 overflow_result.step->cpu_step.status == ExecuteStatus::executed,
+             "BgAffineSet executes overflow case");
+      for (std::uint32_t component = 0; component < 4; ++component) {
+        expect(affine.memory().read16(destination + component * 2).value_or(1) ==
+                   test.coefficients[component],
+               "BgAffineSet narrows only stored coefficients");
+      }
+      expect(affine.memory().read32(destination + 8).value_or(0) == test.reference_x &&
+                 affine.memory().read32(destination + 12).value_or(0) == test.reference_y,
+             "BgAffineSet translates before halfword narrowing");
+    }
   }
 
   std::cout << "hle_swi_boot_test: PASS\n";

@@ -309,16 +309,23 @@ std::int32_t BiosController::hle_arc_tan2(std::int32_t x, std::int32_t y,
 
 BiosController::AffineMatrix BiosController::hle_affine_matrix(
     std::int16_t scale_x, std::int16_t scale_y, std::uint16_t rotation) {
+  const WideAffineMatrix matrix = hle_affine_matrix_wide(scale_x, scale_y, rotation);
+  return {affine_halfword(matrix.pa), affine_halfword(matrix.pb),
+          affine_halfword(matrix.pc), affine_halfword(matrix.pd)};
+}
+
+BiosController::WideAffineMatrix BiosController::hle_affine_matrix_wide(
+    std::int16_t scale_x, std::int16_t scale_y, std::uint16_t rotation) {
   const auto angle = static_cast<std::uint8_t>(rotation >> 8U);
   const std::int32_t sine = affine_sine(angle);
   const std::int32_t cosine = affine_sine(static_cast<std::uint8_t>(angle + 64U));
-  AffineMatrix matrix{};
+  WideAffineMatrix matrix{};
   // Products fit signed 32 bits even at both signed-halfword scale limits.
   // Pb negates after ASR; moving the sign inside changes negative rounding.
-  matrix.pa = affine_halfword(wrap_asr_i32(scale_x * cosine, 14));
-  matrix.pb = affine_halfword(-wrap_asr_i32(scale_x * sine, 14));
-  matrix.pc = affine_halfword(wrap_asr_i32(scale_y * sine, 14));
-  matrix.pd = affine_halfword(wrap_asr_i32(scale_y * cosine, 14));
+  matrix.pa = wrap_asr_i32(scale_x * cosine, 14);
+  matrix.pb = -wrap_asr_i32(scale_x * sine, 14);
+  matrix.pc = wrap_asr_i32(scale_y * sine, 14);
+  matrix.pd = wrap_asr_i32(scale_y * cosine, 14);
   return matrix;
 }
 

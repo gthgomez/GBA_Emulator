@@ -106,6 +106,19 @@ class BiosController {
     std::int16_t pd = 0;
   };
 
+  // BgAffineSet uses full-width coefficients for reference translation before
+  // storing their low halfwords. Keep AffineMatrix's existing layout intact.
+  struct WideAffineMatrix {
+    std::int32_t pa = 0;
+    std::int32_t pb = 0;
+    std::int32_t pc = 0;
+    std::int32_t pd = 0;
+  };
+
+  [[nodiscard]] static WideAffineMatrix hle_affine_matrix_wide(std::int16_t scale_x,
+                                                              std::int16_t scale_y,
+                                                              std::uint16_t rotation);
+
   [[nodiscard]] static AffineMatrix hle_affine_matrix(std::int16_t scale_x,
                                                       std::int16_t scale_y,
                                                       std::uint16_t rotation);

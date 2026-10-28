@@ -330,12 +330,55 @@ low angle bits and all 256 angles over five signed scale pairs pass; the sweep
 uses an independent long-double oracle. BgAffineSet and strided ObjAffineSet
 integration checks pass, together with all 36 core tests (188.5 s) and
 mandatory benchmarks. Fresh independent read-only review verifies the three
-pinned source hashes and finds no introduced defect. Optimized ROM verification
-remains pending; no new pixel-match count or native target result is claimed.
+pinned source hashes and finds no introduced defect.
 
-The review identifies a separate existing limitation: BG translation uses
-already narrowed coefficients, so an intermediate +32,768 can become -32,768
-before translation. It is unchanged and requires a focused follow-up.
+VERIFIED: commit `912aac3` receives a fresh optimized build (executable SHA256
+`42a2e647d6a4b00281d67cc2f1d6c3d6c64c80df01035bb5e28672df16f81fb1`).
+Normal-build 1,200-frame ABBA gives 82.0668/81.3764/80.9465/80.5788 FPS
+(previous/integer/integer/previous). All five logical artifact sections and
+serialized final states match across the four runs. No material gain or
+regression is established. All three desktop smoke evaluators pass using
+path-only overrides and unchanged assertions.
+
+OBSERVED: its full 3,600-frame runtime intro completes with core-step p50/p95/
+p99 11.7523/12.5330/13.1028 ms, maximum 14.1401 ms. There are 2,654 exact nearby
+reference matches and 783 at the same frame. The reference uses different HLE
+floating arithmetic; these counts do not establish physical accuracy.
+
+OBSERVED: the normal desktop build completes all 10,800 frames at 59.7286 FPS
+(last window 59.7255), zero reported empty-audio-queue events, p95/p99 interval
+upper bounds 18/18 ms, maximum 23.2283 ms and no intervals over 25 ms. This is
+a bounded native delivery pass at the GBA's nominal 60 FPS rate. It does not
+erase earlier failed runs or establish whole-game sustained smoothness.
+
+OBSERVED: actual story resumes from frame 221,340, finishes Winston's payout,
+and returns to free movement at Route 104 coordinates (21,24), frame 222,240.
+Two 900-frame runs complete at 80.1435/81.1047 FPS, p95 13.5708/13.3199 ms,
+with identical serialized final states and no execution errors/core underruns.
+One first-run step exceeds 16.67 ms (20.2462 ms); the second has none.
+
+### BG affine translation overflow follow-up
+
+VERIFIED: a focused regression linked against commit `912aac3` fails because
+BG translation uses already narrowed coefficients. For scales -32,768,
+angle 0x8000, origin (0,0) and center (1,1), both full coefficients are
++32,768 and references must be 0xFFFF8000. Premature narrowing produces
+0x00008000 instead. The expected assertion fails with exit 1.
+
+The correction gives the canonical coefficient calculation a full-width
+result. The existing eight-byte AffineMatrix and helper retain their layout,
+signature and halfword behavior; ObjAffineSet continues using that helper.
+BgAffineSet uses full coefficients for translation and narrows only the four
+halfword writes. This avoids separate cardinal-angle correction logic or
+changing the legacy matrix representation.
+
+VERIFIED: the corrected SWI regression passes for overflow in PA/PD, PB and
+PC at three cardinal angles. The wide helper has an independent full-circle
+oracle over five signed scale pairs and an explicit positive-overflow case.
+Fresh independent read-only review finds no introduced defects, with all five
+source/test hashes matching before and after review. All 36 core verifiers
+pass (228.5 s), including the corrected SWI cases, and mandatory benchmarks
+pass. Fresh optimized-host verification remains pending at this point.
 Agreement with the public integer model does not independently establish
 physical-hardware equivalence.
 
