@@ -454,7 +454,45 @@ performance. All 36 core verifiers pass (220.6 s), including the new scheduler
 and memory cases, and mandatory benchmarks pass. A fresh independent read-only
 review finds no introduced defect across the five pinned source/test files,
 including actual DMA and scheduler timing consumers; hashes match before and
-after review. Fresh normal optimized ROM checks remain pending at this point.
+after review. A second fresh read-only review independently checks CPU timing,
+raw-memory permissions, pipeline failure, stores and tests against committed
+head `9d28a8b`; all five hashes again match and no introduced defect is found.
+
+VERIFIED: a fresh optimized normal executable for that source has SHA256
+`2f5e11f72f5a4dd239b749cae7bc9ba41f704121b4fc073a216c44742b4a6f49`.
+The formerly failing 900-frame battle segment now completes twice, with
+identical serialized states that also match the corrected diagnostic replay.
+Throughput is 76.8155/76.2900 FPS, p95 13.6355/13.6874 ms, maxima
+16.6837/16.0009 ms and one/zero steps over 16.67 ms. The viewed screen returns
+to the command menu with Lotad damaged and Torchic still at 23/31 HP.
+
+OBSERVED: 1,200-frame normal ABBA gives 82.3570/81.0590/80.8804/81.9881 FPS
+(previous/fixed/fixed/previous), suggesting about 1.5% lower throughput in
+that ordering. Reverse BAAB gives 80.9563/82.0496/79.0561/81.1412 FPS and does
+not repeat a uniform gap. All five logical artifact sections and serialized
+states match throughout both comparisons. No speedup is claimed; the observed
+ordering variation limits interpretation of the small difference.
+
+VERIFIED: the full 3,600-frame intro video and saved state remain byte-identical
+to the preceding build. Core-step p50/p95/p99 are 12.0058/12.6876/13.1726 ms,
+maximum 16.3464 ms; reference matches remain 2,654 nearby and 783 at the same
+frame. All three fresh desktop smoke evaluators pass with unchanged assertions
+and path-only overrides. All four CI jobs pass for `9d28a8b`.
+
+OBSERVED: actual story testing defeats Lotad, declines a party switch and
+defeats Haley's Shroomish. At frame 227,760, Torchic remains level 11 at
+23/31 HP and the viewed screen shows 82 EXP received. The last 900-frame pair
+completes at 76.5865/76.7056 FPS, p95 13.9486/13.6832 ms, identical states and
+no execution errors/core underruns. One second-run step reaches 16.78 ms;
+the first has none above 16.67 ms. Victory/payout dialogue still remains.
+
+OBSERVED: the normal desktop executable for this correction completes all
+18,000 frames at 59.7286 FPS (last window 59.7268), zero reported audio queue underruns, p95/p99 interval upper bounds 18/18 ms,
+maximum 20.3601 ms and
+no gaps above 25 ms. Actual frame count and exit 0 are verified. This is a
+five-minute bounded native delivery pass for the source that also completes
+the formerly failing battle; it does not establish a full playthrough or
+physical audio-output equivalence. Earlier failed runs remain retained.
 
 ### Post-integration profiling and next rendering correction
 
