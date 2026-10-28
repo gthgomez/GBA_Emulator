@@ -225,6 +225,10 @@ void DmaController::write_control(std::size_t channel, std::uint16_t value) {
   const bool was_enabled = (state.control & kEnableFlag) != 0;
   const bool was_immediate =
       was_enabled && start_timing(channel) == DmaStartTiming::immediate;
+  const bool was_sound_fifo =
+      was_enabled && (channel == 1 || channel == 2) &&
+      start_timing(channel) == DmaStartTiming::special &&
+      (state.destination == kFifoAAddress || state.destination == kFifoBAddress);
   const std::uint16_t control_mask =
       channel == 3 ? static_cast<std::uint16_t>(kControlMask | kGamePakDrqFlag)
                    : kControlMask;
@@ -233,6 +237,12 @@ void DmaController::write_control(std::size_t channel, std::uint16_t value) {
   if (!was_enabled && is_enabled) {
     state.current_source = state.source;
     state.current_destination = state.destination;
+    state.current_count = normalized_word_count(channel);
+  } else if (was_sound_fifo && is_enabled &&
+             start_timing(channel) == DmaStartTiming::immediate) {
+    // The FIFO stop sequence keeps Enable set, writes COUNT=4 and selects
+    // immediate mode. COUNT becomes effective again; preserve the addresses
+    // reached by the preceding FIFO bursts (AGB manual section 12.4.2.2).
     state.current_count = normalized_word_count(channel);
   }
   if (!is_enabled) {
@@ -589,19 +599,8 @@ bool DmaController::execute_sound_fifo_channel(std::size_t channel,
   state.current_source = source_address;
   state.current_destination = destination(channel);
 
-  // Each FIFO request consumes one 4-word burst from the programmed block.
-  // The completion IRQ fires exactly when the internal counter reaches zero
-  // (once per full block), not on every burst; repeat then reloads the
-  // counter for the next block, otherwise the channel disables itself.
-  const std::uint32_t remaining =
-      state.current_count >= kSoundFifoWordsPerRequest
-          ? state.current_count - kSoundFifoWordsPerRequest
-          : 0U;
-  if (remaining != 0) {
-    state.current_count = remaining;
-    return true;
-  }
-
+  // FIFO mode ignores programmed COUNT: each four-word request is a complete
+  // transfer, including its completion IRQ and repeat/disable handling.
   if (irq_on_completion(channel)) {
     interrupts.request(dma_interrupt_source(channel));
   }

@@ -47,7 +47,7 @@ fullscreen). Controls:
 | Input | Action |
 | --- | --- |
 | Arrow keys / gamepad d-pad | D-pad |
-| Z / X (gamepad B / A) | B / A |
+| Z / X (gamepad B / A) | A / B |
 | Enter / Backspace | Start / Select |
 | A / S | R / L |
 | Tab (hold) | Fast-forward |
