@@ -94,11 +94,11 @@ int main() {
   expect(session->memory().write32(BiosHleConstants::kUserIrqHandlerPointer,
                                     0x03000100), "IRQ handler pointer");
 
-  // An idle v3 payload is the current encoding without the empty frame count.
+  // v3 predates the empty outer-IRQ and pending-work counts.
   auto legacy = SaveStateCodec::encode(*session);
   expect(legacy.size() >= 20, "snapshot has frame count");
   set_legacy_header(legacy, 3, 1869358511553600127ULL);
-  legacy.resize(legacy.size() - 4);
+  legacy.resize(legacy.size() - 8);
   auto legacy_restored = std::make_unique<CoreSession>();
   expect(SaveStateCodec::decode_into(*legacy_restored, legacy).status ==
              SaveStateDecodeStatus::ok,
@@ -114,14 +114,15 @@ int main() {
   cpu.set_register(15, BiosHleConstants::kIrqVectorAddress);
   expect(session->step().step.has_value(), "outer dispatch");
   const auto active = SaveStateCodec::encode(*session);
-  // 52 register bytes precede 21 scheduler scalar bytes and the empty count.
+  // Registers precede 21 scalar bytes and two empty vector counts.
   for (std::size_t byte = 0; byte < 52; ++byte) {
-    expect_corruption_rejected(active, active.size() - 77 + byte);
+    expect_corruption_rejected(active, active.size() - 81 + byte);
   }
   // Golden hashes captured from the v4 encoder before the integrity repair.
   // v3/v4 share the active-register layout and historical hash calculation.
   for (const auto version : {3U, 4U}) {
     auto old_active = active;
+    old_active.resize(old_active.size() - 4); // v6 work count
     set_legacy_header(old_active, version, 9517732750589066455ULL);
     if (version == 3) old_active.resize(old_active.size() - 4);
     auto restored_active = std::make_unique<CoreSession>();
@@ -145,12 +146,13 @@ int main() {
   expect(session->step().step.has_value(), "inner dispatch");
 
   const auto encoded = SaveStateCodec::encode(*session);
-  expect(encoded[4] == 5, "new snapshots use full-register integrity version");
+  expect(encoded[4] == 6, "new snapshots include pending-work version");
   // One outer frame ends in LR(4), presence(1), registers(52), flags(2).
   for (std::size_t byte = 0; byte < 52; ++byte) {
-    expect_corruption_rejected(encoded, encoded.size() - 54 + byte);
+    expect_corruption_rejected(encoded, encoded.size() - 58 + byte);
   }
   auto old_nested = encoded;
+  old_nested.resize(old_nested.size() - 4);
   set_legacy_header(old_nested, 4, 2430423098251959970ULL);
   auto migrated = std::make_unique<CoreSession>();
   expect(SaveStateCodec::decode_into(*migrated, old_nested).status ==
@@ -159,7 +161,7 @@ int main() {
   expect(migrated->state_hash() == session->state_hash(),
          "legacy outer registers migrate to the full machine hash");
   auto tampered = encoded;
-  tampered.back() ^= 1U;
+  tampered.at(tampered.size() - 5) ^= 1U;
   auto rejected = std::make_unique<CoreSession>();
   const auto rejected_hash = rejected->state_hash();
   expect(SaveStateCodec::decode_into(*rejected, tampered).status ==

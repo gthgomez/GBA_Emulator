@@ -564,6 +564,30 @@ $coreTests = @(
         )
     },
     @{
+        Name = "hle_lz77_work_test"
+        Sources = @(
+            "src\core\android_runtime.cpp",
+            "src\core\arm7tdmi.cpp",
+            "src\core\apu.cpp",
+            "src\core\bios.cpp",
+            "src\core\core_scheduler.cpp",
+            "src\core\core_session.cpp",
+            "src\core\dma_controller.cpp",
+            "src\core\interrupt_controller.cpp",
+            "src\core\io_registers.cpp",
+            "src\core\keypad.cpp",
+            "src\core\memory_bus.cpp",
+            "src\core\ppu_background.cpp",
+            "src\core\ppu_renderer.cpp",
+            "src\core\ppu_sprites.cpp",
+            "src\core\ppu_timing.cpp",
+            "src\core\save_state_codec.cpp",
+            "src\core\timers.cpp",
+            "src\core\wait_state_control.cpp",
+            "tests\hle_lz77_work_test.cpp"
+        )
+    },
+    @{
         Name = "android_performance_gate_test"
         Sources = @(
             "src\core\android_performance_gate.cpp",

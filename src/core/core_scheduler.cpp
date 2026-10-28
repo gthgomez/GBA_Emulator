@@ -27,6 +27,9 @@ constexpr std::uint32_t kMaxBiosWaitCycles = 280896U * 2U;
 // wake phases stay identical to legacy 1-cycle polling (see
 // intr_wait_batch_cycles).
 constexpr std::uint32_t kIntrWaitCoarseBatchCycles = 64U;
+// IWRAM ARM/Thumb fixtures isolate 46 call cycles from token/memory work.
+// execute_hle_swi already charges three of these cycles at admission.
+constexpr std::uint32_t kHleLz77AdditionalCallCycles = 43U;
 constexpr std::uint32_t kTimerIoBase = 0x04000100U;
 constexpr std::uint32_t kTimerIoEnd = 0x04000110U;
 constexpr std::uint32_t kDispstatIo = 0x04000004U;
@@ -1319,6 +1322,7 @@ void CoreScheduler::reset_scheduler_cycles() {
   hle_irq_return_lr_.reset();
   hle_irq_saved_registers_.reset();
   hle_irq_outer_frames_.clear();
+  hle_work_frames_.clear();
   hle_irq_reentry_dispatch_pending_ = false;
   hle_irq_return_latency_pending_ = false;
   hle_irq_post_return_latency_armed_ = false;
@@ -1358,7 +1362,7 @@ CoreSchedulerState CoreScheduler::save_state() const {
           hle_irq_post_return_chain_active_,
           hle_irq_chained_spaced_data_service_count_, auto_irq_line_high_,
           auto_irq_latency_cycles_, timer_io_access_gap_cycles_,
-          thumb_misfetch_recovery_count_, hle_irq_outer_frames_};
+          thumb_misfetch_recovery_count_, hle_irq_outer_frames_, hle_work_frames_};
 }
 
 void CoreScheduler::load_state(const CoreSchedulerState& state) {
@@ -1376,6 +1380,7 @@ void CoreScheduler::load_state(const CoreSchedulerState& state) {
   hle_irq_return_lr_ = state.hle_irq_return_lr;
   hle_irq_saved_registers_ = state.hle_irq_saved_registers;
   hle_irq_outer_frames_ = state.hle_irq_outer_frames;
+  hle_work_frames_ = state.hle_work_frames;
   hle_irq_reentry_dispatch_pending_ = state.hle_irq_reentry_dispatch_pending;
   hle_irq_return_latency_pending_ = state.hle_irq_return_latency_pending;
   hle_irq_post_return_latency_armed_ = state.hle_irq_post_return_latency_armed;
@@ -1474,6 +1479,15 @@ std::uint64_t CoreScheduler::state_hash_impl(bool legacy_irq_registers) const {
       if (frame.saved_registers) add_irq_registers(*frame.saved_registers);
       hasher.add_bool(frame.long_timer_return_pending);
       hasher.add_bool(frame.slow_timer0_return_pending);
+    }
+  }
+  // Empty work preserves the hash of complete v5 snapshots.
+  if (!hle_work_frames_.empty()) {
+    hasher.add_u32(0x484C4557U);
+    hasher.add_u64(hle_work_frames_.size());
+    for (const auto& frame : hle_work_frames_) {
+      hasher.add_u64(frame.remaining_cycles);
+      hasher.add_u32(frame.owner_irq_depth);
     }
   }
   return hasher.value();
@@ -1771,6 +1785,9 @@ bool CoreScheduler::service_pending_irq(bool from_data_access,
 CoreSchedulerStepResult CoreScheduler::step_arm(
     std::uint32_t instruction,
     std::optional<ArmElapsedCycleEstimate> elapsed_override) {
+  if (!hle_work_frames_.empty()) {
+    if (auto work = advance_hle_work()) return *work;
+  }
   const std::uint32_t pre_step_pc = cpu_.register_value(Arm7tdmi::kPc);
   if (waitcnt_ == nullptr && !elapsed_override.has_value() &&
       simple_arm_no_data_instruction(instruction) &&
@@ -1996,6 +2013,9 @@ CoreSchedulerStepResult CoreScheduler::step_arm(
 CoreSchedulerStepResult CoreScheduler::step_thumb(
     std::uint16_t instruction, bool prefetch_internal_load_overlap,
     std::optional<ArmElapsedCycleEstimate> elapsed_override) {
+  if (!hle_work_frames_.empty()) {
+    if (auto work = advance_hle_work()) return *work;
+  }
   const std::uint32_t pre_step_pc = cpu_.register_value(Arm7tdmi::kPc);
   if (waitcnt_ == nullptr && !prefetch_internal_load_overlap &&
       !elapsed_override.has_value() && simple_thumb_alu_without_pc_write(instruction) &&
@@ -2440,6 +2460,101 @@ void CoreScheduler::reset_auto_irq_latency() {
 
 bool CoreScheduler::bios_hle_enabled() const {
   return bios_ != nullptr && bios_->mode() == BiosExecutionMode::hle;
+}
+
+std::uint32_t CoreScheduler::hle_irq_depth() const {
+  return static_cast<std::uint32_t>(hle_irq_outer_frames_.size()) +
+         (hle_irq_saved_registers_.has_value() ? 1U : 0U);
+}
+
+void CoreScheduler::queue_hle_work(std::uint64_t cycles) {
+  if (cycles != 0) hle_work_frames_.push_back({cycles, hle_irq_depth()});
+}
+
+std::optional<CoreSchedulerStepResult> CoreScheduler::advance_hle_work() {
+  if (hle_work_frames_.empty() ||
+      hle_work_frames_.back().owner_irq_depth != hle_irq_depth()) {
+    return std::nullopt;
+  }
+  const auto pc = cpu_.register_value(Arm7tdmi::kPc);
+  if (cpu_.current_mode() == CpuMode::irq &&
+      (pc == BiosHleConstants::kIrqVectorAddress ||
+       pc == BiosHleConstants::kIrqReturnSentinelPc)) {
+    return std::nullopt;
+  }
+
+  reset_fetch_timing_sequence();
+  previous_thumb_internal_load_ = false;
+  suppress_next_thumb_prefetch_execute_bubble_ = false;
+  CoreDeviceTickResult devices{};
+  const auto frame_before_dma = scheduler_cycles_ / PpuTiming::kCyclesPerFrame;
+  const auto dma = run_immediate_dma();
+  if (dma.bus_cycles != 0) devices = advance_devices(dma.bus_cycles);
+  const auto result = [&](std::uint32_t cycles, bool irq_serviced) {
+    return CoreSchedulerStepResult{
+        {ExecuteStatus::executed, cycles, cpu_.elapsed_cycles(), false, false},
+        devices, dma, irq_serviced, scheduler_cycles_, std::nullopt};
+  };
+  // Return control to the host at a frame boundary reached during DMA.
+  if (scheduler_cycles_ / PpuTiming::kCyclesPerFrame != frame_before_dma) {
+    return result(0, false);
+  }
+  if (interrupts_.irq_line_active() && !cpu_.irq_disabled()) {
+    update_auto_irq_latency(0);
+    if (auto_irq_ready() && service_pending_irq()) {
+      reset_auto_irq_latency();
+      return result(0, true);
+    }
+  }
+
+  const auto frame_remaining = static_cast<std::uint32_t>(
+      PpuTiming::kCyclesPerFrame - scheduler_cycles_ % PpuTiming::kCyclesPerFrame);
+  const auto ppu_remaining = static_cast<std::uint32_t>(
+      ppu_.line_cycle() < PpuTiming::kVisibleCycles
+          ? PpuTiming::kVisibleCycles - ppu_.line_cycle()
+          : ppu_.line_cycle() < PpuTiming::kHblankFlagCycles
+                ? PpuTiming::kHblankFlagCycles - ppu_.line_cycle()
+                : PpuTiming::kCyclesPerLine - ppu_.line_cycle());
+  auto cycles = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+      hle_work_frames_.back().remaining_cycles,
+      std::min({intr_wait_batch_cycles(InterruptController::kSupportedMask),
+                frame_remaining, ppu_remaining})));
+  if (auto_irq_line_high_ && auto_irq_latency_cycles_ != 0) {
+    cycles = std::min<std::uint32_t>(cycles, auto_irq_latency_cycles_);
+  }
+  merge_device_ticks(devices, advance_devices(cycles));
+  hle_work_frames_.back().remaining_cycles -= cycles;
+  if (hle_work_frames_.back().remaining_cycles == 0) hle_work_frames_.pop_back();
+  const bool irq_serviced = auto_irq_ready() && service_pending_irq();
+  if (irq_serviced) reset_auto_irq_latency();
+  return result(cycles, irq_serviced);
+}
+
+std::optional<CoreSchedulerFetchStepResult> CoreScheduler::step_hle_work_from_pc() {
+  const bool thumb = cpu_.thumb_state();
+  const auto pc = cpu_.register_value(Arm7tdmi::kPc);
+  const auto work = advance_hle_work();
+  if (!work) return std::nullopt;
+  return CoreSchedulerFetchStepResult{
+      thumb ? CoreInstructionSet::thumb : CoreInstructionSet::arm,
+      static_cast<std::uint8_t>(thumb ? 2 : 4), pc, std::nullopt, work, 0,
+      false, false, false, false, false, false, 0, false};
+}
+
+std::uint64_t CoreScheduler::hle_memory_cycles(std::uint32_t address,
+                                               AccessWidth width, bool load) const {
+  const auto region = MemoryBus::classify(address).region;
+  const WaitStateControl defaults;
+  const auto& control = waitcnt_ != nullptr ? *waitcnt_ : defaults;
+  const auto timing = MemoryBus::timing(address, width, control);
+  std::uint64_t cycles = timing.nonsequential;
+  if (region == Region::game_pak_rom || region == Region::game_pak_save) {
+    ++cycles;
+    if (region == Region::game_pak_rom && width == AccessWidth::word) {
+      cycles += timing.sequential + 1U;
+    }
+  }
+  return cycles + (load ? 1U : 0U);
 }
 
 std::optional<CoreSchedulerStepResult> CoreScheduler::dispatch_hle_irq_vector(
@@ -3036,6 +3151,9 @@ CoreSchedulerStepResult CoreScheduler::step_simple_arm_fast_path(
 }
 
 CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
+  if (!hle_work_frames_.empty()) {
+    if (auto work = step_hle_work_from_pc()) return *work;
+  }
   const std::uint32_t fetch_address = cpu_.register_value(Arm7tdmi::kPc);
   const std::optional<CoreSchedulerStepResult> hle_irq_return =
       dispatch_hle_irq_return(fetch_address);
@@ -3209,6 +3327,9 @@ CoreSchedulerFetchStepResult CoreScheduler::step_arm_from_pc() {
 }
 
 CoreSchedulerFetchStepResult CoreScheduler::step_from_pc() {
+  if (!hle_work_frames_.empty()) {
+    if (auto work = step_hle_work_from_pc()) return *work;
+  }
   recover_thumb_state_from_rom_misfetch(cpu_, memory_, thumb_misfetch_recovery_count_);
   if (!cpu_.thumb_state()) {
     suppress_next_thumb_prefetch_execute_bubble_ = false;
@@ -3638,7 +3759,10 @@ bool CoreScheduler::hle_obj_affine_set() {
 }
 
 bool CoreScheduler::hle_lz77_decompress_from_source(
-    std::uint32_t source, std::vector<std::uint8_t>& output) {
+    std::uint32_t source, std::uint32_t destination, bool vram,
+    std::vector<std::uint8_t>& output, std::uint64_t& cycles,
+    std::uint32_t& source_end) {
+  cycles = 20U + hle_memory_cycles(source, AccessWidth::word, true);
   const std::optional<std::uint8_t> header_type = memory_.read8(source++);
   const std::optional<std::uint8_t> size0 = memory_.read8(source++);
   const std::optional<std::uint8_t> size1 = memory_.read8(source++);
@@ -3656,6 +3780,7 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
   // The BIOS accepts a zero-length header without consulting the type byte.
   // Emerald invokes this on an uncompressed, zero-prefixed trainer sprite.
   if (decompressed_size == 0) {
+    source_end = source;
     return true;
   }
   if (header_type.value() != 0x10U) {
@@ -3663,15 +3788,22 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
   }
   output.reserve(decompressed_size);
 
+  const auto read_byte = [&]() {
+    cycles += hle_memory_cycles(source, AccessWidth::byte, true);
+    return memory_.read8(source++);
+  };
+
   while (output.size() < decompressed_size) {
-    const std::optional<std::uint8_t> flags = memory_.read8(source++);
+    cycles += 14U;
+    const std::optional<std::uint8_t> flags = read_byte();
     if (!flags.has_value()) {
       return false;
     }
     for (std::uint8_t bit = 0; bit < 8U && output.size() < decompressed_size; ++bit) {
+      cycles += 32U;
       const bool compressed = (flags.value() & (0x80U >> bit)) != 0;
       if (!compressed) {
-        const std::optional<std::uint8_t> literal = memory_.read8(source++);
+        const std::optional<std::uint8_t> literal = read_byte();
         if (!literal.has_value()) {
           return false;
         }
@@ -3679,8 +3811,8 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
         continue;
       }
 
-      const std::optional<std::uint8_t> token_hi = memory_.read8(source++);
-      const std::optional<std::uint8_t> token_lo = memory_.read8(source++);
+      const std::optional<std::uint8_t> token_hi = read_byte();
+      const std::optional<std::uint8_t> token_lo = read_byte();
       if (!token_hi.has_value() || !token_lo.has_value()) {
         return false;
       }
@@ -3694,24 +3826,41 @@ bool CoreScheduler::hle_lz77_decompress_from_source(
       }
       for (std::uint32_t index = 0;
            index < length && output.size() < decompressed_size; ++index) {
+        auto address = destination + static_cast<std::uint32_t>(output.size()) -
+                       displacement;
+        if (vram) address &= ~1U;
+        cycles += 10U + (vram ? 4U : 0U) +
+                  hle_memory_cycles(address,
+                                    vram ? AccessWidth::halfword : AccessWidth::byte,
+                                    true);
         output.push_back(output.at(output.size() - displacement));
       }
     }
   }
+  source_end = source;
   return true;
 }
 
 bool CoreScheduler::hle_lz77_uncomp_wram() {
   std::vector<std::uint8_t> output;
-  if (!hle_lz77_decompress_from_source(cpu_.register_value(0), output)) {
+  const std::uint32_t dest = cpu_.register_value(1);
+  std::uint64_t cycles = 0;
+  std::uint32_t source_end = 0;
+  if (!hle_lz77_decompress_from_source(cpu_.register_value(0), dest, false,
+                                      output, cycles, source_end)) {
     return false;
   }
-  const std::uint32_t dest = cpu_.register_value(1);
   for (std::size_t offset = 0; offset < output.size(); ++offset) {
     if (!memory_.write8(dest + static_cast<std::uint32_t>(offset), output.at(offset))) {
       return false;
     }
+    cycles += hle_memory_cycles(dest + static_cast<std::uint32_t>(offset),
+                                AccessWidth::byte, false);
   }
+  cpu_.set_register(0, source_end);
+  cpu_.set_register(1, dest + static_cast<std::uint32_t>(output.size()));
+  cpu_.set_register(3, 0);
+  queue_hle_work(cycles + kHleLz77AdditionalCallCycles);
   return true;
 }
 
@@ -3831,10 +3980,23 @@ bool CoreScheduler::hle_bit_unpack() {
 
 bool CoreScheduler::hle_lz77_uncomp_vram() {
   std::vector<std::uint8_t> output;
-  if (!hle_lz77_decompress_from_source(cpu_.register_value(0), output)) {
+  const auto dest = cpu_.register_value(1) & ~1U;
+  std::uint64_t cycles = 0;
+  std::uint32_t source_end = 0;
+  if (!hle_lz77_decompress_from_source(cpu_.register_value(0), dest, true,
+                                      output, cycles, source_end) ||
+      !hle_write_decompressed_vram(output)) {
     return false;
   }
-  return hle_write_decompressed_vram(output);
+  for (std::size_t offset = 0; offset < output.size(); offset += 2) {
+    cycles += hle_memory_cycles(dest + static_cast<std::uint32_t>(offset),
+                                AccessWidth::halfword, false);
+  }
+  cpu_.set_register(0, source_end);
+  cpu_.set_register(1, dest + static_cast<std::uint32_t>(output.size()));
+  cpu_.set_register(3, 0);
+  queue_hle_work(cycles + kHleLz77AdditionalCallCycles);
+  return true;
 }
 
 bool CoreScheduler::hle_rle_decompress_from_source(

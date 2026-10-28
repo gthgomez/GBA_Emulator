@@ -321,6 +321,11 @@ void write_scheduler_state(std::vector<std::uint8_t>& out,
     write_bool(out, frame.long_timer_return_pending);
     write_bool(out, frame.slow_timer0_return_pending);
   }
+  write_u32(out, static_cast<std::uint32_t>(scheduler.hle_work_frames.size()));
+  for (const auto& frame : scheduler.hle_work_frames) {
+    write_u64(out, frame.remaining_cycles);
+    write_u32(out, frame.owner_irq_depth);
+  }
 }
 
 void write_io_state(std::vector<std::uint8_t>& out, const IoRegistersState& io) {
@@ -784,6 +789,23 @@ bool parse_scheduler_state(Reader& reader, CoreSchedulerState& scheduler,
     }
     if (count && !scheduler.hle_irq_return_lr) return false;
   }
+  if (version >= 6) {
+    std::uint32_t count = 0;
+    if (!reader.read_u32(count) || count > reader.remaining() / 12) return false;
+    const auto irq_depth = scheduler.hle_irq_outer_frames.size() +
+                           (scheduler.hle_irq_saved_registers ? 1U : 0U);
+    scheduler.hle_work_frames.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+      HleWorkFrame frame;
+      if (!reader.read_u64(frame.remaining_cycles) || frame.remaining_cycles == 0 ||
+          !reader.read_u32(frame.owner_irq_depth) || frame.owner_irq_depth > irq_depth ||
+          (i != 0 && frame.owner_irq_depth <=
+                         scheduler.hle_work_frames.back().owner_irq_depth)) {
+        return false;
+      }
+      scheduler.hle_work_frames.push_back(frame);
+    }
+  }
   return true;
 }
 
@@ -889,7 +911,7 @@ SaveStateDecodeResult SaveStateCodec::decode_into(
   if (!reader.read_u32(version)) {
     return {SaveStateDecodeStatus::corrupt_payload, version, encoded_hash};
   }
-  if (version != 3 && version != 4 && version != kVersion) {
+  if (version != 3 && version != 4 && version != 5 && version != kVersion) {
     // Includes every pre-v3 layout (e.g. v2 partial snapshots).
     return {SaveStateDecodeStatus::unsupported_version, version, encoded_hash};
   }
