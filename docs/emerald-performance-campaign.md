@@ -21,6 +21,23 @@ interactive goal. Record median, p95, p99, maximum frame step duration and count
 over the 16.67 ms budget; validate the SDL host separately. Existing core timing
 conformance gaps remain relevant even when a game appears to work.
 
+## Current checkpoint (2026-10-27)
+
+| Area | Latest bounded evidence |
+| --- | --- |
+| Integration | PR #51 merged as `b79da42cd29a`; 36 local verifiers, benchmarks, four CI jobs and two independent code reviews passed |
+| Presentation candidate | PR #52 waits before presenting; independently reviewed and exercised in diagnostic and normal hosts |
+| Story | Frame 200,040: Devon employee/Aqua grunt event in Petalburg Woods, after the Cascoon battle |
+| Repeat throughput | Two exact 10,800-frame normal-host replays: 88.22 / 88.29 FPS; three / two steps over 16.67 ms |
+| SDL delivery | Latest candidate: 10,800 diagnostic + 10,800 normal frames at 59.7290 / 59.7291 FPS; zero intervals over 25 ms, maxima 17.96 / 20.45 ms |
+| Determinism | Both normal replay states byte-identical to the recorded SDL state |
+| Audio | No queue-empty proxy or additional-input requests; finite postmix data; no physical output claim |
+| Intro | Every image in each 600-frame capture has an exact nearby match; residual end/VBlank lags are one/two frames |
+| Status | Active: isolate remaining timing/phase differences, presentation outliers and the original unreproduced unsupported stop |
+
+The sections below are chronological. Earlier measurements and pending-work
+statements describe their original candidate, not the latest integrated code.
+
 ## Initial observations
 
 OBSERVED: local unmodified Emerald is 16,777,216 bytes, SHA-256
@@ -1619,3 +1636,173 @@ VERIFIED: the repaired candidate passes all 36 core verifiers (183.9 seconds)
 and the benchmark checksum suite. The optional ROM video smoke was skipped.
 These gates include v3/v4/v5 migration and the new v6 pending-work round trips;
 optimized host intro and story measurements remain separate observations.
+
+VERIFIED: a fresh profile-guided host built from
+`73d597430b95ae1b8653a8282ead2cf99b528814` has SHA256
+`a04a43eb1037b77db1ff0e5f16001a786ddbdc27a76e49c08a729254a148e2bb`.
+Training used 600 boot frames and 600 frames from checkpoint 194,140; both
+completed successfully. Unexercised translation units reported missing profile
+counts. The changed training workload precludes a controlled speedup claim.
+
+VERIFIED: all 600 intro images at each capture phase still have an exact nearby
+reference match. End-of-frame same-frame matches increase from 249 to 297;
+uniquely matched frames now lag by one frame, replacing the four-frame lead.
+VBlank same-frame matches are 261 (previously 267), with a two-frame lag replacing
+the three-frame lead. The earliest unique image moves from core frame 207 to
+212 against reference frame 211. Thus charged decompression shifts this intro
+sequence by five frames; the residual timing/presentation difference is open.
+
+VERIFIED: four paired story segments (800 / 1,200 / 500 / 400 frames) loaded
+the older v5 Woods checkpoint and continued through a wild level-5 Cascoon
+encounter. All pairs were deterministic with zero fetch/unsupported failures
+and reported core audio underruns. Throughput ranges from 81.42 to 92.45 FPS.
+Eighteen steps exceeded 16.67 ms across 5,800 total steps, all in the first run
+of the 500-frame segment; its repeat had none. This variation does not identify
+the outlier cause. The last 400-frame pair measured 84.54 / 84.78 FPS with no
+over-budget steps. Latest story checkpoint: frame 197,040, map 24/11, x9/y27,
+Torchic level 10 and HP 23/29, battle still in progress. The v6 checkpoint was
+decoded successfully during this progression. Private evidence remains ignored.
+
+OBSERVED: PR #51 merged that exact candidate into `main` as
+`b79da42cd29afdd04468870e2cf39ad9ae57f07e` after all four Linux/Windows core
+and desktop jobs passed. The merge gate checked head `73d597430b95` and a clean
+merge state. The canonical checkout was fast-forwarded and observed clean.
+
+OBSERVED: a fresh diagnostic SDL run completed 10,800 frames from checkpoint
+194,140 with 360 recorded input changes, including movement and battle inputs.
+Average delivery was 59.7243 FPS against native 59.7275 Hz. Presentation interval
+p95/p99 upper bounds were 18/19 ms, maximum 26.0338 ms, with five intervals over
+25 ms. These outliers remain in the record; average real-time delivery alone
+does not establish the requested smoothness.
+
+VERIFIED: that capture contains 16,932 finite 44.1 kHz stereo postmix blocks,
+no overflow, no additional-input requests/bytes and no queue-empty proxy events.
+Step p95/p99 were 12.3265/13.1031 ms, maximum 20.8127 ms. Two emulation steps
+exceeded 16.67 ms (frames 564 and 6,559), fewer than the five late presentation
+intervals. Their raw thread-cycle counts were 65,975,582 and 54,445,241;
+these are not converted to elapsed time. This does not yet identify the cause
+of either emulation or presentation outliers. Silent postmix spans occur during
+the new battle workload; source-silence alignment has not been repeated for
+these spans. Postmix evidence is not physical speaker or OS loopback evidence.
+
+The diagnostic executable SHA256 is
+`ffb3756387803465073948eca3075819abc7458ce363fed7f0a9210fe5ede2c9`.
+It uses the profile-guided core with an unprofiled instrumented host, buffered
+timing/audio data and disk writes after the measured session. Its final v6
+checkpoint is at frame 204,940, Woods x21/y34, with released inputs and no active
+IRQ context. Normal-host exact replay and further outlier profiling follow.
+
+VERIFIED: two normal-host 10,800-frame replays of all 360 recorded input
+changes completed with identical video/audio/state results, zero execution
+failures and reported core audio underruns. Their final states are byte-identical
+to each other and to the SDL checkpoint: SHA256
+`11e10e093a555f43c77553b459b8411ccef5455b15347b5769819808f1722203`.
+Throughput was 88.2230/88.2942 FPS, p95 12.2532/12.2790 ms and p99
+13.1075/12.9763 ms. Maximum steps were 21.4162/22.0676 ms, with three/two
+over 16.67 ms. This verifies cross-host deterministic continuation for this
+recording and sustained headless throughput above target; isolated hitches
+and remaining intro/caller timing differences keep the full campaign open.
+
+VERIFIED: a diagnostic 1,000-frame replay pair records per-frame wall time,
+raw thread cycles and executed/skipped step counts without writing during the
+timed loop. Both runs have identical logical step counts for every frame and
+matching final states. SDL outlier frame 564 takes 12.7597/11.6196 ms in these
+repetitions, with exactly 96,602 executed steps and four skipped steps each.
+One new outlier occurs at frame 579 in the first run (19.2317 ms), versus
+11.8964 ms at the same frame in the repeat, both with 101,354 executed steps.
+The pair measures 88.73/89.85 FPS. This weakens a fixed guest-frame hotspot
+hypothesis; raw cycle variation does not establish a host scheduling cause.
+
+OBSERVED: buffered SDL phase logs associate four of the five late presentation
+intervals with normal 11.29–12.41 ms emulation steps and 0.25–0.31 ms presentation
+calls. The remaining interval includes the 20.81 ms emulation outlier. Work
+outside those measured phases remains to be accounted for; full flush/pacing
+durations and deadline errors are added only to the next ignored local probe.
+
+VERIFIED: a new 240-frame core timeline was compared with cached reference
+IWRAM captures. The main callback transition occurs at frame 176 in both.
+The core's VBlank counter is already one higher at equal capture frame; matching
+the moving intro image with a one-frame shift gives a counter difference of two.
+This further separates capture phase from setup progress; it does not establish
+a reason to adjust frame numbering or guest work by a fitted offset. Field
+interpretation uses the public [main structure](https://raw.githubusercontent.com/pret/pokeemerald/master/include/main.h).
+
+VERIFIED: the Cascoon battle finished, followed by the Devon employee event
+and the Aqua grunt's arrival at story frame 200,040. Paired 1,200/600/1,200-frame
+segments produced deterministic results with no execution failures or reported
+core audio underruns. Their FPS ranges from 88.09 to 89.65, with six steps over
+16.67 ms across 6,000 total steps. Latest story checkpoint remains separate from
+the recorded SDL movement workload.
+
+### Presentation deadline placement (2026-10-27)
+
+OBSERVED: the second 10,800-frame diagnostic SDL run records every frame's
+flush, wait and deadline error. It completes at 59.7241 FPS with p95/p99 interval
+upper bounds 18/19 ms, maximum 25.8484 ms and four intervals over 25 ms. Its
+16,933 postmix blocks are finite, without overflow or additional-input requests.
+Emulation step p95/p99 are 12.3225/13.0456 ms, maximum 19.2606 ms, three over
+16.67 ms. These are another bounded observation, not an improvement claim.
+
+VERIFIED: all four late intervals follow an early frame with 2.77–3.07 ms of
+work, 13.41–13.73 ms of intentional wait and only 0.0016–0.0026 ms of deadline
+error. The following frame takes 10.85–11.78 ms of work. Save flushes are at
+most 0.50 ms across the run. This demonstrates an ordering defect: presenting
+before waiting makes the next presentation interval include the change in work
+duration, even when the wait itself finishes on time.
+
+The host now queues audio, waits for its scheduled deadline, then presents and
+flushes the save. The deadline arithmetic, fast-forward bypass and reset/load
+behavior are retained. This is a one-call movement; the strongest alternative
+of reducing average core work would leave the measured interval variation in
+place. Rendering and scheduling variation still require actual host measurement.
+
+VERIFIED: all 36 core verifiers pass using the unchanged core binaries (3.2 s)
+and the benchmark checksum suite passes. One fresh independent read-only review
+of the frozen desktop source found no actionable defect, binding SHA256
+`a90d8bc02dae6751309f9415447e8c0504970d46024883a2d8d827da8645352a`.
+Optimized desktop build and post-change SDL validation remain pending here.
+
+VERIFIED: the optimized build from `7e5546bba52922f22e2a8bc1757339189d56b716`
+completed successfully. Normal executable SHA256:
+`a30938c24c0f880166e9434c394bfae421ff95e3160d5e57f8907972847b8b67`.
+Its 600-frame boot and 600-frame checkpoint training artifacts have identical
+ROM/run/video/audio/state fields to the previous build. The diagnostic host
+linked to this core has SHA256
+`17be3e1df1d3ed14bb660d2ca8e77d9d209bd985b467c5bdbd8babe2879d371d`.
+
+OBSERVED: the post-change diagnostic run completes 10,800 frames at 59.7290 FPS.
+
+| Presentation measurement | Before | After |
+| --- | ---: | ---: |
+| Raw p95 interval (ms) | 17.5476 | 16.9231 |
+| Raw p99 interval (ms) | 18.4297 | 17.2557 |
+| Raw p99.9 interval (ms) | 22.2876 | 17.6564 |
+| Maximum interval (ms) | 25.8484 | 17.9604 |
+| Intervals over 25 ms | 4 | 0 |
+| Fast-to-slow work transition median interval (ms) | 25.4542 | 16.7614 |
+
+There are twelve fast-to-slow work transitions in the new recording, with maximum
+interval 16.9958 ms. Correlation between interval and work-duration change falls
+from 0.910 to 0.086. This supports the measured ordering repair. The recordings
+use the same timed input pattern but different recorded frame positions and
+separate profile training, so they are not a controlled core-speedup comparison.
+The new run has no emulation steps over 16.67 ms and 16,931 finite postmix blocks,
+with no overflow, additional-input requests/bytes or queue-empty proxy events.
+
+OBSERVED: a separate run of the normal executable completes another 10,800 frames
+at 59.7291 FPS, with measured last-window rate 59.7204 FPS. Interval p95/p99 upper
+bounds are 17/18 ms, maximum 20.4454 ms, zero intervals over 25 ms and zero
+reported audio underruns. It uses movement/battle input and the same checkpoint;
+the normal host has no diagnostic postmix capture or automatic final-state dump.
+These two bounded runs establish native-rate delivery with improved pacing in
+the tested scenario; the campaign's remaining accuracy investigations stay open.
+
+VERIFIED: a separate arithmetic check explains the payload-dependent delta in
+all twelve nonempty ROM-caller controls, using their six zero-length controls
+to isolate the fixed call/fetch offset. INFERRED from the pinned reference
+[RAM-stall calculation](https://raw.githubusercontent.com/mgba-emu/mgba/7a12d6d/src/gba/memory.c):
+its eager HLE decoder charges VRAM halfword accesses at -2 cycles while the
+caller's ROM prefetch state remains active. Relative to normal read/write
+costs, the difference is four cycles per backreference byte and three per stored
+halfword. The fixed call/fetch offsets remain open. This is an oracle limitation;
+physical BIOS timing remains unverified.
