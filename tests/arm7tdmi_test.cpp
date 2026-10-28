@@ -2532,6 +2532,60 @@ int main() {
     }
   }
 
+  // IWRAM instruction/data accesses cannot overlap a cartridge prefetch.
+  // Cover every single-transfer width, including signed halfword loads.
+  {
+    auto storage = std::make_unique<MemoryBus>();
+    auto& ram = *storage;
+    constexpr std::uint32_t base = kCondAl | kPreIndexed | kUp | rn(1);
+    struct LoadCase { std::uint32_t arm; std::uint16_t thumb; std::uint32_t value; };
+    const LoadCase loads[] = {
+        {base | kSingleDataTransferImmediate | kLoad,
+         thumb_memory_immediate(false, true, 0, 1, 0), 0xAABB8001},
+        {base | kHalfwordDataTransferImmediate | kLoad,
+         thumb_memory_halfword_immediate(true, 0, 1, 0), 0x8001},
+        {base | kSignedHalfwordDataTransferImmediate | kLoad,
+         thumb_memory_register(0x7, 2, 1, 0), 0xFFFF8001},
+    };
+    for (const std::uint16_t control : {0U, 0x4000U, 0x4014U, 0x401CU}) {
+      WaitStateControl ram_wait;
+      ram_wait.write_control(control);
+      for (const auto& load : loads) {
+        for (const bool thumb : {false, true}) {
+          expect(ram.write32(0x03001000, 0xAABB8001), "seed IWRAM load widths");
+          Arm7tdmi ram_cpu;
+          ram_cpu.set_register(Arm7tdmi::kPc, 0x03000000);
+          ram_cpu.set_register(1, 0x03001000);
+          ram_cpu.set_register(2, 0);
+          const auto step = thumb
+              ? ram_cpu.step_thumb(load.thumb, ram, ram_wait, true, std::nullopt)
+              : ram_cpu.step_arm(load.arm, ram, ram_wait);
+          expect(step.status == ExecuteStatus::executed && step.elapsed_cycles == 3 &&
+                     ram_cpu.register_value(0) == load.value,
+                 "IWRAM single loads keep their internal cycle with prefetch enabled");
+        }
+      }
+      for (const bool halfword : {false, true}) {
+        for (const bool thumb : {false, true}) {
+          Arm7tdmi ram_cpu;
+          ram_cpu.set_register(Arm7tdmi::kPc, 0x03000000);
+          ram_cpu.set_register(0, 0x76543210);
+          ram_cpu.set_register(1, 0x03001000);
+          const auto arm_store = base | (halfword ? kHalfwordDataTransferImmediate
+                                                  : kSingleDataTransferImmediate);
+          const auto thumb_store = halfword
+              ? thumb_memory_halfword_immediate(false, 0, 1, 0)
+              : thumb_memory_immediate(false, false, 0, 1, 0);
+          const auto step = thumb ? ram_cpu.step_thumb(thumb_store, ram, ram_wait)
+                                  : ram_cpu.step_arm(arm_store, ram, ram_wait);
+          expect(step.status == ExecuteStatus::executed && step.elapsed_cycles == 2 &&
+                     ram.read16(0x03001000).value() == 0x3210,
+                 "IWRAM single stores charge one fetch and one data cycle");
+        }
+      }
+    }
+  }
+
   // Save-state roundtrip: every mutable CPU field survives save/load and the
   // hash matches the pre-save snapshot.
   const Arm7tdmi::State saved_state = cpu.save_state();
