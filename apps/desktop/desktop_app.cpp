@@ -70,6 +70,7 @@ DesktopApp::DesktopApp(HostOptions options)
     : options_(std::move(options)), override_rom_path_(options_.rom_path) {}
 
 DesktopApp::~DesktopApp() {
+  collect_save_state(true);
   close_all_gamepads();
   if (audio_stream_ != nullptr) {
     SDL_DestroyAudioStream(audio_stream_);
@@ -489,16 +490,50 @@ bool DesktopApp::write_save_state(int slot) {
     return false;
   }
   const std::string path = persistence::save_state_path(save_prefix_, slot);
-  const auto blob = gba::core::SaveStateCodec::encode(runtime_.session());
-  if (!persistence::write_file_atomic(path, blob)) {
-    std::cerr << "gba-desktop: failed to write save state: " << path << "\n";
+  collect_save_state(false);
+  if (save_state_writer_.busy()) {
+    std::cerr << "gba-desktop: previous save state is still in progress\n";
     return false;
   }
-  std::cerr << "gba-desktop: save state " << slot << " written to " << path << "\n";
-  return true;
+  try {
+    // The short capture remains on the emulation thread. Hashing, encoding
+    // and file IO run on a private machine, with no live emulator references.
+    auto snapshot = std::make_unique<gba::core::CoreSessionState>(
+        runtime_.session().save_state());
+    const bool started = save_state_writer_.start(
+        path, [snapshot = std::move(snapshot)]() mutable {
+          auto machine = std::make_unique<gba::core::CoreSession>();
+          machine->load_state(*snapshot);
+          snapshot.reset();
+          return gba::core::SaveStateCodec::encode(*machine);
+        });
+    if (!started) return false;
+    std::cerr << "gba-desktop: save state " << slot << " queued for " << path << "\n";
+    return true;
+  } catch (const std::exception& error) {
+    std::cerr << "gba-desktop: failed to start save state: " << path << ": "
+              << error.what() << "\n";
+    return false;
+  }
+}
+
+void DesktopApp::collect_save_state(bool wait) {
+  try {
+    const auto result = wait ? save_state_writer_.finish() : save_state_writer_.poll();
+    if (!result) return;
+    if (result->written) {
+      std::cerr << "gba-desktop: save state written to " << result->path << "\n";
+    } else {
+      std::cerr << "gba-desktop: failed to write save state: " << result->path
+                << ": " << result->error << "\n";
+    }
+  } catch (const std::exception& error) {
+    std::cerr << "gba-desktop: save state worker failed: " << error.what() << "\n";
+  }
 }
 
 bool DesktopApp::read_save_state(int slot) {
+  collect_save_state(true);
   if (save_prefix_.empty()) {
     std::cerr << "gba-desktop: no ROM loaded; cannot load save state\n";
     return false;
@@ -766,6 +801,7 @@ int DesktopApp::run() {
   std::optional<Clock::time_point> previous_present;
 
   while (running_) {
+    collect_save_state(false);
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       handle_event(event);

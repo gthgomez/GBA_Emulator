@@ -6,6 +6,7 @@
 
 #include "gba/core/emulator_runtime.hpp"
 #include "gba/core/save_state_codec.hpp"
+#include "async_save_writer.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -112,6 +113,7 @@ class DesktopApp {
   // a required write failed (callers decide whether that is fatal).
   bool flush_cartridge_save(bool force);
   bool write_save_state(int slot);
+  void collect_save_state(bool wait);
   bool read_save_state(int slot);
   bool read_save_state_path(const std::string& path, const std::string& label);
   void reset_runtime();
@@ -121,6 +123,7 @@ class DesktopApp {
   const std::string override_rom_path_;
   gba::core::EmulatorRuntime runtime_;
   HostStats stats_{};
+  AsyncSaveWriter save_state_writer_;
 
   SDL_Window* window_ = nullptr;
   SDL_Renderer* renderer_ = nullptr;

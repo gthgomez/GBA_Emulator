@@ -7,8 +7,13 @@
 // this runs as a plain headless g++ verifier like the core tests.
 
 #include "../apps/desktop/desktop_persistence.hpp"
+#include "../apps/desktop/async_save_writer.hpp"
 
 #include <cstdint>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <stdexcept>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -187,6 +192,53 @@ void test_save_paths(const fs::path& dir) {
          "save-state path independent of cartridge saving");
 }
 
+void test_async_save(const fs::path& dir) {
+  using gba::desktop::AsyncSaveWriter;
+  AsyncSaveWriter writer;
+  const std::string path = (dir / "async.state").u8string();
+  expect(write_file_atomic(path, bytes_of("previous")), "seed asynchronous destination");
+  std::promise<void> started, release;
+  auto began = started.get_future();
+  auto gate = release.get_future();
+  std::vector<std::uint8_t> captured = bytes_of("captured");
+  expect(writer.start(path, [bytes = captured, signal = std::move(started),
+                             gate = std::move(gate)]() mutable {
+    signal.set_value();
+    gate.wait();
+    return bytes;
+  }), "first async request starts");
+  expect(began.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
+         "worker runs independently of caller");
+  captured = bytes_of("changed live input");
+  expect(writer.busy() && !writer.poll(), "poll returns while encoder is blocked");
+  expect(contents_of(path) == "previous", "pending encode preserves existing save");
+  std::atomic<bool> second_called{false};
+  expect(!writer.start((dir / "wrong.state").u8string(), [&] {
+    second_called = true; return bytes_of("wrong");
+  }), "one pending save bounds worker count");
+  expect(!second_called, "rejected second job never runs");
+  release.set_value();
+  const auto result = writer.finish();
+  expect(result && result->written && result->path == path && result->error.empty(),
+         "finish joins and reports the captured destination");
+  expect(!writer.busy() && !writer.poll() && !writer.finish(), "result collected once");
+  expect(contents_of(path) == "captured", "worker uses owned capture, not changed inputs");
+  expect(!fs::exists(dir / "wrong.state"), "rejected job cannot write another destination");
+
+  expect(writer.start(path, []() -> std::vector<std::uint8_t> {
+    throw std::runtime_error("test encoder failure");
+  }), "writer can be reused after collecting result");
+  const auto exception = writer.finish();
+  expect(exception && !exception->written && exception->error == "test encoder failure",
+         "encoder exception becomes an observable failed result");
+  expect(contents_of(path) == "captured", "encoder failure preserves previous save");
+  const auto missing = (dir / "missing-parent" / "failed.state").u8string();
+  expect(writer.start(missing, [] { return bytes_of("failed"); }), "start failed-write probe");
+  const auto failure = writer.finish();
+  expect(failure && !failure->written && failure->path == missing && !failure->error.empty(),
+         "atomic write failure reported with destination");
+}
+
 }  // namespace
 
 int main() {
@@ -198,6 +250,7 @@ int main() {
   test_backup_preserves_rejected_save(dir);
   test_utf8_paths(dir);
   test_save_paths(dir);
+  test_async_save(dir);
 
   std::error_code ec;
   fs::remove_all(dir, ec);

@@ -78,17 +78,24 @@ so no button stays stuck.
 - Cartridge saves persist to `<rom>.sav` next to the ROM (or in
   `--save-directory`), imported at boot, flushed on exit and every ~5 s of dirty
   frames. Games with no cartridge-backed save never create a `.sav`.
-- Save states are `<rom>.state1` etc. (core `SaveStateCodec` v5 format). Because
+- Save states are `<rom>.state1` etc. (core `SaveStateCodec` v6 format). Because
   the codec snapshot is self-contained, the host additionally refuses a state
   that was captured from a different ROM or uses a different save type. Headless
   `--load-state` also checks both identities when `--save-type` is explicit;
   it never reinitializes backup memory over the restored save data.
   Snapshots support every selectable backup capacity, including both Flash128K
-  banks and their protocol state. The decoder still accepts v3/v4 states with
+  banks and their protocol state. The decoder still accepts v3–v5 states with
   their historical hashes, including Flash128K states written before the decoder
-  fix. New v5 hashes cover every byte of saved IRQ registers and wave RAM words;
-  the older formats did not hash their upper bytes. Older builds cannot read
-  newly written v5 states.
+  fix. Version 5 added hashes covering every byte of saved IRQ registers and
+  wave RAM words; the older formats did not hash their upper bytes. Version 6
+  also preserves pending HLE work and its owning IRQ depth. Older builds cannot
+  read newly written v6 states.
+- F5 captures the current machine, then encodes and writes that owned snapshot
+  in one background job. A second request reports busy until the first result
+  is collected. Completion or failure is reported on stderr. F8 and exit wait
+  for the pending save; changing ROM or resetting does not change its captured
+  contents or destination. The snapshot format and atomic file replacement are
+  the same as for synchronous/headless saves.
 - All save writes are replace-in-place safe: a sibling temp file is written and
   renamed over the destination, so a failed or interrupted write cannot truncate
   a good save. (This is crash-safe, not a power-loss durability guarantee.)

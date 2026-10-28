@@ -38,6 +38,52 @@ conformance gaps remain relevant even when a game appears to work.
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
 
+### Native double-battle save hitch investigation
+
+OBSERVED: an additional normal desktop run starts inside the double battle,
+receives 48 A-button pulses at three-second intervals, then F5 to save a
+checkpoint. It completes all 9,000 frames at 59.7286 FPS, with zero reported
+audio queue-empty events and p95/p99 presentation upper bounds of 18/18 ms.
+The final window shows the defeated trainers and free overworld; its saved
+state decodes successfully. One presentation interval is 55.3959 ms. This
+run does not pass the no-gaps-above-25-ms criterion.
+
+OBSERVED: a control with the same executable, starting checkpoint and A pulses,
+omitting F5, completes all 9,000 frames at 59.7287 FPS with zero reported
+queue-empty events, p95/p99 upper bounds of 18/18 ms, maximum 24.9518 ms and
+no gaps above 25 ms. Its final window also shows the free overworld. Native
+key delivery uses wall-clock timing and is not an exact frame-indexed replay.
+The aggregate reports do not timestamp the single gap against the save event.
+
+VERIFIED: a separate five-repeat probe of the saved 17,312,799-byte state
+produces byte-identical encodes and leaves the session hash unchanged:
+
+| Work | Observed milliseconds |
+| --- | ---: |
+| Whole-machine snapshot including destruction | 6.0796–7.4113 |
+| Memory snapshot including destruction | 2.8200–3.0420 |
+| Session hash | 17.4532–18.0970 |
+| Complete codec encode | 32.4024–36.4863 |
+| Atomic file write | 9.1970–9.8749 |
+
+These independently timed operations overlap logically; do not add all five
+rows together. The complete encode already includes snapshots and hashing.
+Source inspection establishes that F5 currently encodes and writes on the
+presentation thread. INFERRED: that synchronous work can explain a missed
+presentation budget. A candidate captures an owned machine on the main thread
+and uses one bounded background job for the unchanged codec and atomic writer.
+Requests report busy while a result remains pending; F8 and exit drain it.
+The focused persistence test, all 36 core tests and mandatory benchmarks pass.
+The first full attempt stopped at test 35 because the new PowerShell thread
+flag was split into characters; the corrected array passes all 36 tests in
+233.9 seconds. Native comparison and independent review are pending, so the
+candidate is not yet accepted as a performance fix.
+
+Private evidence: `build/emerald-double-battle-normal-9000`,
+`build/emerald-double-battle-normal-9000-no-save`,
+`build/save-state-stages-baseline/stages.csv`,
+`build/desktop-save-worker-plan.md` and the candidate verification logs.
+
 ### Merged candidate, double battle and scenery isolation
 
 VERIFIED: PR #55 merged at `b55ca48c09035cd281084092b0117bc4095403bc`.
