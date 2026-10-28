@@ -21,11 +21,39 @@ interactive goal. Record median, p95, p99, maximum frame step duration and count
 over the 16.67 ms budget; validate the SDL host separately. Existing core timing
 conformance gaps remain relevant even when a game appears to work.
 
+## Extended save stress and snapshot ownership follow-up (2026-10-28)
+
+OBSERVED: extending the save-worker experiment to 18,000 native frames and fifty
+F5 requests exposes remaining delivery failures. All fifty saves complete, but
+average delivery is 59.7119 FPS (last window 59.4127), with seventeen reported
+empty audio queues, nine presentation gaps above 25 ms and a 36.6531 ms maximum.
+This fails the campaign's smoothness criterion. The earlier 3,600-frame success
+is bounded evidence; it does not establish sustained delivery. Queue-empty
+reports are a host proxy, not direct measurements of physical audio output.
+PR #57 remains a draft despite all four final-head CI jobs passing.
+
+OBSERVED: a separate five-run stage probe measured machine snapshot capture at
+6.0796–7.4113 ms, before background encoding starts. That capture copies the
+16 MiB cartridge twice through the value-based machine snapshot. INFERRED:
+removing those immutable-byte copies should recover presentation-thread budget;
+the aggregate native logs do not prove that this accounts for every long gap.
+
+The new candidate shares immutable cartridge ownership between `MemoryBus`
+copies. Loading a cartridge creates owned bytes; reload and clear replace only
+that bus's owner. Exported ROM vectors and `MemoryBus::State` remain independent
+values. Hashing and the version 6 codec retain their existing byte order and
+contents. This avoids a separate host ROM cache or a second snapshot API.
+VERIFIED: all 36 core verifiers pass (267.2 s), as does the mandatory benchmark
+checksum suite. A fresh independent read-only review binds all three changed
+source/test hashes and finds no actionable introduced defects. Exact-byte probes
+and repeated native measurements remain pending for this candidate. Existing
+results below describe the earlier executable unless explicitly stated otherwise.
+
 ## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `1bc73473b5a0` passes all four Linux/Windows CI jobs |
+| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 final documentation head `36d9d2700261` passes all four Linux/Windows CI jobs; draft remains open |
 | Current iteration | Desktop save-worker follow-up passes local checks and a fresh independent source review; its normal executable SHA-256 begins `c376921db938` |
 | Story | Winston, Haley and Twins Gina & Mia defeated; frame 245,160 retains Rustboro Center's closing dialogue after natural healing: Torchic level 12, 34/34 HP; Wurmple level 4, 18/18 HP |
 | Repeat throughput | Latest 900-frame healing pair: 79.367395 / 78.734339 FPS, p95 steps 13.4924 / 13.6073 ms; two / five steps above 16.67 ms |
