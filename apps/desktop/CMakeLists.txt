@@ -6,7 +6,8 @@ set(GBA_DESKTOP_SOURCES
 
 add_executable(gba-desktop ${GBA_DESKTOP_SOURCES})
 
-target_link_libraries(gba-desktop PRIVATE gba_core SDL3::SDL3)
+find_package(Threads REQUIRED)
+target_link_libraries(gba-desktop PRIVATE gba_core SDL3::SDL3 Threads::Threads)
 target_include_directories(gba-desktop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 
 # Engine identity for lab artifacts. FALLBACK keeps tarball-without-git builds

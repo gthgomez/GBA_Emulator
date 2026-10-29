@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -301,7 +302,16 @@ class MemoryBus {
   std::array<std::uint8_t, kPaletteSize> palette_;
   std::array<std::uint8_t, kVramSize> vram_;
   std::array<std::uint8_t, kOamSize> oam_;
-  std::vector<std::uint8_t> game_pak_rom_;
+  // Cartridge bytes are immutable. Machine snapshots share their ownership;
+  // loading another cartridge replaces only this bus's owner.
+  std::shared_ptr<const std::vector<std::uint8_t>> game_pak_rom_;
+  [[nodiscard]] const std::vector<std::uint8_t>& rom_bytes() const {
+    if (game_pak_rom_) {
+      return *game_pak_rom_;
+    }
+    static const std::vector<std::uint8_t> empty;
+    return empty;
+  }
   std::vector<std::uint8_t> game_pak_save_;
   std::array<std::uint8_t, 256> mgba_debug_string_;
   std::string debug_output_;

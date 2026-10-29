@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -44,6 +45,33 @@ int main() {
   expect(session.memory().read8(0x02000000).value_or(0xFF) == 0,
          "RegisterRamReset clears EWRAM");
   expect(session.memory().read8(0x08000000).has_value(), "ROM still mapped after reset");
+
+  // BIOS RegisterRamReset always replaces DISPCNT with forced blank, even
+  // when no RAM flags are selected. Games use this to apply GPU writes during
+  // initialization instead of waiting for an interrupt that is not enabled yet.
+  for (const std::uint32_t reset_flags : {0U, 1U, 0x80U, 0x100U}) {
+    auto reset = std::make_unique<CoreSession>();
+    std::vector<std::uint8_t> reset_rom(16);
+    write_word(reset_rom, 0, kArmSwiRegisterRamReset);
+    expect(reset->memory().load_game_pak_rom(reset_rom), "display-reset ROM loads");
+    reset->configure_for_game_boot();
+    expect(reset->ppu().write_lcd_control(0x04000000U, 0x1F03U),
+           "seed enabled display layers before BIOS reset");
+    expect(reset->memory().write8(0x02000000U, 0xA5U),
+           "seed RAM for display-reset flag selection");
+    reset->cpu().set_register(0, reset_flags);
+    const auto result = reset->step();
+    expect(!result.fetch_failed && result.step.has_value() &&
+               result.step->cpu_step.status == ExecuteStatus::executed,
+           "display-reset SWI executes");
+    expect(reset->ppu().render_control().dispcnt == 0x0080U,
+           "RegisterRamReset unconditionally replaces DISPCNT with forced blank");
+    expect(reset->memory().read16(0x04000000U).value_or(0) == 0x0080U,
+           "BIOS forced blank is visible through the normal IO facade");
+    expect(reset->memory().read8(0x02000000U).value_or(0xFFU) ==
+               ((reset_flags & 1U) != 0 ? 0U : 0xA5U),
+           "unconditional display reset preserves RAM flag selection");
+  }
 
   // Some games call the BIOS on a zero-filled header. A zero output size
   // completes without touching the destination, even if the type byte is zero.

@@ -306,14 +306,14 @@ std::optional<std::uint8_t> MemoryBus::read8(std::uint32_t address) const {
       }
       return 0;
     case Region::game_pak_rom:
-      if (game_pak_rom_.empty()) {
+      if (rom_bytes().empty()) {
         return std::nullopt;
       }
-      if (info.offset >= game_pak_rom_.size()) {
+      if (info.offset >= rom_bytes().size()) {
         const std::uint32_t open_bus = game_pak_open_bus_aligned_word(address);
         return static_cast<std::uint8_t>((open_bus >> ((address & 0x3U) * 8U)) & 0xFFU);
       }
-      return game_pak_rom_[info.offset];
+      return rom_bytes()[info.offset];
     case Region::game_pak_save:
       return read_game_pak_save_byte(info.offset);
     case Region::io:
@@ -372,14 +372,14 @@ std::optional<std::uint16_t> MemoryBus::read16(std::uint32_t address) const {
       return static_cast<std::uint16_t>(oam_[info.offset]) |
              static_cast<std::uint16_t>(oam_[info.offset + 1] << 8);
     case Region::game_pak_rom: {
-      if (game_pak_rom_.empty()) {
+      if (rom_bytes().empty()) {
         return std::nullopt;
       }
-      if (info.offset + 1 >= game_pak_rom_.size()) {
+      if (info.offset + 1 >= rom_bytes().size()) {
         break;
       }
-      return static_cast<std::uint16_t>(game_pak_rom_[info.offset]) |
-             static_cast<std::uint16_t>(game_pak_rom_[info.offset + 1] << 8);
+      return static_cast<std::uint16_t>(rom_bytes()[info.offset]) |
+             static_cast<std::uint16_t>(rom_bytes()[info.offset + 1] << 8);
     }
     default:
       break;
@@ -404,8 +404,8 @@ std::optional<std::uint32_t> MemoryBus::read32(std::uint32_t address) const {
     }
     return repeat_byte32(byte.value());
   }
-  if (direct_info.region == Region::game_pak_rom && !game_pak_rom_.empty() &&
-      direct_info.offset >= game_pak_rom_.size()) {
+  if (direct_info.region == Region::game_pak_rom && !rom_bytes().empty() &&
+      direct_info.offset >= rom_bytes().size()) {
     return game_pak_open_bus_word(address);
   }
 
@@ -461,17 +461,17 @@ std::optional<std::uint32_t> MemoryBus::read32(std::uint32_t address) const {
       return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
     }
     case Region::game_pak_rom: {
-      if (game_pak_rom_.empty()) {
+      if (rom_bytes().empty()) {
         return std::nullopt;
       }
-      if (info.offset + 3 >= game_pak_rom_.size()) {
+      if (info.offset + 3 >= rom_bytes().size()) {
         break;
       }
       const std::uint32_t aligned_value =
-          static_cast<std::uint32_t>(game_pak_rom_[info.offset]) |
-          (static_cast<std::uint32_t>(game_pak_rom_[info.offset + 1]) << 8) |
-          (static_cast<std::uint32_t>(game_pak_rom_[info.offset + 2]) << 16) |
-          (static_cast<std::uint32_t>(game_pak_rom_[info.offset + 3]) << 24);
+          static_cast<std::uint32_t>(rom_bytes()[info.offset]) |
+          (static_cast<std::uint32_t>(rom_bytes()[info.offset + 1]) << 8) |
+          (static_cast<std::uint32_t>(rom_bytes()[info.offset + 2]) << 16) |
+          (static_cast<std::uint32_t>(rom_bytes()[info.offset + 3]) << 24);
       return rotate_right(aligned_value, static_cast<std::uint8_t>((address & 0x3U) * 8U));
     }
     default:
@@ -507,43 +507,43 @@ bool MemoryBus::load_game_pak_rom(const std::vector<std::uint8_t>& data) {
     return false;
   }
 
-  game_pak_rom_ = data;
+  game_pak_rom_ = std::make_shared<const std::vector<std::uint8_t>>(data);
   return true;
 }
 
 void MemoryBus::clear_game_pak_rom() {
-  game_pak_rom_.clear();
+  game_pak_rom_.reset();
 }
 
 bool MemoryBus::has_game_pak_rom() const {
-  return !game_pak_rom_.empty();
+  return !rom_bytes().empty();
 }
 
 std::size_t MemoryBus::game_pak_rom_size() const {
-  return game_pak_rom_.size();
+  return rom_bytes().size();
 }
 
 std::vector<std::uint8_t> MemoryBus::export_game_pak_rom() const {
-  return game_pak_rom_;
+  return rom_bytes();
 }
 
 std::optional<CartridgeHeader> MemoryBus::game_pak_header() const {
-  if (game_pak_rom_.size() < kMinimumCartridgeHeaderSize) {
+  if (rom_bytes().size() < kMinimumCartridgeHeaderSize) {
     return std::nullopt;
   }
 
   CartridgeHeader header{};
-  std::copy_n(game_pak_rom_.begin() + kCartridgeTitleOffset, kCartridgeTitleSize,
+  std::copy_n(rom_bytes().begin() + kCartridgeTitleOffset, kCartridgeTitleSize,
               header.title.begin());
-  std::copy_n(game_pak_rom_.begin() + kCartridgeGameCodeOffset, kCartridgeGameCodeSize,
+  std::copy_n(rom_bytes().begin() + kCartridgeGameCodeOffset, kCartridgeGameCodeSize,
               header.game_code.begin());
-  std::copy_n(game_pak_rom_.begin() + kCartridgeMakerCodeOffset, kCartridgeMakerCodeSize,
+  std::copy_n(rom_bytes().begin() + kCartridgeMakerCodeOffset, kCartridgeMakerCodeSize,
               header.maker_code.begin());
-  header.fixed_value = game_pak_rom_.at(kCartridgeFixedValueOffset);
-  header.unit_code = game_pak_rom_.at(kCartridgeUnitCodeOffset);
-  header.device_type = game_pak_rom_.at(kCartridgeDeviceTypeOffset);
-  header.version = game_pak_rom_.at(kCartridgeVersionOffset);
-  header.complement_check = game_pak_rom_.at(kCartridgeComplementCheckOffset);
+  header.fixed_value = rom_bytes().at(kCartridgeFixedValueOffset);
+  header.unit_code = rom_bytes().at(kCartridgeUnitCodeOffset);
+  header.device_type = rom_bytes().at(kCartridgeDeviceTypeOffset);
+  header.version = rom_bytes().at(kCartridgeVersionOffset);
+  header.complement_check = rom_bytes().at(kCartridgeComplementCheckOffset);
   header.fixed_value_valid = header.fixed_value == kCartridgeExpectedFixedValue;
   return header;
 }
@@ -561,7 +561,7 @@ bool MemoryBus::cartridge_complement_valid(const std::vector<std::uint8_t>& rom)
 }
 
 bool MemoryBus::cartridge_header_complement_valid() const {
-  return cartridge_complement_valid(game_pak_rom_);
+  return cartridge_complement_valid(rom_bytes());
 }
 
 bool MemoryBus::cartridge_header_is_valid() const {
@@ -571,15 +571,15 @@ bool MemoryBus::cartridge_header_is_valid() const {
 }
 
 std::optional<GamePakSaveType> MemoryBus::detect_game_pak_save_type() const {
-  if (game_pak_rom_.empty()) {
+  if (rom_bytes().empty()) {
     return std::nullopt;
   }
 
-  const bool has_sram = contains_ascii_marker(game_pak_rom_, "SRAM_V");
-  const bool has_flash128 = contains_ascii_marker(game_pak_rom_, "FLASH1M_V");
-  const bool has_flash64 = contains_ascii_marker(game_pak_rom_, "FLASH512_V") ||
-                           contains_ascii_marker(game_pak_rom_, "FLASH_V");
-  const bool has_eeprom = contains_ascii_marker(game_pak_rom_, "EEPROM_V");
+  const bool has_sram = contains_ascii_marker(rom_bytes(), "SRAM_V");
+  const bool has_flash128 = contains_ascii_marker(rom_bytes(), "FLASH1M_V");
+  const bool has_flash64 = contains_ascii_marker(rom_bytes(), "FLASH512_V") ||
+                           contains_ascii_marker(rom_bytes(), "FLASH_V");
+  const bool has_eeprom = contains_ascii_marker(rom_bytes(), "EEPROM_V");
   const int found_kinds = static_cast<int>(has_sram) + static_cast<int>(has_flash128) +
                           static_cast<int>(has_flash64) + static_cast<int>(has_eeprom);
   if (found_kinds != 1) {
@@ -715,7 +715,7 @@ std::uint64_t MemoryBus::state_hash() const {
   hasher.add_bytes(palette_);
   hasher.add_bytes(vram_);
   hasher.add_bytes(oam_);
-  hasher.add_bytes(game_pak_rom_);
+  hasher.add_bytes(rom_bytes());
   hasher.add_u8(static_cast<std::uint8_t>(game_pak_save_type_));
   hasher.add_u8(static_cast<std::uint8_t>(flash_command_state_));
   hasher.add_u8(flash_id_mode_ ? 1U : 0U);
@@ -735,7 +735,7 @@ MemoryBus::State MemoryBus::save_state() const {
   state.palette = palette_;
   state.vram = vram_;
   state.oam = oam_;
-  state.game_pak_rom = game_pak_rom_;
+  state.game_pak_rom = rom_bytes();
   state.game_pak_save = game_pak_save_;
   state.game_pak_save_type = game_pak_save_type_;
   state.flash_command_state = flash_command_state_;
@@ -779,7 +779,9 @@ bool MemoryBus::load_state(const State& state) {
   palette_ = state.palette;
   vram_ = state.vram;
   oam_ = state.oam;
-  game_pak_rom_ = state.game_pak_rom;
+  game_pak_rom_ = state.game_pak_rom.empty()
+                      ? nullptr
+                      : std::make_shared<const std::vector<std::uint8_t>>(state.game_pak_rom);
   game_pak_save_ = state.game_pak_save;
   game_pak_save_type_ = state.game_pak_save_type;
   flash_command_state_ = state.flash_command_state;

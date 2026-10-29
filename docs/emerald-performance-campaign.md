@@ -21,22 +21,426 @@ interactive goal. Record median, p95, p99, maximum frame step duration and count
 over the 16.67 ms budget; validate the SDL host separately. Existing core timing
 conformance gaps remain relevant even when a game appears to work.
 
+## Extended save stress and snapshot ownership follow-up (2026-10-28)
+
+OBSERVED: extending the save-worker experiment to 18,000 native frames and fifty
+F5 requests exposes remaining delivery failures. All fifty saves complete, but
+average delivery is 59.7119 FPS (last window 59.4127), with seventeen reported
+empty audio queues, nine presentation gaps above 25 ms and a 36.6531 ms maximum.
+This fails the campaign's smoothness criterion. The earlier 3,600-frame success
+is bounded evidence; it does not establish sustained delivery. Queue-empty
+reports are a host proxy, not direct measurements of physical audio output.
+PR #57 remains a draft despite all four final-head CI jobs passing.
+
+OBSERVED: a separate five-run stage probe measured machine snapshot capture at
+6.0796–7.4113 ms, before background encoding starts. That capture copies the
+16 MiB cartridge twice through the value-based machine snapshot. INFERRED:
+removing those immutable-byte copies should recover presentation-thread budget;
+the aggregate native logs do not prove that this accounts for every long gap.
+
+The new candidate shares immutable cartridge ownership between `MemoryBus`
+copies. Loading a cartridge creates owned bytes; reload and clear replace only
+that bus's owner. Exported ROM vectors and `MemoryBus::State` remain independent
+values. Hashing and the version 6 codec retain their existing byte order and
+contents. This avoids a separate host ROM cache or a second snapshot API.
+VERIFIED: all 36 core verifiers pass (267.2 s), as does the mandatory benchmark
+checksum suite. A fresh independent read-only review binds all three changed
+source/test hashes and finds no actionable introduced defects.
+
+A fresh optimized build from `f821da626d43` has executable SHA256
+`f726f3e5910a4ef3c9f4085d60749c4799149602e4a6fecd004f17b043d32fe5`.
+Its 600-frame boot and checkpoint training ROM/run/video/audio/state fields
+exactly match the previous build. All three desktop smoke checks pass. The
+first local smoke wrapper selected a nonexistent build path; that fixture
+failure is retained, and corrected wrappers use fresh evidence directories.
+All four CI jobs pass for source `f821da626d43` (run 40778577069).
+
+VERIFIED: repeating the same five-encode probe against the rebuilt core produces
+five byte-identical 17,312,799-byte version 6 states and leaves the live machine
+hash unchanged. Machine snapshot capture takes 0.4341–0.6016 ms; the original
+probe measured 6.0796–7.4113 ms. Value-based memory export still takes
+2.8321–3.6343 ms and remains on the worker during F5 encoding. These are stage
+measurements on this host, not proof that every delivery gap is resolved.
+OBSERVED: the repeated normal 18,000-frame/fifty-save experiment completes all
+frames and saves at 59.7280 FPS (last window 59.7305), matching nominal GBA rate.
+It still FAILS smoothness: four queue-empty reports, eight gaps above 25 ms,
+maximum 30.1045 ms. The separate owned-window F5/F8/F5/exit lifecycle check passes.
+A private buffered stage trace is now being used to distinguish event handling,
+emulation, audio submission, pacing, presentation and cartridge-save flushing.
+These instrumented results will not replace normal-executable acceptance.
+PR #57 remains a draft; sustained smooth delivery is still unresolved.
+
+### Buffered stage trace and exact-work replay
+
+OBSERVED: the first private 9,000-frame/twenty-five-save trace reports zero
+queue-empty events and no intervals above 25 ms (maximum 24.6466 ms), so it does
+not reproduce the normal long-run failure. A second private 18,000-frame/fifty-save
+trace averages 59.7280 FPS with two queue-empty reports and one 25.7487 ms gap.
+At that gap, frame 1,371 spends 25.1095 ms in `step_frame`; event handling, audio
+submission, pacing, presentation and save flushing each take below 0.6 ms, and
+no save worker is pending. The two queue-empty reports follow at frames
+1,373/1,374. This localizes the measured episode to emulation-step wall time;
+it does not prove the cause of the earlier normal executable's eight gaps.
+
+OBSERVED: Windows thread CPU-time samples here advance in 15.625 ms increments
+and sometimes exceed a frame's wall duration. They cannot reliably classify an
+individual frame. Cycle counts and the full buffered timeline remain retained.
+Two fresh 1,800-frame headless replays exactly match every native frame's
+executed/skipped instruction counts and finish with byte-identical encoded
+states. Frame 1,371 takes 13.4802 / 12.8740 ms in those replays, rather than
+25.1095 ms. INFERRED: the large cost at that guest frame is not repeatable guest
+work alone. Host execution conditions remain unresolved; these measurements do
+not identify a new core correctness defect or prove an operating-system cause.
+
+A further controlled experiment uses the unchanged normal executable and raises
+only its owned UI/emulation thread from normal priority to one level above
+normal. It is a diagnostic runtime setting, not an implemented product change;
+normal acceptance and a scheduling comparison remain pending.
+
+### Scheduling control and loaded-ROM getter probe
+
+OBSERVED: the one-level priority experiment uses the same normal executable,
+checkpoint and fifty-save/18,000-frame workload. It averages 59.7281 FPS with
+zero queue-empty reports, but has two gaps above 25 ms (maximum 25.7402 ms).
+The subsequent default-priority control averages 59.7280 FPS, also with zero
+queue-empty reports, and has one gap above 25 ms (maximum 27.2794 ms).
+Neither passes the strict smoothness criterion. These measurements do not
+establish a priority benefit, so no product scheduling change is introduced.
+
+OBSERVED: private program-counter sampling of the owned headless emulator collects
+1,990 samples. Containing functions include device advancement (19.65%), the
+runtime frame loop (16.73%), scanline rendering (11.76%) and halfword reads
+(9.10%). Suspension perturbs execution, and inlined code is attributed to its
+containing function; these are approximate samples, not exact function timings.
+Disassembly shows loaded-ROM halfword reads repeatedly testing initialization
+of the getter's fallback empty vector. An early loaded-owner return can avoid
+that guard without changing cartridge bytes or emulated bus timing.
+
+A private synthetic halfword-read experiment rebuilds every translation unit
+against each getter variant with identical compiler flags. The first series
+shows substantial warmup drift and is inconclusive. After a fixed 500 ms warmup,
+ABBA and BAAB orders give baseline medians 10.02668 / 10.11600 ns per read for
+the two address windows, versus candidate 9.69475 / 9.68135 ns. All checksums
+match. Ranges overlap and host execution varies; this does not establish a
+whole-emulator speedup.
+
+VERIFIED: the small early-return candidate passes all 36 core tests (255.6 s)
+and mandatory benchmark checksums. A fresh independent read-only review binds
+the updated header and unchanged bus/test hashes and finds no introduced
+correctness defects.
+
+VERIFIED: source `637560a09fe0` builds a fresh optimized executable with SHA256
+`45d8450fd1b4a14392c757f791c6c3d4b5031cbe26f155719220babcc52a9e8b`.
+Its 600-frame boot and checkpoint training ROM/run/video/audio/state fields match
+the preceding build. All three desktop smokes, the owned-window F5/F8/F5/exit
+lifecycle check and all four CI jobs pass (run 40785341768). Five encoded version 6
+states remain byte-identical to the existing 17,312,799-byte input, with unchanged
+live state hashes. Capture takes 0.4423–0.6401 ms; full encoding takes
+26.2404–26.9979 ms. The observed write range, 9.1875–17.3076 ms, retains its outlier.
+
+OBSERVED: eight serial 600-frame field runs in ABBA/BAAB order compare the prior
+and new optimized executables. Every ROM/run/video/audio/state field matches.
+Median throughput rises from 77.1533 to 79.5190 FPS; total step time ranges are
+7,759.1759–7,779.8024 ms versus 7,466.7847–7,545.8646 ms. Every new-build run is
+faster in this bounded comparison. This measures complete optimized builds on
+this host, not a universal or isolated source-level speedup.
+
+OBSERVED: the new normal desktop completes 18,000 frames and all fifty saves at
+59.7280 FPS (last window 59.7269), with zero queue-empty reports and p95/p99
+presentation bins of 18 ms. It still FAILS smoothness: two intervals exceed
+25 ms, with maximum 26.1360 ms. PR #57 remains a draft.
+
+### Repair configured-core verifier registration
+
+VERIFIED: configuring with `GBA_BUILD_TESTS=ON` fails before the fix because the
+root calls `add_subdirectory(tests)` but `tests/CMakeLists.txt` is absent. The new
+registration builds the existing verifier sources against the configured core
+and Threads, with the existing C++17 requirement and no SDL dependency when the
+desktop is disabled. No test sources or assertions change. Actual CTest names,
+PowerShell runner identities and source stems match exactly: 36 verifiers.
+
+VERIFIED: the previously failing core-only configuration now builds successfully;
+all 36 CTest verifiers pass in 5.09 s. The canonical PowerShell runner also passes
+all 36 (3.4 s, valid cached binaries), and mandatory benchmark checksums pass.
+A fresh independent read-only review finds no actionable issue and binds the
+new CMake file's SHA256
+`043c3f1d3654baf171099ab8631b82112761447d1639481b238332506911bc18`.
+The canonical shell runners remain unchanged. This optional path enables checks
+against the exact configured archive before measuring further compiler variants.
+
+### Compiler and timer candidates rejected by measurement
+
+VERIFIED: all four Linux/Windows CI jobs pass source `929ec57` (run 40788763072).
+A private build adds `-march=znver3 -mtune=znver3` to the existing serial LTO/PGO
+recipe for this host's Ryzen 7 5800HS. All 36 verifiers pass against its configured
+optimized core in 2.18 s. Boot/checkpoint training fields remain identical.
+Eight serial 600-frame ABBA/BAAB field runs preserve every ROM/run/video/audio/
+state field but show no useful gain: generic median 79.4669 FPS versus tuned
+79.4117 FPS, with overlapping total-step ranges. The tuned executable is retained
+as an experiment; production flags are unchanged. Its complete 3,600-frame intro
+capture and encoded final state are byte-identical to the existing capture.
+
+OBSERVED: a private timer candidate replaces division by the four power-of-two
+prescalers with shifts and masks. A deterministic 200,000-operation probe covers
+register writes, deferred starts, cascades, save/load, IRQ acknowledgements and
+cycle counters through 2^60. Every full timer/IRQ record matches byte for byte.
+Nevertheless, warmed ten-million-tick ABBA/BAAB windows give baseline/candidate
+median costs of 8.8701/9.2769, 5.7491/6.1241, 5.6929/5.8952 and 5.3483/5.6964 ns
+for selectors 0..3. Checksums match, but each candidate median is worse. This
+candidate is rejected; production timer code remains unchanged. These isolated
+measurements do not establish whole-emulator timing differences.
+
+OBSERVED limitation: an initial unchanged-baseline probe placed the cycle counter
+near `UINT64_MAX` and ceased making practical progress. Rounding a prescaler edge
+through unsigned wrap can imply an enormous number of overflow iterations. The
+owned process was stopped and its partial trace retained. The later comparison
+explicitly excludes counter wraparound; it does not claim to fix that pre-existing
+synthetic extreme-state behavior.
+
+### Intro RNG sequence and first observed phase difference
+
+VERIFIED: new read-only 240-frame RAM timelines show that both implementations
+start with seed zero. Every observed RNG value equals the same generator's value
+at its recorded call count. The first same-capture-frame mismatch is already at
+frame 2: our runtime has made zero calls, the reference one. At frame 240 the
+counts are 240 and 241. Thus the observed difference is call phase/count, rather
+than a different seed or RNG arithmetic in these captures.
+
+VERIFIED: a private instruction-level trace matches all 240 normal-runtime
+frame-end RNG/count/gender/VBlank-counter observations. It identifies 238 calls
+from the VBlank handler and one each from two other callers. The intro-load call
+occurs at frame 205, count 205; its high-halfword parity selects gender zero.
+At reference frame 205, count 206 and gender one are observed. DOCUMENTED: the
+game's [VBlank handler](https://raw.githubusercontent.com/pret/pokeemerald/master/src/main.c)
+advances the RNG, and its [intro loader](https://raw.githubusercontent.com/pret/pokeemerald/master/src/intro.c)
+uses a random value for rider choice. INFERRED: the different call indices
+predict the selected rider difference. Its initial timing cause and
+physical-hardware truth remain unresolved. No RNG or game RAM overrides are
+introduced into production or the story runs.
+
+OBSERVED: the reference's initial serialized state has VCOUNT 126 and its next
+video event after 120 cycles; its first three calls return at VCOUNT 160 with
+master-cycle values 41,001 / 321,899 / 602,800. Our normal runtime returns at
+VCOUNT zero after 280,897 / 561,792 / 842,688 scheduler cycles. DOCUMENTED: the
+pinned reference's [video reset](https://raw.githubusercontent.com/mgba-emu/mgba/7a12d6d/src/gba/video.c)
+uses scanline 126 without a full BIOS and explicitly leaves its exact hardware
+phase unverified. These capture numbers are not equivalent elapsed boot time.
+
+VERIFIED: a private control changes only our initial PPU line/cycle to 126/888
+and samples at the nominal reference VBlank times. Both default and adjusted
+initial-phase controls match reference RNG/count values at only one of 240
+samples; the rider still differs. Initial PPU phase alone is insufficient.
+The control remains private and is not a production boot-state change.
+
+### Missing BIOS forced blank during RegisterRamReset
+
+DOCUMENTED: [RegisterRamReset](https://rust-console.github.io/gbatek-gbaonly/#swi-01h-gba---registerramreset)
+always sets DISPCNT to `0x0080`, irrespective of R0. OBSERVED: our SWI 01 handler
+clears selected RAM without that display write. The game's
+[GPU register manager](https://raw.githubusercontent.com/pret/pokeemerald/master/src/gpu_regs.c)
+applies queued register values immediately during forced blank; otherwise a
+visible-line write can wait for a later callback. This makes the omitted BIOS
+side effect relevant to early interrupt enabling.
+
+VERIFIED: a new focused regression fails against the unchanged optimized core
+at the exact forced-blank assertion. The fix writes canonical PPU DISPCNT before
+the existing RAM reset. Four cases cover R0 = 0, 1, 0x80 and 0x100, exact register
+replacement, normal IO readback and preserved RAM flag selection. All 36 core
+verifiers pass (207.2 s), and mandatory benchmark checksums pass. A fresh
+independent read-only review finds no actionable issue; both source/test hashes
+match before and after review. Other incomplete BIOS register-reset groups and
+the existing SWI cycle model remain separate limitations.
+
+OBSERVED in source inspection: the existing IWRAM reset also clears the final
+0x200 bytes, which the cited BIOS contract reserves. This candidate does not
+change that separate behavior; its regression and repair remain follow-up work.
+
+VERIFIED in private semantic probes: the first RNG call moves from runtime
+frame 3 to frame 1, restoring two previously missed early calls. At nominal
+reference VBlank sampling times, RNG/count matches rise from 1/240 to 238/240
+with either initial-PPU-phase control; the rider selection becomes one, matching
+the reference. The aligned control also matches all 240 guest VBlank-counter
+samples. These probes compile the complete changed scheduler translation unit
+against the unchanged remaining core units, with unchanged headers/layout
+checked. They establish this bounded behavioral effect, not optimized desktop
+performance or complete intro accuracy. The subsequent fresh build and visual
+comparison are recorded below.
+
+### Fresh optimized build and native field acceptance
+
+VERIFIED: a fresh generic LTO/PGO build from `e4f782ee1c73` has normal executable
+SHA256 `31dcd42d37fe04c5819a8b9764ca4b2f53c806df51ee6e3809acdaa6b10a9568`.
+All 36 CTest verifiers pass against that configured optimized archive (2.10 s),
+which remains unchanged while building verifier consumers. All three desktop
+smokes and the owned-window F5/F8/F5/exit lifecycle check pass. All four
+Linux/Windows CI jobs pass this source head (run 40793442440).
+
+OBSERVED: the 600-frame boot training ROM/run/video fields match the prior build.
+Audio and machine-state hashes differ after restoring the early interrupts;
+both builds produce 329,149 samples and zero core underruns. This does not prove
+physical audio quality. The separate 600-frame saved-story checkpoint preserves
+every ROM/run/video/audio/state field exactly.
+
+VERIFIED: the full 3,600-frame visual comparison gains 154 nearby exact matches,
+increasing from 2,654 to 2,808, with zero previously exact matches lost.
+Same-frame exact matches remain 783. Nearby matches are searched within 120
+reference frames and do not establish timing accuracy. At current/reference
+frames 1,300/1,297, pixel differences fall from 3,041 to 2,664; at 1,500/1,497,
+from 3,110 to 2,730. Every remaining differing pixel in those two pairs is one of
+the two previously identified scenery-color swaps. The changes from the old
+images occupy exactly the former rider regions (442 and 469 pixels). This
+resolves those selected rider differences while leaving scenery palette phase
+and the rest of the unmatched intro under investigation.
+
+OBSERVED: the normal executable completes 18,000 native frames and all fifty F5
+saves at 59.7280 FPS (last window 59.7278), with zero queue-empty reports, p95/p99
+presentation bins of 17/18 ms, maximum interval 24.5860 ms and zero gaps above
+25 ms. This meets the campaign criterion for this bounded field/save workload.
+Nominal GBA rate is 59.7275 FPS. This is not whole-game qualification or an
+isolated causal performance claim for the BIOS correction.
+
+OBSERVED: a separate normal 9,000-frame active battle/story run also meets the
+bounded criterion: 59.7284 FPS (last window 59.7275), zero queue-empty reports,
+p95/p99 bins of 18/18 ms, maximum 20.8572 ms and zero gaps above 25 ms. All 25 F5
+requests are queued and written. Inputs finish the Geodude battle, level up and
+advance the trainer dialogue. Extra A presses reopen the trainer's dialogue,
+blocking the attempted Gym exit; the final image and decoded saved state confirm
+that actual outcome instead of assuming the planned route completed. The saved
+checkpoint at guest frame 262,367 has Torchic level 13, HP 16/36, and Wurmple
+level 4, HP 18/18. A subsequent paired continuation closes the dialogue and
+confirms the Gym exit at frame 263,867 (Rustboro City, 27,20).
+
+VERIFIED: paired natural-input continuations return to the Pokémon Center and
+complete healing at guest frame 267,767. Both 900-frame runs have identical final
+state bytes and no execution errors. Read-only state inspection reports Torchic
+level 13 at 36/36 HP and Wurmple level 4 at 18/18 HP, both with zero status flags;
+the final image shows the nurse's completed-healing dialogue. Throughput is
+81.111288 / 81.075783 FPS, with p95 steps 13.1230 / 13.1168 ms. This measures
+unpaced core throughput, separately from the native delivery runs above.
+
+OBSERVED story correction: the first attempted battle script selected Focus
+Energy at the lower left of the move grid, while Ember is at the lower right.
+That branch and its empty-bag/low-HP checkpoint are retained as input-error
+evidence. Reloading the earlier full-health checkpoint and selecting Ember's
+Fire-type entry leads naturally to Geodude fainting and Torchic reaching level
+13. Frame 256,500 shows Youngster Josh's defeat dialogue, with Torchic at 16/36
+HP. Every corrected segment repeats twice with identical encoded final states
+and no execution errors. This is observed progression, not a compatibility claim.
+
 ## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`; all four final PR CI jobs and all four post-merge CI jobs passed |
-| Current iteration | Scanline rendering, mode-1 layers/ties, integer BIOS affine math, wide translation and timed unused-memory loads integrated; normal executable SHA-256 begins `2f5e11f72f5a` |
-| Story | Winston, Haley and Twins Gina & Mia defeated; frame 237,060 retains double-battle payout text; Torchic level 12, 26/34 HP, Wurmple level 4 |
-| Repeat throughput | Latest 900-frame double-battle victory pair: 77.409907 / 77.202220 FPS; earlier turn pairs include occasional steps above 16.67 ms |
-| SDL delivery | Current normal executable: 18,000 frames at 59.7286 FPS; zero reported queue-empty events; presentation p95/p99 upper bounds 18/18 ms, maximum 20.3601 ms, no gaps above 25 ms |
-| Determinism | Every new paired double-battle segment completes with byte-identical final states and no execution errors |
-| Audio | Current five-minute normal run reports zero queue-empty events; this counter does not establish physical audio quality or whole-game behavior |
-| Intro | Current integer-math runtime: 2,654 nearby exact matches of 3,600; new controlled snapshots isolate palette phase and rider differences at frames 1,300/1,500 |
-| Status | Active: bounded native target observed; extend story, investigate guest timing/random choices and retain longer-run coverage |
+| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `e4f782ee1c73` passes all four Linux/Windows CI jobs; both measured native workloads meet the bounded criterion |
+| Current iteration | BIOS forced-blank fix passes canonical and configured-core tests, benchmarks, fresh review and desktop smokes; normal executable SHA-256 begins `31dcd42d37fe` |
+| Story | First Gym trainer Josh defeated; returned to the Center and healed at frame 267,767: Torchic level 13, 36/36 HP; Wurmple level 4, 18/18 HP |
+| Repeat throughput | Latest 900-frame healing pair: 81.111288 / 81.075783 FPS, p95 steps 13.1230 / 13.1168 ms; one / zero steps above 16.67 ms |
+| SDL delivery | Field 18,000/fifty-save run: 59.7280 FPS, maximum 24.5860 ms; active story 9,000/twenty-five-save run: 59.7284 FPS, maximum 20.8572 ms; both have zero queue-empty reports and gaps above 25 ms |
+| Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
+| Audio | Latest default control reports zero queue-empty events; prior same-binary run reports four. This proxy does not establish physical audio quality |
+| Intro | BIOS correction raises nearby exact matches to 2,808 of 3,600 (+154, zero lost); selected rider differences resolved, palette phase remains |
+| Status | Active: measured field/save and active story delivery meet the bounded target; broader playthrough coverage and remaining intro differences are still being investigated |
+
+The earlier victory pair's second elapsed duration exceeds summed step time by
+about 1.02 s, versus about 0.026 s in the first run. That time outside summed
+steps remains unclassified and retained; these headless results do not establish
+native delivery smoothness.
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
+
+### Native double-battle save hitch investigation
+
+OBSERVED: an additional normal desktop run starts inside the double battle,
+receives 48 A-button pulses at three-second intervals, then F5 to save a
+checkpoint. It completes all 9,000 frames at 59.7286 FPS, with zero reported
+audio queue-empty events and p95/p99 presentation upper bounds of 18/18 ms.
+The final window shows the defeated trainers and free overworld; its saved
+state decodes successfully. One presentation interval is 55.3959 ms. This
+run does not pass the no-gaps-above-25-ms criterion.
+
+OBSERVED: a control with the same executable, starting checkpoint and A pulses,
+omitting F5, completes all 9,000 frames at 59.7287 FPS with zero reported
+queue-empty events, p95/p99 upper bounds of 18/18 ms, maximum 24.9518 ms and
+no gaps above 25 ms. Its final window also shows the free overworld. Native
+key delivery uses wall-clock timing and is not an exact frame-indexed replay.
+The aggregate reports do not timestamp the single gap against the save event.
+
+VERIFIED: a separate five-repeat probe of the saved 17,312,799-byte state
+produces byte-identical encodes and leaves the session hash unchanged:
+
+| Work | Observed milliseconds |
+| --- | ---: |
+| Whole-machine snapshot including destruction | 6.0796–7.4113 |
+| Memory snapshot including destruction | 2.8200–3.0420 |
+| Session hash | 17.4532–18.0970 |
+| Complete codec encode | 32.4024–36.4863 |
+| Atomic file write | 9.1970–9.8749 |
+
+These independently timed operations overlap logically; do not add all five
+rows together. The complete encode already includes snapshots and hashing.
+Source inspection establishes that baseline F5 encodes and writes on the
+presentation thread. INFERRED: that synchronous work can explain a missed
+presentation budget. Source `1bc73473b5a0` captures an owned machine on the main thread
+and uses one bounded background job for the unchanged codec and atomic writer.
+Requests report busy while a result remains pending; F8 and exit drain it.
+VERIFIED: the focused persistence test, all 36 core tests and mandatory
+benchmarks pass. The first full attempt stopped at test 35 because the new
+PowerShell thread flag was split into characters; the corrected array passes
+all 36 tests in 233.9 seconds. All three fresh desktop smoke evaluators pass;
+only their three path bindings differ from the repository scripts. A fresh
+independent read-only review of all seven source/test/build files at
+`1bc73473b5a0` finds no actionable introduced defects; their manifest hashes
+match before and after review. All four CI jobs pass that source commit
+(run `40771054625`).
+
+OBSERVED: the normal candidate completes the same 9,000-frame battle/A/F5
+sequence at 59.7409 FPS, with zero queue-empty reports, p95/p99 upper bounds
+18/18 ms, maximum 26.1885 ms and one gap above 25 ms. The battle completes
+and the saved state decodes. This run still fails the no-gaps-above-25-ms
+criterion; the timing report does not identify the cause of that interval.
+
+OBSERVED: a stronger control starts from the same idle field checkpoint and
+sends ten F5 requests at six-second intervals, without guest button input:
+
+| Normal executable | Frames | Completed saves | FPS | Queue-empty reports | Maximum interval | Gaps above 25 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline `2f5e11f72f5a` | 3,600 | 10 | 58.0758 | 57 | 950.457 ms | 15 |
+| Candidate `c376921db938` | 3,600 | 10 | 59.7245 | 0 | 24.5283 ms | 0 |
+
+Both final window PNGs are byte-identical, and the candidate's last snapshot
+decodes successfully. Host load varied between these serial runs; these two
+points do not establish a general speedup ratio or attribute the entire
+950 ms interval to encoding. Together with the independent encode timings and
+the source path, they establish a useful bounded repeated-save result. The
+separate 26.1885 ms battle outlier remains open.
+
+VERIFIED: an owned-window F5 → F8 → F5 → Escape probe exits cleanly. Its log
+reports the first write before F8 loads it, then reports the second write after
+the session-end message during destructor drain. The retained state decodes.
+This functional load/exit probe is not a smooth-presentation measurement.
+No codec, file format, emulation timing, or frame output was changed.
+
+OBSERVED: continued paired input reaches Rustboro City at frame 240,960,
+then exercises the Mart and Center transitions. The 1,200-frame Center-entry
+pair runs at 83.528473 / 84.313423 FPS with identical states and no execution
+errors. The nurse's healing sequence completes at frame 245,160; read-only
+party inspection confirms Torchic level 12 at 34/34 HP (previously 24/34) and
+Wurmple level 4 at 18/18, both with clear status values. The final 900-frame
+pair runs at 79.367395 / 78.734339 FPS, p95 13.4924 / 13.6073 ms, with two /
+five steps above 16.67 ms and identical final states. The closing dialogue
+remains on screen. No health, item, RNG, or game-progress memory was edited.
+
+Private evidence: `build/emerald-double-battle-normal-9000`,
+`build/emerald-double-battle-normal-9000-no-save`,
+`build/save-state-stages-baseline/stages.csv`,
+`build/emerald-async-state-save-normal-9000`,
+`build/emerald-repeated-save-{baseline,candidate}-3600`,
+`build/emerald-async-state-save-f5-f8-exit`,
+`build/rustboro-healed-245160`,
+`build/desktop-save-worker-plan.md`, `build/desktop-async-save-review.json`
+and the candidate verification logs. The earlier failed measurements remain
+available; they are not replaced by the stress result.
 
 ### Merged candidate, double battle and scenery isolation
 

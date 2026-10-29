@@ -864,6 +864,45 @@ int main() {
                   "read-only VCOUNT keeps its live value after merged write rejection");
   }
 
+  {
+    auto original = std::make_unique<MemoryBus>();
+    std::vector<std::uint8_t> rom{0x12, 0x34, 0x56, 0x78};
+    expect(original->load_game_pak_rom(rom), "load owned cartridge bytes");
+    rom[0] = 0xFF;
+    expect_read(*original, 0x08000000, 0x12, "input mutation cannot change ROM");
+    auto copy = std::make_unique<MemoryBus>(*original);
+    expect(copy->state_hash() == original->state_hash(), "bus copy preserves hash");
+    expect(original->load_game_pak_rom({0xAA, 0xBB, 0xCC, 0xDD}),
+           "replace original cartridge");
+    expect_read32(*copy, 0x08000000, 0x78563412, "copy retains original cartridge");
+    original->clear_game_pak_rom();
+    original.reset();
+    expect_read16(*copy, 0x0A000000, 0x3412, "copy outlives cleared original");
+    auto assigned = std::make_unique<MemoryBus>();
+    *assigned = *copy;
+    copy->clear_game_pak_rom();
+    expect_read(*assigned, 0x0C000003, 0x78, "assignment retains cartridge owner");
+    auto exported = assigned->export_game_pak_rom();
+    exported[0] = 0xFF;
+    expect_read(*assigned, 0x08000000, 0x12, "export remains independent");
+    auto state = std::make_unique<MemoryBus::State>(assigned->save_state());
+    auto restored = std::make_unique<MemoryBus>();
+    expect(restored->load_state(*state), "restore value cartridge state");
+    state->game_pak_rom[0] = 0xEE;
+    expect_read(*restored, 0x08000000, 0x12, "restored ROM owns state bytes");
+    expect_read(*assigned, 0x08000000, 0x12, "state mutation cannot change source");
+    auto moved = std::make_unique<MemoryBus>(std::move(*restored));
+    expect_read32(*moved, 0x08000000, 0x78563412, "move retains cartridge bytes");
+    expect(!restored->has_game_pak_rom() && restored->game_pak_rom_size() == 0,
+           "moved-from cartridge is safely empty");
+    expect(!restored->read8(0x08000000).has_value(), "moved-from ROM read is safe");
+    state->game_pak_rom.clear();
+    expect(moved->load_state(*state), "empty state clears cartridge owner");
+    expect(!moved->has_game_pak_rom(), "restored empty cartridge is absent");
+    expect_read32(*assigned, 0x08000000, 0x78563412,
+                  "clearing a restored bus cannot change another copy");
+  }
+
   std::cout << "memory_bus_test: PASS\n";
   return 0;
 }

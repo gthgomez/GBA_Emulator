@@ -10,7 +10,7 @@ A portable Game Boy Advance emulator core written in C++17. Implements ARM7TDMI 
 ## Tech Stack
 
 - **Language:** C++17
-- **Core build/test:** Direct `g++` compilation via PowerShell/bash scripts (no CMake)
+- **Core build/test:** Direct `g++` compilation via PowerShell/bash scripts; optional CMake/CTest checks against the configured core
 - **Desktop host build:** CMake + SDL3 (`apps/desktop`); one engine, no duplicated core
 - **Testing:** Headless in-memory test framework with deterministic assertions
 - **Benchmarking:** Custom benchmark harness for timing-critical paths
@@ -98,5 +98,13 @@ GBA_Emulator/
 - mGBA public suite: `.\tools\run-mgba-suite.ps1`
 - Desktop host (CMake + SDL3): `tools/run-desktop-smoke.*`, `tools/run-desktop-save-smoke.*`,
   `tools/run-desktop-interactive-smoke.*` — see `docs/DESKTOP.md`
-- Core commands compile from source via `g++` — no Gradle or CMake involved at the
-  core level. Only the desktop host uses CMake.
+- The PowerShell/bash runners remain the canonical core verification commands.
+  Optional CTest registration links the same 36 verifier sources against the
+  configured `gba_core`, allowing checks of selected compiler/build flags without
+  SDL or the desktop host:
+
+  ```sh
+  cmake -S . -B build/core-tests -DGBA_BUILD_DESKTOP=OFF -DGBA_BUILD_TESTS=ON
+  cmake --build build/core-tests --parallel 1
+  ctest --test-dir build/core-tests --parallel 1 --output-on-failure
+  ```

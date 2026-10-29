@@ -155,12 +155,17 @@ function Invoke-CoreTest {
         Write-Host "[$Index/$Total] compile $Name ..."
         $compileSw = [System.Diagnostics.Stopwatch]::StartNew()
         $sanitizeFlags = @()
+        $threadFlags = @()
+        if ($Name -eq "desktop_persistence_test") {
+            $threadFlags = @("-pthread")
+        }
         if ($Sanitize) {
             $sanitizeFlags = @("-fsanitize=address", "-fsanitize=undefined")
         }
         & g++ -std=c++17 -Wall -Wextra -Werror `
             -I $includeDir `
             @sanitizeFlags `
+            @threadFlags `
             @resolvedSources `
             -o $exePath
         Assert-NativeExitCode -Step "g++ $Name"

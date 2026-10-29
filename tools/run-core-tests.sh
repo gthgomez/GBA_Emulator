@@ -209,12 +209,17 @@ for entry in "${core_tests[@]}"; do
         echo "[$index/$total] compile $name ..."
         start=$(now_ns)
         sanitize_flags=()
+        thread_flags=()
+        if [[ "$name" == desktop_persistence_test ]]; then
+            thread_flags=(-pthread)
+        fi
         if [[ "$sanitize" -eq 1 ]]; then
             sanitize_flags=(-fsanitize=address -fsanitize=undefined)
         fi
         g++ -std=c++17 -Wall -Wextra -Werror \
             -I "$include_dir" \
             "${sanitize_flags[@]}" \
+            "${thread_flags[@]}" \
             "${abs_sources[@]}" \
             -o "$exe"
         rc=$?
