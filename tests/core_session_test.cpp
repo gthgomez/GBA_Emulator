@@ -406,14 +406,38 @@ int main() {
   expect(cpuset_bios_hle->cpu().set_cpsr(0x00000030),
          "CpuSet-HLE BIOS-source fixture enters Thumb user mode");
   cpuset_bios_hle->cpu().set_register(Arm7tdmi::kPc, kProgramBase);
-  cpuset_bios_hle->cpu().set_register(0, 0x00010000U);
+  expect(cpuset_bios_hle->memory().write32(0x02000000U, 0xA5A55A5AU),
+         "CpuSet-HLE BIOS-source sentinel seeds");
+  cpuset_bios_hle->cpu().set_register(0, 0x00000100U);
   cpuset_bios_hle->cpu().set_register(1, 0x02000000U);
   cpuset_bios_hle->cpu().set_register(2, (1U << 26U) | 1U);
   const gba::core::CoreSchedulerFetchStepResult cpuset_bios_step = cpuset_bios_hle->step();
   expect(cpuset_bios_step.step->cpu_step.status == ExecuteStatus::executed,
-         "SWI-HLE CpuSet handles protected BIOS source");
-  expect(cpuset_bios_hle->memory().read32(0x02000000).value_or(0xFFFFFFFFU) == 0,
-         "SWI-HLE CpuSet protected BIOS source copies zero");
+         "SWI-HLE CpuSet returns for a protected BIOS source");
+  expect(cpuset_bios_hle->memory().read32(0x02000000U).value_or(0) == 0xA5A55A5AU,
+         "SWI-HLE CpuSet BIOS source guard leaves the destination untouched");
+
+  auto cpufastset_bios_hle = std::make_unique<CoreSession>();
+  cpufastset_bios_hle->bios().set_mode(BiosExecutionMode::hle);
+  std::vector<std::uint8_t> cpufastset_bios_rom(256);
+  cpufastset_bios_rom.at(0) = 0x0C;
+  cpufastset_bios_rom.at(1) = 0xDF;
+  expect(cpufastset_bios_hle->memory().load_game_pak_rom(cpufastset_bios_rom),
+         "CpuFastSet-HLE BIOS-source ROM loads");
+  expect(cpufastset_bios_hle->cpu().set_cpsr(0x00000030),
+         "CpuFastSet-HLE fixture enters Thumb user mode");
+  cpufastset_bios_hle->cpu().set_register(Arm7tdmi::kPc, kProgramBase);
+  expect(cpufastset_bios_hle->memory().write32(0x02000000U, 0x5AA5C33CU),
+         "CpuFastSet-HLE BIOS-source sentinel seeds");
+  cpufastset_bios_hle->cpu().set_register(0, 0x00000100U);
+  cpufastset_bios_hle->cpu().set_register(1, 0x02000000U);
+  cpufastset_bios_hle->cpu().set_register(2, 8U);
+  const gba::core::CoreSchedulerFetchStepResult cpufastset_bios_step =
+      cpufastset_bios_hle->step();
+  expect(cpufastset_bios_step.step->cpu_step.status == ExecuteStatus::executed,
+         "SWI-HLE CpuFastSet returns for a protected BIOS source");
+  expect(cpufastset_bios_hle->memory().read32(0x02000000U).value_or(0) == 0x5AA5C33CU,
+         "SWI-HLE CpuFastSet BIOS source guard leaves the destination untouched");
 
   auto lz77_literal_hle = std::make_unique<CoreSession>();
   lz77_literal_hle->bios().set_mode(BiosExecutionMode::hle);
