@@ -344,11 +344,47 @@ object layout, codec or emulated timing model change. This is a correctness
 repair; the prior normal executable's native measurements do not certify a new
 build from this source.
 
+VERIFIED: the fresh generic LTO/PGO build from `84181f859d49` passes all 36
+configured-core verifiers (2.34 s), with the optimized archive unchanged while
+building test consumers. All three desktop smokes and the owned-window
+F5/F8/F5/exit lifecycle check pass. Normal executable SHA256 is
+`5fe9a223130aa34fa1ffa57d19cfbafe52f797f0ecc67a46f4a1344b37c034ec`.
+All four Linux/Windows source-head CI jobs pass (run 40798714954).
+
+VERIFIED: both 600-frame training workloads preserve ROM/run/video/audio
+fields. The saved-story checkpoint also preserves the complete state hash;
+boot state changes after the corrected reset. A fresh full 3,600-frame capture
+has byte-identical video to the preceding forced-blank build, retaining 2,808
+nearby and 783 same-frame exact matches. Its final encoded state differs only
+in three reserved-IWRAM bytes and the eight-byte state-hash header. No other
+serialized byte differs.
+
+OBSERVED: the new normal executable completes 9,000 active battle/story frames
+with all 25 F5 saves written, 59.7288 FPS (last window 59.7292), zero queue-empty
+reports, p95/p99 presentation bins of 18/18 ms, maximum 18.9643 ms and zero gaps
+above 25 ms. This run adds B presses after the trainer dialogue and a longer
+Down hold; its final screenshot and saved state confirm the Gym-to-City warp
+at 27,20. These extra inputs extend coverage, so this is not a controlled
+numerical speedup comparison with the preceding native run.
+
+OBSERVED: the same new executable completes the separate 18,000-frame field
+workload with all 50 F5 requests queued and written, 59.7282 FPS (last window
+59.7456), zero queue-empty reports, p95/p99 bins of 18/18 ms, maximum interval
+23.7671 ms and zero gaps above 25 ms. Both new native workloads meet the bounded
+campaign criterion. Earlier failures remain in the ledger; these passes do not
+establish whole-game correctness, physical audio quality or a causal speedup
+from the IWRAM correction.
+
 OBSERVED: further classification of the preceding forced-blank build's 792
 unmatched intro frames finds 221 differing only by the two known scenery-color
 swaps at their existing best reference alignment. The remaining 571 include
 other differences. This uses the existing search within 16 reference frames;
 it neither modifies production palettes nor establishes physical timing.
+
+OBSERVED: two additional unmatched frames near the title transition differ
+solely by RGB555 `30652` versus white `32767`: 17,636 pixels at current/reference
+2,726/2,710 and 221 at 2,727/2,711. Their underlying timing/palette cause remains
+unresolved; no renderer correction is inferred from those images alone.
 
 VERIFIED: two further paired natural-input segments close the nurse's remaining
 dialogue and exit the Center. Latest checkpoint 268,967 is Rustboro City at
@@ -359,13 +395,13 @@ errors. The healed party is preserved.
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #57 merged as `33bf24dc21e1` after all four Linux/Windows CI jobs pass final head `65ceb80` (run 40797607457); canonical main updated |
-| Current iteration | Reserved-IWRAM follow-up passes canonical tests, benchmarks and fresh review; fresh optimized/native validation remains pending. Prior measured executable SHA-256 begins `31dcd42d37fe` |
+| Integration | PR #57 merged as `33bf24dc21e1`, canonical main updated; PR #58 source `84181f859d49` passes all four Linux/Windows CI jobs (run 40798714954) |
+| Current iteration | Reserved-IWRAM fix passes canonical and configured-core tests, benchmarks, fresh review, all desktop smokes, lifecycle check and both native workloads; measured executable SHA-256 begins `5fe9a223130a` |
 | Story | First Gym trainer Josh defeated; healed Torchic level 13, 36/36 HP and Wurmple level 4, 18/18 HP; checkpoint 268,967 is outside the Center at Rustboro City 16,39 |
 | Repeat throughput | Latest 900-frame healing pair: 81.111288 / 81.075783 FPS, p95 steps 13.1230 / 13.1168 ms; one / zero steps above 16.67 ms |
-| SDL delivery | Field 18,000/fifty-save run: 59.7280 FPS, maximum 24.5860 ms; active story 9,000/twenty-five-save run: 59.7284 FPS, maximum 20.8572 ms; both have zero queue-empty reports and gaps above 25 ms |
+| SDL delivery | New field 18,000/fifty-save run: 59.7282 FPS, maximum 23.7671 ms; active story 9,000/twenty-five-save run: 59.7288 FPS, maximum 18.9643 ms; both have zero queue-empty reports and gaps above 25 ms |
 | Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
-| Audio | Latest default control reports zero queue-empty events; prior same-binary run reports four. This proxy does not establish physical audio quality |
+| Audio | Both new default native runs report zero queue-empty events. Earlier failures are retained; this proxy does not establish physical audio quality |
 | Intro | BIOS correction raises nearby exact matches to 2,808 of 3,600 (+154, zero lost); selected rider differences resolved, palette phase remains |
 | Status | Active: measured field/save and active story delivery meet the bounded target; broader playthrough coverage and remaining intro differences are still being investigated |
 
