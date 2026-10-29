@@ -1037,7 +1037,8 @@ void MemoryBus::register_ram_reset(std::uint32_t flags) {
     ewram_.fill(0);
   }
   if ((flags & 0x0002U) != 0) {
-    iwram_.fill(0);
+    // RegisterRamReset preserves the BIOS stack/IRQ area at 03007E00-03007FFF.
+    std::fill(iwram_.begin(), iwram_.end() - 0x200, 0);
   }
   if ((flags & 0x0004U) != 0) {
     palette_.fill(0);

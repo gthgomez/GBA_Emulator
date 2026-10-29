@@ -73,6 +73,33 @@ int main() {
            "unconditional display reset preserves RAM flag selection");
   }
 
+  // RegisterRamReset reserves the final 0x200 IWRAM bytes for BIOS stacks
+  // and IRQ state, including when all reset flags are selected.
+  for (const std::uint32_t reset_flags : {0U, 1U, 2U, 3U, 0x1FU, 0xFFU}) {
+    auto reset = std::make_unique<CoreSession>();
+    std::vector<std::uint8_t> reset_rom(16);
+    write_word(reset_rom, 0, kArmSwiRegisterRamReset);
+    expect(reset->memory().load_game_pak_rom(reset_rom), "IWRAM-reset ROM loads");
+    reset->configure_for_game_boot();
+    for (std::uint32_t offset = 0; offset < 0x8000U; ++offset) {
+      const auto value = static_cast<std::uint8_t>(0x80U | ((offset ^ (offset >> 8)) & 0x7FU));
+      expect(reset->memory().write8(0x03000000U + offset, value), "seed all IWRAM bytes");
+    }
+    reset->cpu().set_register(0, reset_flags);
+    const auto result = reset->step();
+    expect(!result.fetch_failed && result.step.has_value() &&
+               result.step->cpu_step.status == ExecuteStatus::executed,
+           "IWRAM-reset SWI executes");
+    for (std::uint32_t offset = 0; offset < 0x8000U; ++offset) {
+      const auto seeded = static_cast<std::uint8_t>(0x80U | ((offset ^ (offset >> 8)) & 0x7FU));
+      const auto expected = (reset_flags & 2U) != 0 && offset < 0x7E00U ? 0U : seeded;
+      expect(reset->memory().read8(0x03000000U + offset).value_or(0) == expected,
+             "RegisterRamReset respects IWRAM selection and reserved BIOS area");
+      expect(reset->memory().read8(0x03008000U + offset).value_or(0) == expected,
+             "IWRAM reset and reservation are visible through mirrors");
+    }
+  }
+
   // Some games call the BIOS on a zero-filled header. A zero output size
   // completes without touching the destination, even if the type byte is zero.
   for (const std::uint32_t swi_number : {0x11U, 0x12U}) {

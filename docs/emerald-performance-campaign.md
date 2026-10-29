@@ -252,8 +252,8 @@ match before and after review. Other incomplete BIOS register-reset groups and
 the existing SWI cycle model remain separate limitations.
 
 OBSERVED in source inspection: the existing IWRAM reset also clears the final
-0x200 bytes, which the cited BIOS contract reserves. This candidate does not
-change that separate behavior; its regression and repair remain follow-up work.
+0x200 bytes, which the cited BIOS contract reserves. The forced-blank candidate
+does not change that separate behavior; its subsequent repair is recorded below.
 
 VERIFIED in private semantic probes: the first RNG call moves from runtime
 frame 3 to frame 1, restoring two previously missed early calls. At nominal
@@ -327,13 +327,41 @@ Fire-type entry leads naturally to Geodude fainting and Torchic reaching level
 HP. Every corrected segment repeats twice with identical encoded final states
 and no execution errors. This is observed progression, not a compatibility claim.
 
+### BIOS reserved IWRAM follow-up
+
+DOCUMENTED: RegisterRamReset bit 1 clears IWRAM except `03007E00..03007FFF`,
+which contains BIOS stacks and IRQ state. VERIFIED: a focused regression linked
+against the preceding optimized core fails at the reserved-area assertion.
+The repair changes only the selected IWRAM fill endpoint to `0x7E00`; full
+soft/hard resets retain their existing behavior. Six masks (`0`, `1`, `2`, `3`,
+`0x1F`, `0xFF`) seed and check all 32 KiB through the actual ARM SWI path,
+including every reserved byte and the mirrored address range.
+
+VERIFIED: all 36 canonical core verifiers pass (243.0 s), mandatory benchmark
+checksums pass, and a fresh independent read-only review reports no actionable
+finding with both candidate hashes unchanged before/after review. No headers,
+object layout, codec or emulated timing model change. This is a correctness
+repair; the prior normal executable's native measurements do not certify a new
+build from this source.
+
+OBSERVED: further classification of the preceding forced-blank build's 792
+unmatched intro frames finds 221 differing only by the two known scenery-color
+swaps at their existing best reference alignment. The remaining 571 include
+other differences. This uses the existing search within 16 reference frames;
+it neither modifies production palettes nor establishes physical timing.
+
+VERIFIED: two further paired natural-input segments close the nurse's remaining
+dialogue and exit the Center. Latest checkpoint 268,967 is Rustboro City at
+16,39; both segments complete with identical final state bytes and no execution
+errors. The healed party is preserved.
+
 ## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `e4f782ee1c73` passes all four Linux/Windows CI jobs; both measured native workloads meet the bounded criterion |
-| Current iteration | BIOS forced-blank fix passes canonical and configured-core tests, benchmarks, fresh review and desktop smokes; normal executable SHA-256 begins `31dcd42d37fe` |
-| Story | First Gym trainer Josh defeated; returned to the Center and healed at frame 267,767: Torchic level 13, 36/36 HP; Wurmple level 4, 18/18 HP |
+| Integration | PR #57 merged as `33bf24dc21e1` after all four Linux/Windows CI jobs pass final head `65ceb80` (run 40797607457); canonical main updated |
+| Current iteration | Reserved-IWRAM follow-up passes canonical tests, benchmarks and fresh review; fresh optimized/native validation remains pending. Prior measured executable SHA-256 begins `31dcd42d37fe` |
+| Story | First Gym trainer Josh defeated; healed Torchic level 13, 36/36 HP and Wurmple level 4, 18/18 HP; checkpoint 268,967 is outside the Center at Rustboro City 16,39 |
 | Repeat throughput | Latest 900-frame healing pair: 81.111288 / 81.075783 FPS, p95 steps 13.1230 / 13.1168 ms; one / zero steps above 16.67 ms |
 | SDL delivery | Field 18,000/fifty-save run: 59.7280 FPS, maximum 24.5860 ms; active story 9,000/twenty-five-save run: 59.7284 FPS, maximum 20.8572 ms; both have zero queue-empty reports and gaps above 25 ms |
 | Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
