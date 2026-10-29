@@ -2722,6 +2722,8 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
 
   switch (call.service) {
     case 0x01: {
+      // BIOS forces blank even when R0 selects no RAM or register groups.
+      (void)ppu_.write_lcd_control(0x04000000U, 0x0080U);
       memory_.register_ram_reset(cpu_.register_value(0));
       return executed(200);
     }

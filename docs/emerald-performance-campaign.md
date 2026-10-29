@@ -168,19 +168,127 @@ new CMake file's SHA256
 The canonical shell runners remain unchanged. This optional path enables checks
 against the exact configured archive before measuring further compiler variants.
 
+### Compiler and timer candidates rejected by measurement
+
+VERIFIED: all four Linux/Windows CI jobs pass source `929ec57` (run 40788763072).
+A private build adds `-march=znver3 -mtune=znver3` to the existing serial LTO/PGO
+recipe for this host's Ryzen 7 5800HS. All 36 verifiers pass against its configured
+optimized core in 2.18 s. Boot/checkpoint training fields remain identical.
+Eight serial 600-frame ABBA/BAAB field runs preserve every ROM/run/video/audio/
+state field but show no useful gain: generic median 79.4669 FPS versus tuned
+79.4117 FPS, with overlapping total-step ranges. The tuned executable is retained
+as an experiment; production flags are unchanged. Its complete 3,600-frame intro
+capture and encoded final state are byte-identical to the existing capture.
+
+OBSERVED: a private timer candidate replaces division by the four power-of-two
+prescalers with shifts and masks. A deterministic 200,000-operation probe covers
+register writes, deferred starts, cascades, save/load, IRQ acknowledgements and
+cycle counters through 2^60. Every full timer/IRQ record matches byte for byte.
+Nevertheless, warmed ten-million-tick ABBA/BAAB windows give baseline/candidate
+median costs of 8.8701/9.2769, 5.7491/6.1241, 5.6929/5.8952 and 5.3483/5.6964 ns
+for selectors 0..3. Checksums match, but each candidate median is worse. This
+candidate is rejected; production timer code remains unchanged. These isolated
+measurements do not establish whole-emulator timing differences.
+
+OBSERVED limitation: an initial unchanged-baseline probe placed the cycle counter
+near `UINT64_MAX` and ceased making practical progress. Rounding a prescaler edge
+through unsigned wrap can imply an enormous number of overflow iterations. The
+owned process was stopped and its partial trace retained. The later comparison
+explicitly excludes counter wraparound; it does not claim to fix that pre-existing
+synthetic extreme-state behavior.
+
+### Intro RNG sequence and first observed phase difference
+
+VERIFIED: new read-only 240-frame RAM timelines show that both implementations
+start with seed zero. Every observed RNG value equals the same generator's value
+at its recorded call count. The first same-capture-frame mismatch is already at
+frame 2: our runtime has made zero calls, the reference one. At frame 240 the
+counts are 240 and 241. Thus the observed difference is call phase/count, rather
+than a different seed or RNG arithmetic in these captures.
+
+VERIFIED: a private instruction-level trace matches all 240 normal-runtime
+frame-end RNG/count/gender/VBlank-counter observations. It identifies 238 calls
+from the VBlank handler and one each from two other callers. The intro-load call
+occurs at frame 205, count 205; its high-halfword parity selects gender zero.
+At reference frame 205, count 206 and gender one are observed. DOCUMENTED: the
+game's [VBlank handler](https://raw.githubusercontent.com/pret/pokeemerald/master/src/main.c)
+advances the RNG, and its [intro loader](https://raw.githubusercontent.com/pret/pokeemerald/master/src/intro.c)
+uses a random value for rider choice. INFERRED: the different call indices
+predict the selected rider difference. Its initial timing cause and
+physical-hardware truth remain unresolved. No RNG or game RAM changes are
+introduced into production or the story runs.
+
+OBSERVED: the reference's initial serialized state has VCOUNT 126 and its next
+video event after 120 cycles; its first three calls return at VCOUNT 160 with
+master-cycle values 41,001 / 321,899 / 602,800. Our normal runtime returns at
+VCOUNT zero after 280,897 / 561,792 / 842,688 scheduler cycles. DOCUMENTED: the
+pinned reference's [video reset](https://raw.githubusercontent.com/mgba-emu/mgba/7a12d6d/src/gba/video.c)
+uses scanline 126 without a full BIOS and explicitly leaves its exact hardware
+phase unverified. These capture numbers are not equivalent elapsed boot time.
+
+VERIFIED: a private control changes only our initial PPU line/cycle to 126/888
+and samples at the nominal reference VBlank times. Both default and adjusted
+initial-phase controls match reference RNG/count values at only one of 240
+samples; the rider still differs. Initial PPU phase alone is insufficient.
+The control remains private and is not a production boot-state change.
+
+### Missing BIOS forced blank during RegisterRamReset
+
+DOCUMENTED: [RegisterRamReset](https://rust-console.github.io/gbatek-gbaonly/#swi-01h-gba---registerramreset)
+always sets DISPCNT to `0x0080`, irrespective of R0. OBSERVED: our SWI 01 handler
+clears selected RAM without that display write. The game's
+[GPU register manager](https://raw.githubusercontent.com/pret/pokeemerald/master/src/gpu_regs.c)
+applies queued register values immediately during forced blank; otherwise a
+visible-line write can wait for a later callback. This makes the omitted BIOS
+side effect relevant to early interrupt enabling.
+
+VERIFIED: a new focused regression fails against the unchanged optimized core
+at the exact forced-blank assertion. The fix writes canonical PPU DISPCNT before
+the existing RAM reset. Four cases cover R0 = 0, 1, 0x80 and 0x100, exact register
+replacement, normal IO readback and preserved RAM flag selection. All 36 core
+verifiers pass (207.2 s), and mandatory benchmark checksums pass. A fresh
+independent read-only review finds no actionable issue; both source/test hashes
+match before and after review. Other incomplete BIOS register-reset groups and
+the existing SWI cycle model remain separate limitations.
+
+VERIFIED in private semantic probes: the first RNG call moves from runtime
+frame 3 to frame 1, restoring two previously missed early calls. At nominal
+reference VBlank sampling times, RNG/count matches rise from 1/240 to 238/240
+with either initial-PPU-phase control; the rider selection becomes one, matching
+the reference. The aligned control also matches all 240 guest VBlank-counter
+samples. These probes compile the complete changed scheduler translation unit
+against the unchanged remaining core units, with unchanged headers/layout
+checked. They establish this bounded behavioral effect, not optimized desktop
+performance or complete intro accuracy. A fresh normal build and full visual
+comparison remain pending.
+
+OBSERVED story correction: the first attempted battle script selected Focus
+Energy at the lower left of the move grid, while Ember is at the lower right.
+That branch and its empty-bag/low-HP checkpoint are retained as input-error
+evidence. Reloading the earlier full-health checkpoint and selecting Ember's
+Fire-type entry leads naturally to Geodude fainting and Torchic reaching level
+13. Frame 256,500 shows Youngster Josh's defeat dialogue, with Torchic at 16/36
+HP. Every corrected segment repeats twice with identical encoded final states
+and no execution errors. This is observed progression, not a compatibility claim.
+
 ## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `637560a09fe0` passes all four Linux/Windows CI jobs; draft remains open |
-| Current iteration | Loaded-ROM getter return passes local checks, independent review and exact codec-byte probes; normal executable SHA-256 begins `45d8450fd1b4`; configured-core CTest registration repaired |
-| Story | Winston, Haley and Twins Gina & Mia defeated; frame 249,960 shows the first Rustboro Gym trainer's fight menu: Geodude level 10 versus Torchic level 12, 34/34 HP; Wurmple level 4, 18/18 HP |
-| Repeat throughput | Latest 1,200-frame Gym-entry pair: 78.878553 / 78.793804 FPS, p95 steps 13.5502 / 13.6474 ms; zero / one steps above 16.67 ms |
+| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 previous head `929ec57` passes all four Linux/Windows CI jobs; BIOS follow-up CI pending, draft remains open |
+| Current iteration | BIOS forced-blank regression/fix passes all 36 tests, benchmarks and fresh review; private early RNG probe improves; new normal build pending. Existing normal executable SHA-256 begins `45d8450fd1b4` |
+| Story | Geodude fainted, Torchic reached level 13; frame 256,500 shows first Gym trainer Josh's defeat dialogue, Torchic 16/36 HP; payout/return to Gym pending |
+| Repeat throughput | Latest 900-frame victory pair: 77.797244 / 72.310475 FPS, p95 steps 13.6174 / 13.3377 ms; zero steps above 16.67 ms in either run |
 | SDL delivery | Latest default 18,000-frame/fifty-save getter build averages 59.7280 FPS but fails smoothness: maximum 26.1360 ms, two gaps above 25 ms |
 | Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
 | Audio | Latest default control reports zero queue-empty events; prior same-binary run reports four. This proxy does not establish physical audio quality |
 | Intro | Current integer-math runtime: 2,654 nearby exact matches of 3,600; new controlled snapshots isolate palette phase and rider differences at frames 1,300/1,500 |
 | Status | Active: snapshot capture is cheaper and nominal delivery is reached; long-run smoothness and intro guest-phase differences remain unresolved |
+
+The latest story pair's second elapsed duration exceeds summed step time by
+about 1.02 s, versus about 0.026 s in the first run. That time outside summed
+steps remains unclassified and retained; these headless results do not establish
+native delivery smoothness.
 
 The sections below are chronological. Earlier measurements and pending-work
 statements describe their original candidate, not the latest integrated code.
