@@ -215,7 +215,7 @@ game's [VBlank handler](https://raw.githubusercontent.com/pret/pokeemerald/maste
 advances the RNG, and its [intro loader](https://raw.githubusercontent.com/pret/pokeemerald/master/src/intro.c)
 uses a random value for rider choice. INFERRED: the different call indices
 predict the selected rider difference. Its initial timing cause and
-physical-hardware truth remain unresolved. No RNG or game RAM changes are
+physical-hardware truth remain unresolved. No RNG or game RAM overrides are
 introduced into production or the story runs.
 
 OBSERVED: the reference's initial serialized state has VCOUNT 126 and its next
@@ -251,6 +251,10 @@ independent read-only review finds no actionable issue; both source/test hashes
 match before and after review. Other incomplete BIOS register-reset groups and
 the existing SWI cycle model remain separate limitations.
 
+OBSERVED in source inspection: the existing IWRAM reset also clears the final
+0x200 bytes, which the cited BIOS contract reserves. This candidate does not
+change that separate behavior; its regression and repair remain follow-up work.
+
 VERIFIED in private semantic probes: the first RNG call moves from runtime
 frame 3 to frame 1, restoring two previously missed early calls. At nominal
 reference VBlank sampling times, RNG/count matches rise from 1/240 to 238/240
@@ -259,8 +263,60 @@ the reference. The aligned control also matches all 240 guest VBlank-counter
 samples. These probes compile the complete changed scheduler translation unit
 against the unchanged remaining core units, with unchanged headers/layout
 checked. They establish this bounded behavioral effect, not optimized desktop
-performance or complete intro accuracy. A fresh normal build and full visual
-comparison remain pending.
+performance or complete intro accuracy. The subsequent fresh build and visual
+comparison are recorded below.
+
+### Fresh optimized build and native field acceptance
+
+VERIFIED: a fresh generic LTO/PGO build from `e4f782ee1c73` has normal executable
+SHA256 `31dcd42d37fe04c5819a8b9764ca4b2f53c806df51ee6e3809acdaa6b10a9568`.
+All 36 CTest verifiers pass against that configured optimized archive (2.10 s),
+which remains unchanged while building verifier consumers. All three desktop
+smokes and the owned-window F5/F8/F5/exit lifecycle check pass. All four
+Linux/Windows CI jobs pass this source head (run 40793442440).
+
+OBSERVED: the 600-frame boot training ROM/run/video fields match the prior build.
+Audio and machine-state hashes differ after restoring the early interrupts;
+both builds produce 329,149 samples and zero core underruns. This does not prove
+physical audio quality. The separate 600-frame saved-story checkpoint preserves
+every ROM/run/video/audio/state field exactly.
+
+VERIFIED: the full 3,600-frame visual comparison gains 154 nearby exact matches,
+increasing from 2,654 to 2,808, with zero previously exact matches lost.
+Same-frame exact matches remain 783. Nearby matches are searched within 120
+reference frames and do not establish timing accuracy. At current/reference
+frames 1,300/1,297, pixel differences fall from 3,041 to 2,664; at 1,500/1,497,
+from 3,110 to 2,730. Every remaining differing pixel in those two pairs is one of
+the two previously identified scenery-color swaps. The changes from the old
+images occupy exactly the former rider regions (442 and 469 pixels). This
+resolves those selected rider differences while leaving scenery palette phase
+and the rest of the unmatched intro under investigation.
+
+OBSERVED: the normal executable completes 18,000 native frames and all fifty F5
+saves at 59.7280 FPS (last window 59.7278), with zero queue-empty reports, p95/p99
+presentation bins of 17/18 ms, maximum interval 24.5860 ms and zero gaps above
+25 ms. This meets the campaign criterion for this bounded field/save workload.
+Nominal GBA rate is 59.7275 FPS. This is not whole-game qualification or an
+isolated causal performance claim for the BIOS correction.
+
+OBSERVED: a separate normal 9,000-frame active battle/story run also meets the
+bounded criterion: 59.7284 FPS (last window 59.7275), zero queue-empty reports,
+p95/p99 bins of 18/18 ms, maximum 20.8572 ms and zero gaps above 25 ms. All 25 F5
+requests are queued and written. Inputs finish the Geodude battle, level up and
+advance the trainer dialogue. Extra A presses reopen the trainer's dialogue,
+blocking the attempted Gym exit; the final image and decoded saved state confirm
+that actual outcome instead of assuming the planned route completed. The saved
+checkpoint at guest frame 262,367 has Torchic level 13, HP 16/36, and Wurmple
+level 4, HP 18/18. A subsequent paired continuation closes the dialogue and
+confirms the Gym exit at frame 263,867 (Rustboro City, 27,20).
+
+VERIFIED: paired natural-input continuations return to the Pokémon Center and
+complete healing at guest frame 267,767. Both 900-frame runs have identical final
+state bytes and no execution errors. Read-only state inspection reports Torchic
+level 13 at 36/36 HP and Wurmple level 4 at 18/18 HP, both with zero status flags;
+the final image shows the nurse's completed-healing dialogue. Throughput is
+81.111288 / 81.075783 FPS, with p95 steps 13.1230 / 13.1168 ms. This measures
+unpaced core throughput, separately from the native delivery runs above.
 
 OBSERVED story correction: the first attempted battle script selected Focus
 Energy at the lower left of the move grid, while Ember is at the lower right.
@@ -275,17 +331,17 @@ and no execution errors. This is observed progression, not a compatibility claim
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 previous head `929ec57` passes all four Linux/Windows CI jobs; BIOS follow-up CI pending, draft remains open |
-| Current iteration | BIOS forced-blank regression/fix passes all 36 tests, benchmarks and fresh review; private early RNG probe improves; new normal build pending. Existing normal executable SHA-256 begins `45d8450fd1b4` |
-| Story | Geodude fainted, Torchic reached level 13; frame 256,500 shows first Gym trainer Josh's defeat dialogue, Torchic 16/36 HP; payout/return to Gym pending |
-| Repeat throughput | Latest 900-frame victory pair: 77.797244 / 72.310475 FPS, p95 steps 13.6174 / 13.3377 ms; zero steps above 16.67 ms in either run |
-| SDL delivery | Latest default 18,000-frame/fifty-save getter build averages 59.7280 FPS but fails smoothness: maximum 26.1360 ms, two gaps above 25 ms |
+| Integration | PR #55 merged as `b55ca48c0903`, PR #56 as `a721d7f5c426`; PR #57 source `e4f782ee1c73` passes all four Linux/Windows CI jobs; both measured native workloads meet the bounded criterion |
+| Current iteration | BIOS forced-blank fix passes canonical and configured-core tests, benchmarks, fresh review and desktop smokes; normal executable SHA-256 begins `31dcd42d37fe` |
+| Story | First Gym trainer Josh defeated; returned to the Center and healed at frame 267,767: Torchic level 13, 36/36 HP; Wurmple level 4, 18/18 HP |
+| Repeat throughput | Latest 900-frame healing pair: 81.111288 / 81.075783 FPS, p95 steps 13.1230 / 13.1168 ms; one / zero steps above 16.67 ms |
+| SDL delivery | Field 18,000/fifty-save run: 59.7280 FPS, maximum 24.5860 ms; active story 9,000/twenty-five-save run: 59.7284 FPS, maximum 20.8572 ms; both have zero queue-empty reports and gaps above 25 ms |
 | Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
 | Audio | Latest default control reports zero queue-empty events; prior same-binary run reports four. This proxy does not establish physical audio quality |
-| Intro | Current integer-math runtime: 2,654 nearby exact matches of 3,600; new controlled snapshots isolate palette phase and rider differences at frames 1,300/1,500 |
-| Status | Active: snapshot capture is cheaper and nominal delivery is reached; long-run smoothness and intro guest-phase differences remain unresolved |
+| Intro | BIOS correction raises nearby exact matches to 2,808 of 3,600 (+154, zero lost); selected rider differences resolved, palette phase remains |
+| Status | Active: measured field/save and active story delivery meet the bounded target; broader playthrough coverage and remaining intro differences are still being investigated |
 
-The latest story pair's second elapsed duration exceeds summed step time by
+The earlier victory pair's second elapsed duration exceeds summed step time by
 about 1.02 s, versus about 0.026 s in the first run. That time outside summed
 steps remains unclassified and retained; these headless results do not establish
 native delivery smoothness.
