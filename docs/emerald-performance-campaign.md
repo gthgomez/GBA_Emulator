@@ -391,14 +391,53 @@ dialogue and exit the Center. Latest checkpoint 268,967 is Rustboro City at
 16,39; both segments complete with identical final state bytes and no execution
 errors. The healed party is preserved.
 
+### Cloud-loading transition controls
+
+VERIFIED: fresh serialized reference states at frames 2,710 and 2,711 accompany
+videos that byte-match the pinned raw capture. Rendering both states through
+our current PPU produces zero differing pixels. Recaptures at 2,725..2,727 also
+match the existing full capture byte for byte. This supports retaining the
+renderer while investigating the state supplied to it at this transition.
+
+OBSERVED: our nearby snapshots use DISPCNT `3740`, BLDCNT `0087`, BLDALPHA `1F1F`
+and BLDY `001F`, matching the game's cloud-loader setup. The selected reference
+snapshots still use DISPCNT `3641` and zero blend registers. A static render of
+our state at 2,726 exactly predicts runtime frame 2,727, including its 221 pale
+pixels. Swapping only reference palette data does not remove the difference.
+INFERRED: the snapshots represent different points in the loading/callback
+sequence. These observations do not establish the hardware-timing cause.
+
+VERIFIED in a private control: sampling at the reference's nominal VBlank times
+and initializing the PPU to its reference phase produces video identical to the
+canonical 3,600-frame capture after the first partial frame. Nearby exact
+matches are 2,807 rather than 2,808, with that first frame accounting for the
+entire change. This coupled phase/sampling control does not repair any remaining
+intro mismatch and is not adopted into production.
+
+OBSERVED control limitation: changing sampling time alone while retaining our
+initial PPU phase publishes fresh rasters on alternating calls. A six-call
+probe reports 0/160/0/160/0/160 fresh scanlines, versus 0/160/160/160/160/160 for
+the aligned control. The sampling-only visual result is therefore excluded
+from improvement claims. No game work RAM or RNG overrides, or canonical
+runtime changes, are introduced by these private probes.
+
+OBSERVED story coverage: paired natural-input runs return the healed party to
+the Gym and start Youngster Tommy's battle. His first level-8 Geodude falls
+from 25 to 16, 6 and 0 HP as Ember PP decreases; the next checkpoint at guest
+frame 277,187 visibly confirms fainting. Torchic remains level 13 at 32/36 HP.
+The read-only battle-structure inspection agrees with party data and the move
+grid, avoiding conclusions from partially animated HP bars. Every segment
+repeats with identical final state bytes and no execution errors. Trainer
+victory is not yet established by this milestone.
+
 ## Current checkpoint (2026-10-28)
 
 | Area | Latest bounded evidence |
 | --- | --- |
-| Integration | PR #57 merged as `33bf24dc21e1`, canonical main updated; PR #58 source `84181f859d49` passes all four Linux/Windows CI jobs (run 40798714954) |
+| Integration | PR #58 merged as `7e6c0a363217`, canonical main updated; all four Linux/Windows final-head jobs pass `b9a56c0` (run 40800455127) |
 | Current iteration | Reserved-IWRAM fix passes canonical and configured-core tests, benchmarks, fresh review, all desktop smokes, lifecycle check and both native workloads; measured executable SHA-256 begins `5fe9a223130a` |
-| Story | First Gym trainer Josh defeated; healed Torchic level 13, 36/36 HP and Wurmple level 4, 18/18 HP; checkpoint 268,967 is outside the Center at Rustboro City 16,39 |
-| Repeat throughput | Latest 900-frame healing pair: 81.111288 / 81.075783 FPS, p95 steps 13.1230 / 13.1168 ms; one / zero steps above 16.67 ms |
+| Story | Josh defeated; Tommy's first Geodude fainted, and frame 278,087 shows the next-opponent switch prompt. Torchic level 13, 32/36 HP; Wurmple level 4, 18/18 HP |
+| Repeat throughput | 600-frame first-faint pair: 77.083531 / 78.931062 FPS, p95 steps 13.9064 / 13.4936 ms; zero steps above 16.67 ms in either run |
 | SDL delivery | New field 18,000/fifty-save run: 59.7282 FPS, maximum 23.7671 ms; active story 9,000/twenty-five-save run: 59.7288 FPS, maximum 18.9643 ms; both have zero queue-empty reports and gaps above 25 ms |
 | Determinism | Every new paired story segment completes with byte-identical final states and no execution errors |
 | Audio | Both new default native runs report zero queue-empty events. Earlier failures are retained; this proxy does not establish physical audio quality |
