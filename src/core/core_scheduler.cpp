@@ -189,11 +189,31 @@ enum class HleSwiProfileKind : std::uint8_t {
   return base_cycles > magnitude ? base_cycles - magnitude : 0;
 }
 
+[[nodiscard]] bool hle_cpu_set_source_allowed(std::uint32_t source,
+                                              std::uint32_t byte_length) {
+  constexpr std::uint32_t kSourceRegionMask = 0x0E000000U;
+  if (byte_length == 0) {
+    return true;
+  }
+  const std::uint32_t end = source + byte_length;
+  return (source & kSourceRegionMask) != 0 && (end & kSourceRegionMask) != 0;
+}
+
 [[nodiscard]] std::uint32_t hle_cpu_set_base_cycles(std::uint32_t control,
-                                                    bool fast) {
+                                                    bool fast,
+                                                    std::uint32_t source) {
   std::uint32_t count = control & 0x001FFFFFU;
   if (fast) {
     count = (count + 7U) & ~7U;
+  }
+  if (count != 0) {
+    const bool word = fast || (control & (1U << 26U)) != 0;
+    const std::uint32_t byte_length = count * (word ? 4U : 2U);
+    if (!hle_cpu_set_source_allowed(source, byte_length)) {
+      return fast ? 86U : 84U;
+    }
+  }
+  if (fast) {
     return 318U + count * 12U;
   }
   return 64U + count * ((control & (1U << 26U)) != 0 ? 8U : 4U);
@@ -2806,16 +2826,16 @@ ArmStepResult CoreScheduler::execute_hle_swi(BiosSwiCall call,
     case 0x0B: {
       const std::optional<std::uint32_t> consumed = hle_cpu_set(false);
       return consumed.has_value()
-                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), false) -
-                                consumed.value(),
+                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), false,
+                                                    cpu_.register_value(0)) - consumed.value(),
                             HleSwiProfileKind::cpu_set)
                  : unsupported();
     }
     case 0x0C: {
       const std::optional<std::uint32_t> consumed = hle_cpu_set(true);
       return consumed.has_value()
-                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), true) -
-                                consumed.value(),
+                 ? executed(hle_cpu_set_base_cycles(cpu_.register_value(2), true,
+                                                    cpu_.register_value(0)) - consumed.value(),
                             HleSwiProfileKind::cpu_set)
                  : unsupported();
     }
@@ -3000,6 +3020,12 @@ std::optional<std::uint32_t> CoreScheduler::hle_cpu_set(bool fast) {
   std::uint32_t count = control & 0x001FFFFFU;
   if (fast) {
     count = (count + 7U) & ~7U;
+  }
+  if (count != 0) {
+    const std::uint32_t byte_length = count * (word ? 4U : 2U);
+    if (!hle_cpu_set_source_allowed(source, byte_length)) {
+      return 0U;
+    }
   }
 
   // S5: long copies previously left devices frozen until the SWI's full
