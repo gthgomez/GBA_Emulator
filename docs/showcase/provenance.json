@@ -1,0 +1,28 @@
+{
+  "source_commit": "f85025e253ae588906823ecbaf39d37fe0f79479",
+  "captured_at": "2026-10-30",
+  "kind": "real runtime rendered capture",
+  "files": [
+    {
+      "path": "build/showcase/desktop-test-pattern.png",
+      "bytes": 14474,
+      "sha256": "20c30e112cf34563f46da596dbf759b271fcb3dc76d0e6c9804b537a73f21593"
+    }
+  ],
+  "host": "gba-desktop",
+  "build_type": "Release",
+  "sdl": "3.4.18",
+  "video_driver": "dummy",
+  "audio_driver": "dummy",
+  "fixture_generator": "tools/make-synthetic-rom.py --kind video",
+  "fixture_sha256": "77fb9988835336b4bef6aefa6237013eec4859a02eda0d7e0dcdea7b41668c9a",
+  "presented_frames": 30,
+  "claims": "synthetic static test pattern, not gameplay, commercial compatibility, or physical display evidence",
+  "verification": {
+    "core_tests": 36,
+    "desktop_smoke": "PASS",
+    "desktop_save_smoke": "PASS",
+    "desktop_interactive_smoke": "PASS",
+    "capture_script_exit": 0
+  }
+}
