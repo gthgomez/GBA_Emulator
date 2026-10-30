@@ -5,7 +5,7 @@ sibling Android dev shell. Controlled external beta remains blocked without devi
 
 ## See the desktop host render
 
-![Actual SDL dummy-window render of the source-authored GBA mode-3 red and blue test pattern](docs/showcase/desktop-test-pattern.png)
+![Actual SDL dummy-window render of the source-authored GBA mode-3 red and blue test pattern](build/showcase/desktop-test-pattern.png)
 
 **Real runtime capture, synthetic test pattern.** This is the desktop host's
 720×480 render after 30 presented frames, using the repository's hand-authored

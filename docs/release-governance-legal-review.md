@@ -14,7 +14,7 @@ true before any external beta or public-facing repository/app listing can exist.
 | ROMs | No commercial ROM, copyrighted game asset, downloader, scanner, or broad storage import is present. | `docs/fixture-license-registry.md`; current tests use source-owned byte arrays. | PASS |
 | Fixtures | Future fixtures require provenance, license/redistribution terms, no copyrighted game content, and exact paths. | `docs/fixture-license-registry.md`; `CompatibilityFixture` rejects unlicensed/non-redistributable entries. | PASS |
 | Trademarks | Public wording must use "Game Boy Advance" only descriptively and avoid implying Nintendo affiliation. | README currently describes a portable GBA core scaffold and avoids affiliation claims. | PASS |
-| Screenshots | No screenshots from commercial games may be used in docs, store listings, marketing, or tests. | No screenshot/image assets are present. | PASS |
+| Screenshots | No screenshots from commercial games may be used in docs, store listings, marketing, or tests. | `build/showcase/desktop-test-pattern.png`: SDL runtime capture of source-authored synthetic red/blue bars; provenance in `docs/showcase/provenance.json`. No commercial-game media. | PASS |
 | Compatibility Claims | No public claim of production readiness, superiority, broad compatibility, or hardware accuracy without evidence. | Roadmap explicitly says this is not production-ready and avoids mature-emulator comparisons. | PASS |
 
 ## Privacy And Data-Safety Review

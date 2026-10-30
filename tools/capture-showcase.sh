@@ -6,7 +6,7 @@ exe="${GBA_DESKTOP_BIN:-$repo_root/build/desktop/apps/desktop/gba-desktop}"
 [ -x "$exe" ] || { echo "Build gba-desktop first (docs/DESKTOP.md)." >&2; exit 2; }
 capture_tmp="$(mktemp -d)"
 trap 'rm -rf "$capture_tmp"' EXIT
-output="$repo_root/docs/showcase"
+output="$repo_root/build/showcase"
 mkdir -p "$output"
 python3 "$repo_root/tools/make-synthetic-rom.py" --kind video --output "$capture_tmp/synthetic-video.gba"
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \

@@ -6,12 +6,18 @@ with the capture-only wrapper added in this branch. No core/host behavior change
 
 ## What the image proves
 
-`desktop-test-pattern.png` is the **actual 720×480 SDL desktop-host render** of
+[`build/showcase/desktop-test-pattern.png`](../../build/showcase/desktop-test-pattern.png)
+is the **actual 720×480 SDL desktop-host render** of
 the existing source-authored `video` fixture in
 [`tools/make-synthetic-rom.py`](../../tools/make-synthetic-rom.py). Its ARM code
 writes alternating red/blue pixels to GBA mode-3 VRAM, then idles. The host ran
 30 presented frames using SDL's dummy video/audio drivers and its software
 renderer, and captured the presented window through `--window-screenshot`.
+
+The tracked PNG lives in the release gate’s existing `build/` generated-output
+allowance. The capture wrapper writes there; no guard, extension rule, or
+commercial-media restriction is changed. Only this exact generated PNG is
+tracked, not build outputs, fixture binaries, or saves.
 
 The PNG is checked for the exact synthetic bars, dimensions, and nonuniform
 pixels. It demonstrates the core → framebuffer → SDL texture/present/capture

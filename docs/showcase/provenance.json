@@ -4,7 +4,7 @@
   "kind": "real runtime rendered capture",
   "files": [
     {
-      "path": "docs/showcase/desktop-test-pattern.png",
+      "path": "build/showcase/desktop-test-pattern.png",
       "bytes": 14474,
       "sha256": "20c30e112cf34563f46da596dbf759b271fcb3dc76d0e6c9804b537a73f21593"
     }
