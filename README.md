@@ -3,6 +3,31 @@
 Portable Game Boy Advance emulator core (C++17) with public mGBA test-suite evidence and a
 sibling Android dev shell. Controlled external beta remains blocked without device evidence.
 
+## See the desktop host render
+
+![Actual SDL dummy-window render of the source-authored GBA mode-3 red and blue test pattern](docs/showcase/desktop-test-pattern.png)
+
+**Real runtime capture, synthetic test pattern.** This is the desktop host's
+720×480 render after 30 presented frames, using the repository's hand-authored
+video fixture and SDL dummy drivers. The alternating bars demonstrate the
+emulation-to-display path; they are not gameplay or a retail-game compatibility
+claim. The fixture becomes static, so no gameplay video is implied.
+[Capture source, commands, and fresh check results](docs/showcase/README.md).
+
+### Try the desktop host
+
+Build with CMake and SDL3 as described in [the desktop guide](docs/DESKTOP.md).
+Then launch `gba-desktop` with a legally obtained, out-of-tree test-suite ROM.
+The repository supplies no ROM or BIOS. Arrow keys move, Z/X are A/B, Enter is
+Start, and P pauses; F5/F8 save/load a checkpoint. Android uses the separate
+[GbaEmulatorAndroid shell](https://github.com/gthgomez/GbaEmulatorAndroid).
+
+For the same source-authored fixture shown above, after building the host:
+
+```sh
+./tools/capture-showcase.sh
+```
+
 ## Current Status (updated 2026-09-29; dimension-scoped)
 
 | Area | State | Notes |
