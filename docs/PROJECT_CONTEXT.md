@@ -88,7 +88,7 @@ GBA_Emulator/
 - **All assertions are verified headlessly in-memory** — tests compile and run as native Windows/Linux executables.
 - **Timing-critical code must be deterministic** — run-to-run variance is tracked via benchmark baselines.
 - **BIOS HLE** is used for game boot — no bundled BIOS file. Entry PC is `0x08000000`.
-- **Legal boundary:** mGBA public test suite ROM only. No commercial ROM or BIOS claims.
+- **Legal boundary:** Public test matrix uses the locally built mGBA suite ROM only. One user-supplied retail boot smoke is documented as non-redistributed portfolio evidence in `docs/evidence/2026-11-18-emerald-boot.md`; no general commercial-ROM or BIOS claim is made.
 
 ## Verification
 

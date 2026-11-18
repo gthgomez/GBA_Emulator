@@ -14,8 +14,8 @@ true before any external beta or public-facing repository/app listing can exist.
 | ROMs | No commercial ROM, copyrighted game asset, downloader, scanner, or broad storage import is present. | `docs/fixture-license-registry.md`; current tests use source-owned byte arrays. | PASS |
 | Fixtures | Future fixtures require provenance, license/redistribution terms, no copyrighted game content, and exact paths. | `docs/fixture-license-registry.md`; `CompatibilityFixture` rejects unlicensed/non-redistributable entries. | PASS |
 | Trademarks | Public wording must use "Game Boy Advance" only descriptively and avoid implying Nintendo affiliation. | README currently describes a portable GBA core scaffold and avoids affiliation claims. | PASS |
-| Screenshots | No screenshots from commercial games may be used in docs, store listings, marketing, or tests. | `build/showcase/desktop-test-pattern.png`: SDL runtime capture of source-authored synthetic red/blue bars; provenance in `docs/showcase/provenance.json`. No commercial-game media. | PASS |
-| Compatibility Claims | No public claim of production readiness, superiority, broad compatibility, or hardware accuracy without evidence. | Roadmap explicitly says this is not production-ready and avoids mature-emulator comparisons. | PASS |
+| Screenshots | Commercial-game screenshots require an explicit, documented exception limited to a single boot/portfolio capture with recorded source, hash, and non-redistribution note; no store listing or marketing use. Synthetic runtime captures are permitted with provenance. | `build/showcase/desktop-test-pattern.png` is a synthetic SDL runtime capture with provenance in `docs/showcase/provenance.json`; `docs/evidence/2026-11-18-emerald-boot.md` records the one local Emerald title capture; no ROM/BIOS/save is tracked. | PASS (narrow portfolio exception) |
+| Compatibility Claims | No public claim of production readiness, superiority, broad compatibility, or hardware accuracy without evidence. A local boot smoke proves boot only. | Roadmap says this is not production-ready and avoids mature-emulator comparisons; the Emerald boot record states what is NOT claimed. | PASS |
 
 ## Privacy And Data-Safety Review
 
@@ -47,6 +47,7 @@ Allowed:
 - "Legal caller-provided byte arrays."
 - "Android integration intentionally deferred" or "bounded local runtime seed."
 - "Not production-ready."
+- "Local commercial-ROM boot smoke (user-supplied ROM, not distributed; no general compatibility claim)."
 
 Disallowed without new evidence:
 
@@ -54,11 +55,14 @@ Disallowed without new evidence:
 - "Best/fastest/most accurate GBA emulator."
 - "Runs all/most commercial games."
 - "Compatible with commercial ROMs."
+- "Retail-game compatibility verified."
 - "No BIOS required" as a broad user-facing legality claim.
 - Any Nintendo affiliation or endorsement implication.
 
 ## Release Governance Result
 
 Phase 71 is complete as a bounded local governance gate: release-facing wording and
-fixture handling are reviewed against the current repo state. External beta remains
-blocked until Phase 72 beta evidence and device/platform proof exist.
+fixture handling are reviewed against the current repo state. The 2026-11-18
+screenshot exception covers one documented local boot capture and does not change the
+beta gate. External beta remains blocked until Phase 72 beta evidence and
+device/platform proof exist.
