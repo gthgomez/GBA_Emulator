@@ -34,8 +34,10 @@ host.
   executables — no Android, display, or JNI required. The desktop host is built
   with CMake + SDL3; its interactive path is exercised under SDL's dummy video
   and audio drivers, so CI still needs no display.
-- **Legal boundary:** mGBA public test suite ROM only. No commercial ROM or BIOS
-  compatibility claims.
+- **Legal boundary:** Public test matrix uses the locally built mGBA suite ROM only.
+  One user-supplied retail boot smoke is documented as non-redistributed portfolio
+  evidence in `docs/evidence/2026-11-18-emerald-boot.md`; no general commercial-ROM or
+  BIOS compatibility claim is made.
 
 ## High-Risk Zones (pause and confirm)
 

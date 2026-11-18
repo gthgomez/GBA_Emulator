@@ -38,7 +38,7 @@ Before any fixture or reference implementation is added, record:
 - Whether counsel review is needed.
 - Exact file paths added.
 
-Commercial ROMs, BIOS images, copyrighted screenshots, copyrighted audio, ROM patches requiring copyrighted inputs, and unclear-provenance compatibility packs remain disallowed.
+Commercial ROMs, BIOS images, copyrighted audio, ROM patches requiring copyrighted inputs, and unclear-provenance compatibility packs remain disallowed. Commercial-game screenshots are disallowed except for the single documented local boot/portfolio capture in `docs/evidence/2026-11-18-emerald-boot.md`; that image is not a test fixture and is not used for compatibility verification.
 
 ## Future Fixture Gate
 

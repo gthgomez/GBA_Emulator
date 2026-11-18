@@ -188,5 +188,5 @@ Out of scope for this repository tree (core + tools):
 - Checked-in ROMs or BIOS images.
 - Filesystem cartridge loading and save-file persistence.
 - Downloaders or storage scanners.
-- App-store deployment or public retail-game compatibility claims.
+- App-store deployment or general public retail-game compatibility claims. The documented local boot smoke is not a compatibility claim.
 

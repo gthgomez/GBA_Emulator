@@ -41,6 +41,12 @@ $allowedGenerated = @(
   "build"
 )
 
+# One documented local boot/portfolio capture is the only permitted image asset.
+# It is evidence, not a fixture; ROM, BIOS and save files remain banned.
+$allowedEvidenceImages = @(
+  "docs/evidence/2026-11-18-emerald-boot/emerald-title.png"
+)
+
 # Scan the git INDEX (tracked files), not the working tree: out-of-tree
 # external ROMs on disk must not spuriously fail the gate, while force-added
 # tracked assets (git add foo.gba) are still caught because they appear in
@@ -70,7 +76,8 @@ foreach ($pattern in $forbiddenAssetExtensions) {
           break
         }
       }
-      -not $inAllowedGenerated
+      $isAllowedEvidenceImage = $allowedEvidenceImages -contains $gitPath
+      -not $inAllowedGenerated -and -not $isAllowedEvidenceImage
     })
   if ($offending.Count -gt 0) {
     $paths = $offending -join ", "
@@ -84,6 +91,9 @@ $claimPatterns = @(
   "most accurate gba emulator",
   "runs all commercial",
   "runs most commercial",
+  "compatible with commercial",
+  "retail compatibility verified",
+  "runs retail games",
   "nintendo endorsed",
   "official nintendo"
 )
@@ -100,6 +110,26 @@ foreach ($relative in $publicClaimScanFiles) {
   foreach ($pattern in $claimPatterns) {
     if ($content.ToLowerInvariant().Contains($pattern)) {
       throw "release_readiness: unsupported public claim pattern '$pattern' in $($file.FullName)"
+    }
+  }
+}
+
+# The narrow screenshot exception is valid only while its evidence record exists
+# and continues to state exactly what was run and what is NOT claimed.
+$bootEvidenceImage = "docs\evidence\2026-11-18-emerald-boot\emerald-title.png"
+$bootEvidenceDoc = "docs\evidence\2026-11-18-emerald-boot.md"
+if (Test-Path -LiteralPath (Join-Path $repoRoot $bootEvidenceImage)) {
+  if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $bootEvidenceDoc) -PathType Leaf)) {
+    throw "release_readiness: boot screenshot requires $bootEvidenceDoc"
+  }
+  $bootEvidence = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $bootEvidenceDoc)
+  foreach ($required in @(
+      "NOT CLAIMED",
+      "emerald-title.png",
+      "a9dec84dfe7f62ab2220bafaef7479da0929d066ece16a6885f6226db19085af"
+    )) {
+    if (-not $bootEvidence.Contains($required)) {
+      throw "release_readiness: $bootEvidenceDoc must record '$required'"
     }
   }
 }

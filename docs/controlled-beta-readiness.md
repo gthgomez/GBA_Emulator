@@ -104,7 +104,7 @@ Integration map: [`android-integration-plan.md`](android-integration-plan.md). I
 - Public mGBA suite regression baseline is green on workstation (`tools/mgba-suite-green-baseline.json`);
   seven video **oracle** aliases are green; the upstream interactive `video` suite is not.
 - No BIOS image is bundled or executed; BIOS/HLE behavior is intentionally bounded.
-- No commercial ROM or retail-game compatibility claim exists.
+- No general commercial-ROM or retail-game compatibility claim exists; the single local boot smoke in `docs/evidence/2026-11-18-emerald-boot.md` is not a beta-readiness claim.
 - PPU/APU/DMA/save-state behavior remains seed-level and not hardware-complete.
 - Save-state codec serializes a public restorable subset, not every modeled internal
   device register.

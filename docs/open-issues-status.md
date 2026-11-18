@@ -15,7 +15,7 @@ what **remains** for production and controlled beta. It does not replace per-sui
 | Legal mGBA Game Boy Advance Test Suite (locally built ROM) | Yes, with artifacts |
 | Thirteen upstream suite targets at `pass=total` | Yes, when matrix is GREEN |
 | Seven deterministic video oracle probes | Yes, as bounded framebuffer evidence |
-| Retail/commercial GBA game compatibility | **No** |
+| Retail/commercial GBA game compatibility | **No general claim** (one local Emerald boot smoke, 2026-11-18) |
 | BIOS bundled or full hardware fidelity | **No** |
 
 ## Closed (Jun 2026)
@@ -162,7 +162,7 @@ artifacts exist — not merely synthetic self-test PASS.
 
 ### Explicit non-goals (until evidence exists)
 
-- Commercial ROM loading claims.
+- Broad commercial-ROM compatibility claims (the documented local boot smoke is not a compatibility claim).
 - App-store readiness or public superiority claims.
 - Device thermal/audio/frame pacing without measured artifacts.
 

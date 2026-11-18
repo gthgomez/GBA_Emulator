@@ -28,7 +28,7 @@ For the same source-authored fixture shown above, after building the host:
 ./tools/capture-showcase.sh
 ```
 
-## Current Status (updated 2026-09-29; dimension-scoped)
+## Current Status (updated 2026-11-18; dimension-scoped)
 
 | Area | State | Notes |
 | --- | --- | --- |
@@ -38,15 +38,18 @@ For the same source-authored fixture shown above, after building the host:
 | Video oracle aliases | GREEN | 7 deterministic `video_probe` hashes via `.\tools\run-video-suite-all.ps1`; upstream interactive `video` suite is absent from the matrix **by design** (no `END pass=total`), not missing by failure |
 | Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` stays RED while `misc-edge` (6/12) and `timing` (1956/2020) are below `pass=total`; `io-read` is no longer a regression (latest: `build/test-results/credibility-matrix-latest.json`) |
 | Physical device soak | FAIL / BLOCKED | 2026-08-14 P1 soak: choppy audio (2,787 underruns @ frame 60), 1.4–2 fps pacing with present stall, thermal unmeasured — failed records preserved in `docs/evidence/` |
-| Commercial-ROM compatibility | NO CLAIM | Only the legal locally built mGBA suite ROM is exercised; retail-game compatibility untested — see `docs/fixture-license-registry.md` |
+| Commercial-ROM boot smoke | LOCAL ONLY (2026-11-18) | Stock Emerald (`BPEE`) boots through title and intro on the desktop/headless host; one user-supplied local ROM, no ROM/BIOS redistribution, no general compatibility claim — see `docs/evidence/2026-11-18-emerald-boot.md` |
 | Android shell | Scaffold only | [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) — JNI bridge self-test; see `docs/android-integration-plan.md` |
 | Controlled beta | BLOCKED | No passing target-device soak row — `docs/controlled-beta-readiness.md` |
 
 > **Note:** Sanitized builds (`run-core-tests.ps1 -Sanitize`) cannot run in this environment — the bundled MinGW `g++` (Rev1, 12.2.0) ships no `libasan`/`libubsan`, so ASan/UBSan link fails. This is a toolchain limitation, not an engine defect.
 
-**Claims policy:** Legal mGBA Game Boy Advance Test Suite ROM only (locally built). No
-commercial ROM, BIOS bundle, or retail-game compatibility claims. Open/closed issue
-tracking: `docs/open-issues-status.md`. Active status: [STATUS.md](STATUS.md) | [QA_CHECKLIST.md](QA_CHECKLIST.md).
+**Claims policy:** The public test matrix uses only the legal, locally built mGBA Game
+Boy Advance Test Suite ROM. One user-supplied retail boot smoke (Pokemon Emerald,
+`BPEE`) is documented as non-redistributed local evidence for the portfolio
+screenshot; it does not establish general commercial-ROM compatibility. No ROM, BIOS
+bundle, save blob, or compatibility claim is distributed. Open/closed issue tracking:
+`docs/open-issues-status.md`. Active status: [STATUS.md](STATUS.md) | [QA_CHECKLIST.md](QA_CHECKLIST.md).
 
 ## Roadmap
 

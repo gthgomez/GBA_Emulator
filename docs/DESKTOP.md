@@ -234,7 +234,7 @@ BIOS files, or private saves are used or committed.
   gamepad testing was not performed (no controller connected), and audible
   audio / hands-on keyboard qualification remains with the user.
 - Save-state and cartridge-save behaviour is verified through synthetic fixtures
-  and unit tests; no retail ROM compatibility is claimed.
+  and unit tests; no general retail ROM compatibility is claimed. One local stock-Emerald boot smoke is documented in `docs/evidence/2026-11-18-emerald-boot.md`.
 - Reset-preserves-cartridge-save is implemented in the desktop host, because the
   core `CoreSession::reset()` clears the game pak. Any other host (e.g. Android)
   must apply the same policy to be equivalent.
