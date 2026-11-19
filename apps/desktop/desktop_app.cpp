@@ -4,12 +4,14 @@
 #include <SDL3/SDL.h>
 
 #include "desktop_persistence.hpp"
+#include "desktop_rom_file.hpp"
 #include "save_state_guard.hpp"
 #include "save_type_selection.hpp"
 #include "stb_image_write.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -66,6 +68,12 @@ const std::unordered_map<SDL_GamepadButton, KeypadButton> kPadBindings{
 
 }  // namespace
 
+struct DesktopApp::RomDialogResult {
+  std::atomic<bool> ready{false};
+  std::string path;
+  std::string error;
+};
+
 DesktopApp::DesktopApp(HostOptions options)
     : options_(std::move(options)), override_rom_path_(options_.rom_path) {}
 
@@ -103,21 +111,17 @@ bool DesktopApp::init_window() {
     SDL_free(pads);
   }
 
-  const std::string title =
-      options_.rom_path.empty()
-          ? std::string("gba-desktop")
-          : "gba-desktop - " +
-                persistence::native_path(options_.rom_path).filename().u8string();
   const int width = 240 * options_.initial_scale;
   const int height = 160 * options_.initial_scale;
   const SDL_WindowFlags flags = options_.start_fullscreen
                                     ? SDL_WINDOW_FULLSCREEN
                                     : SDL_WINDOW_RESIZABLE;
-  window_ = SDL_CreateWindow(title.c_str(), width, height, flags);
+  window_ = SDL_CreateWindow("gba-desktop", width, height, flags);
   if (window_ == nullptr) {
     std::cerr << "gba-desktop: SDL_CreateWindow failed: " << SDL_GetError() << "\n";
     return false;
   }
+  update_window_title();
   renderer_ = SDL_CreateRenderer(window_, nullptr);
   if (renderer_ == nullptr) {
     std::cerr << "gba-desktop: SDL_CreateRenderer failed: " << SDL_GetError() << "\n";
@@ -154,9 +158,14 @@ bool DesktopApp::init_audio() {
 }
 
 bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback) {
-  const std::vector<std::uint8_t> rom = persistence::read_binary_file(path);
+  const auto rom = read_gba_rom(path);
   if (rom.empty()) {
-    std::cerr << "gba-desktop: cannot read ROM: " << path << "\n";
+    std::cerr << "gba-desktop: cannot read ROM (expected a file up to 32 MiB): "
+              << path << "\n";
+    return false;
+  }
+  if (!has_gba_cartridge_header(rom)) {
+    std::cerr << "gba-desktop: missing or invalid GBA cartridge header: " << path << "\n";
     return false;
   }
 
@@ -264,10 +273,7 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
         std::cerr << "; starting with a fresh save\n";
       }
     }
-    if (!cartridge_save_enabled_) {
-      SDL_SetWindowTitle(window_, "gba-desktop - [save writes disabled]");
-    }
-    cartridge_save_snapshot_ = runtime_.session().memory().export_game_pak_save();
+      cartridge_save_snapshot_ = runtime_.session().memory().export_game_pak_save();
   } else {
     // No cartridge-backed save: leave the path empty so shutdown cannot create
     // a spurious zero-length .sav next to the ROM.
@@ -276,6 +282,7 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
 
   session_loaded_ = true;
   paused_ = false;
+  update_window_title();
   clear_input();
   clear_queued_audio();
   next_frame_deadline_ = Clock::now();
@@ -468,9 +475,7 @@ bool DesktopApp::flush_cartridge_save(bool force) {
     if (!ec && (!exists || persistence::backup_file(cartridge_save_path_, ".rejected"))) {
       cartridge_save_enabled_ = true;
       retry_cartridge_save_enable_ = false;
-      const std::string title =
-          "gba-desktop - " + persistence::native_path(options_.rom_path).filename().u8string();
-      SDL_SetWindowTitle(window_, title.c_str());
+      update_window_title();
       std::cerr << "gba-desktop: cartridge save destination ready again: "
                 << cartridge_save_path_ << "\n";
     }
@@ -591,36 +596,109 @@ bool DesktopApp::read_save_state_path(const std::string& path, const std::string
 }
 
 void DesktopApp::open_rom_dialog() {
-  SDL_DialogFileFilter filters[] = {{const_cast<char*>("GBA ROMs"),
-                                     const_cast<char*>("gba")}};
+  if (rom_dialog_) {
+    return;
+  }
+  static constexpr SDL_DialogFileFilter filters[] = {{"GBA ROMs", "gba"}};
+  rom_dialog_ = std::make_shared<RomDialogResult>();
+  // SDL may finish on another thread or after the window starts closing.
+  // Its callback owns the result only. The event loop changes the session.
+  auto* callback_result = new std::shared_ptr<RomDialogResult>(rom_dialog_);
+  clear_queued_audio();
+  update_window_title();
   SDL_ShowOpenFileDialog(
       [](void* userdata, const char* const* filelist, int) {
-        auto* self = static_cast<DesktopApp*>(userdata);
+        const std::unique_ptr<std::shared_ptr<RomDialogResult>> result(
+            static_cast<std::shared_ptr<RomDialogResult>*>(userdata));
         if (filelist == nullptr) {
-          // Dialog cancelled or failed. If no game has ever loaded, quit
-          // rather than spin on an empty window.
-          if (!self->session_loaded_) {
-            self->running_ = false;
+          (*result)->error = SDL_GetError();
+          if ((*result)->error.empty()) {
+            (*result)->error = "The system file chooser could not open.";
           }
-          return;
+        } else if (filelist[0] != nullptr) {
+          (*result)->path = filelist[0];
         }
-        if (filelist[0] != nullptr) {
-          self->switch_rom(filelist[0]);
-        }
+        (*result)->ready.store(true, std::memory_order_release);
       },
-      this, window_, filters, 1, nullptr, false);
+      callback_result, window_, filters, 1, nullptr, false);
+}
+
+void DesktopApp::poll_rom_dialog() {
+  if (!rom_dialog_ || !rom_dialog_->ready.load(std::memory_order_acquire)) {
+    return;
+  }
+  const auto result = std::move(rom_dialog_);
+  if (quit_after_dialog_) {
+    request_quit();
+    return;
+  }
+  if (!result->error.empty()) {
+    std::cerr << "gba-desktop: file chooser failed: " << result->error
+              << ". Pass a ROM path on the command line.\n";
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Could not open file chooser",
+                             "Use the ROM's path when launching gba-desktop.", window_);
+    if (!session_loaded_) {
+      startup_dialog_failed_ = true;
+      running_ = false;
+    }
+  } else if (result->path.empty()) {
+    if (!session_loaded_) {
+      running_ = false;
+    }
+  } else if (!switch_rom(result->path)) {
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Could not open ROM",
+                            "Choose a readable GBA ROM and check that the save directory is writable.",
+                             window_);
+  }
+  clear_queued_audio();
+  next_frame_deadline_ = Clock::now();
+  update_window_title();
+}
+
+void DesktopApp::request_quit() {
+  if (rom_dialog_) {
+    quit_after_dialog_ = true;
+  } else {
+    quit_requested_ = true;
+  }
+}
+
+void DesktopApp::update_window_title() {
+  std::string title = "gba-desktop";
+  if (!options_.rom_path.empty()) {
+    title += " - " + persistence::native_path(options_.rom_path).filename().u8string();
+  }
+  if (rom_dialog_) title += " [Choosing ROM]";
+  if (paused_) title += " [Paused]";
+  if (mute_) title += " [Muted]";
+  if (!cartridge_save_enabled_ && !cartridge_save_path_.empty()) {
+    title += " [Save writes disabled]";
+  }
+  title += " (O: Open ROM, F1: Controls)";
+  SDL_SetWindowTitle(window_, title.c_str());
+}
+
+void DesktopApp::show_controls() {
+  SDL_ShowSimpleMessageBox(
+      SDL_MESSAGEBOX_INFORMATION, "GBA controls",
+      "D-pad    Arrow keys\nA / B    Z / X\nStart / Select    Enter / Backspace\n"
+      "L / R    S / A\n\nPause    P / Space\nSave / Load state    F5 / F8\n"
+      "Reset    F9\nMute    M\nFullscreen    F11\nFast-forward    Hold Tab\n"
+      "Open ROM    O\nQuit    Esc", window_);
+  clear_queued_audio();
+  next_frame_deadline_ = Clock::now();
 }
 
 void DesktopApp::handle_event(const union SDL_Event& event) {
   switch (event.type) {
     case SDL_EVENT_QUIT:
-      quit_requested_ = true;
+      request_quit();
       break;
     case SDL_EVENT_KEY_DOWN:
       if (!event.key.repeat) {
         switch (event.key.scancode) {
           case SDL_SCANCODE_ESCAPE:
-            quit_requested_ = true;
+            request_quit();
             discard_requested_ = confirm_unsaved_quit_ &&
                                  (event.key.mod & SDL_KMOD_SHIFT) != 0;
             break;
@@ -633,7 +711,9 @@ void DesktopApp::handle_event(const union SDL_Event& event) {
               clear_queued_audio();
               next_frame_deadline_ = Clock::now();
             }
+            update_window_title();
             break;
+          case SDL_SCANCODE_F1: show_controls(); break;
           case SDL_SCANCODE_F5: write_save_state(1); break;
           case SDL_SCANCODE_F8: read_save_state(1); break;
           case SDL_SCANCODE_F9: reset_runtime(); break;
@@ -641,6 +721,7 @@ void DesktopApp::handle_event(const union SDL_Event& event) {
           case SDL_SCANCODE_M:
             mute_ = !mute_;
             clear_queued_audio();
+            update_window_title();
             break;
           case SDL_SCANCODE_O: open_rom_dialog(); break;
           default: apply_key(event.key.scancode, true); break;
@@ -657,7 +738,7 @@ void DesktopApp::handle_event(const union SDL_Event& event) {
       sync_input_mask();
       break;
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-      quit_requested_ = true;
+      request_quit();
       break;
     case SDL_EVENT_GAMEPAD_ADDED:
       open_gamepad(static_cast<unsigned int>(event.gdevice.which));
@@ -666,7 +747,7 @@ void DesktopApp::handle_event(const union SDL_Event& event) {
       close_gamepad(static_cast<unsigned int>(event.gdevice.which));
       break;
     case SDL_EVENT_DROP_FILE:
-      if (event.drop.data != nullptr) {
+      if (event.drop.data != nullptr && !rom_dialog_) {
         switch_rom(event.drop.data);
       }
       break;
@@ -817,6 +898,13 @@ int DesktopApp::run() {
     while (SDL_PollEvent(&event)) {
       handle_event(event);
     }
+    if (!running_) {
+      break;
+    }
+    poll_rom_dialog();
+    if (!running_) {
+      break;
+    }
     if (quit_requested_) {
       quit_requested_ = false;
       if (!session_loaded_ || flush_cartridge_save(true)) {
@@ -849,7 +937,7 @@ int DesktopApp::run() {
       next_frame_deadline_ = Clock::now();
     }
 
-    if (!session_loaded_) {
+    if (!session_loaded_ || rom_dialog_) {
       previous_present.reset();
       // Waiting for the user to pick (or cancel) a ROM in the file dialog.
       SDL_Delay(10);
@@ -945,7 +1033,7 @@ int DesktopApp::run() {
               << ", max_ms=" << frame_intervals.maximum_ms()
               << ", over_25ms=" << frame_intervals.over_25ms() << ")\n";
   }
-  return 0;
+  return startup_dialog_failed_ ? 3 : 0;
 }
 
 }  // namespace gba::desktop

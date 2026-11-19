@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -31,7 +32,9 @@ inline std::filesystem::path native_path(const std::string& utf8_path) {
 
 // Reads a whole file. Returns an empty vector when the file is missing,
 // unreadable, or genuinely empty; callers treat all three as "no data".
-inline std::vector<std::uint8_t> read_binary_file(const std::string& path) {
+inline std::vector<std::uint8_t> read_binary_file(
+    const std::string& path,
+    std::size_t max_size = std::numeric_limits<std::size_t>::max()) {
   std::error_code ec;
   const std::filesystem::path native = native_path(path);
   // Directories can be opened on some platforms; reject anything that is not a
@@ -44,7 +47,7 @@ inline std::vector<std::uint8_t> read_binary_file(const std::string& path) {
     return {};
   }
   const std::streamsize size = file.tellg();
-  if (size < 0) {
+  if (size < 0 || static_cast<std::uintmax_t>(size) > max_size) {
     return {};
   }
   file.seekg(0, std::ios::beg);

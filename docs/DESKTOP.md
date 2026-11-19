@@ -23,9 +23,22 @@ license/attribution files — run:
 # -> dist\gba-desktop-0.1.0-windows-x64.zip
 ```
 
-Linux: install the SDL3 dev packages (or build pinned SDL3 from source, as CI
-does), then `cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release` and
-`cmake --build build/desktop`.
+### Build on Linux
+
+Install a C++17 compiler, CMake 3.24 or newer, and the SDL3 development
+package. With SDL3 installed in the system prefix, run from the repository root.
+
+```sh
+cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release
+cmake --build build/desktop --parallel
+./build/desktop/apps/desktop/gba-desktop
+```
+
+The Linux CI build uses [SDL 3.4.18](https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18).
+If you install SDL3 from source into your own prefix, add
+`-DCMAKE_PREFIX_PATH=/path/to/sdl-install` to the first command. For native
+ROM selection, SDL uses a desktop file chooser such as the file chooser portal
+or Zenity. You can also pass the ROM path directly.
 
 ## Play mode
 
@@ -34,15 +47,20 @@ does), then `cmake -S . -B build/desktop -DCMAKE_BUILD_TYPE=Release` and
 .\build\desktop\apps\desktop\gba-desktop.exe D:\ROMs\game.gba
 ```
 
-Launching with no arguments opens a file picker instead of printing usage.
+Launching with no arguments opens a file picker. Choose a legally obtained
+`.gba` image up to 32 MiB with a valid cartridge header. The host accepts
+generated homebrew fixtures with a valid fixed header byte and checksum.
+From a Linux terminal, for example, run
+`./build/desktop/apps/desktop/gba-desktop "/path/to/My Test.gba"`.
 To resume a checkpoint at launch, pass both the ROM and `--load-state`, for
 example `gba-desktop --rom game.gba --load-state checkpoint.state`. The host
 rejects states for a different ROM or save type; keep checkpoints and cartridge
 saves outside the repository.
 
 Paths containing spaces are fine (quote them in the shell as usual). The window
-shows the engine framebuffer (nearest-neighbor, letterboxed, resizable, F11
-fullscreen). Controls:
+shows the engine framebuffer with nearest-neighbor scaling and letterboxing.
+The title shows the active ROM, pause state, and mute state. Press F1 for the
+keyboard controls while the app is open.
 
 | Input | Action |
 | --- | --- |
@@ -55,6 +73,7 @@ fullscreen). Controls:
 | F5 / F8 | Save / load state (slot 1) |
 | F9 | Reset (full re-boot; keeps cartridge save) |
 | M | Mute |
+| F1 | Show keyboard controls |
 | O | Open ROM dialog |
 | Drag-and-drop | Open ROM |
 | Esc | Quit |
@@ -219,10 +238,7 @@ BIOS files, or private saves are used or committed.
 - The Pokemon Emerald uniform-black regression (issue #15) introduced by
   `6785fcc` was diagnosed in PR #14 and **fixed in PR #17** (PPU windowing
   bypass when no window is enabled). It is historical, not current.
-- A separate engine defect was found while building the interactive fixture: a
-  bare branch-to-self (`B #-8`) runs away instead of looping, while a
-  branch-to-previous-instruction loop works. It is recorded in
-  `docs/open-issues-status.md`; the synthetic fixtures use the working idiom.
+- ARM and Thumb branches to self are covered by the regression merged in PR #20.
 - mGBA `misc-edge` and `timing` conformance gaps remain (see
   `docs/open-issues-status.md`); they do not block desktop play.
 

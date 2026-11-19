@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -118,12 +119,19 @@ class DesktopApp {
   bool read_save_state_path(const std::string& path, const std::string& label);
   void reset_runtime();
   void open_rom_dialog();
+  void poll_rom_dialog();
+  void request_quit();
+  void update_window_title();
+  void show_controls();
+
+  struct RomDialogResult;
 
   HostOptions options_;
   const std::string override_rom_path_;
   gba::core::EmulatorRuntime runtime_;
   HostStats stats_{};
   AsyncSaveWriter save_state_writer_;
+  std::shared_ptr<RomDialogResult> rom_dialog_;
 
   SDL_Window* window_ = nullptr;
   SDL_Renderer* renderer_ = nullptr;
@@ -144,6 +152,8 @@ class DesktopApp {
   bool confirm_unsaved_quit_ = false;
   bool discard_requested_ = false;
   bool session_loaded_ = false;
+  bool startup_dialog_failed_ = false;
+  bool quit_after_dialog_ = false;
 
   std::string save_prefix_;           // <rom path> or <save dir>/<rom filename>
   std::string cartridge_save_path_;   // empty when the game has no backup save
