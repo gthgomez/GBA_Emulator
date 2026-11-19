@@ -28,15 +28,15 @@ For the same source-authored fixture shown above, after building the host:
 ./tools/capture-showcase.sh
 ```
 
-## Current Status (updated 2026-11-18; dimension-scoped)
+## Current Status (updated 2026-11-19)
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Local core verifiers | PASS (32/32) | `.\tools\run-core-tests.ps1` / `./tools/run-core-tests.sh` — clean `g++ -Werror` rebuild, all binaries pass, identical inventory on both runners (31st/32nd: desktop persistence + save-state ROM-association guards, added with the desktop MVP) |
+| Local core verifiers | PASS (36/36) | `.\tools\run-core-tests.ps1` / `./tools/run-core-tests.sh` — clean `g++ -Werror` rebuild, all binaries pass, identical inventory on both runners |
 | Desktop host (SDL3 play + headless lab) | PASS (automated) | `gba-desktop`: interactive SDL3 window/input/audio, cartridge saves, save states, reset/ROM-switch data safety, deterministic headless lab. CI runs headless-determinism, save-lifecycle, and interactive-host smokes on Linux + Windows. Physical Windows playtest not yet recorded — see `docs/DESKTOP.md` |
-| mGBA public suites (conformance) | 11 GREEN / 2 NOT FULL | `io-read` is GREEN 130/130 (re-verified 2026-09-12; `51/130` RED was disproven by PR #7). `misc-edge` (6/12) and `timing` (1956/2020, 64 failures pre-existing on `main`) remain below `pass=total` — see `docs/open-issues-status.md`. Baseline in `tools/mgba-suite-green-baseline.json` |
+| mGBA public suites (conformance) | 11 GREEN / 2 NOT FULL | Current source-built fixture records `io-read` 130/130 with the Thumb open-bus repair (51/130 before), `misc-edge` 4/12, and `timing` 1956/2020. See [the current results](docs/open-issues-status.md#2026-11-19-rerun). |
 | Video oracle aliases | GREEN | 7 deterministic `video_probe` hashes via `.\tools\run-video-suite-all.ps1`; upstream interactive `video` suite is absent from the matrix **by design** (no `END pass=total`), not missing by failure |
-| Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` stays RED while `misc-edge` (6/12) and `timing` (1956/2020) are below `pass=total`; `io-read` is no longer a regression (latest: `build/test-results/credibility-matrix-latest.json`) |
+| Credibility matrix | RED | `.\tools\run-credibility-matrix.ps1` stays RED while `misc-edge` (4/12) and `timing` (1956/2020) are below `pass=total`; `io-read` is no longer a regression (latest: `build/test-results/credibility-matrix-latest.json`) |
 | Physical device soak | FAIL / BLOCKED | 2026-08-14 P1 soak: choppy audio (2,787 underruns @ frame 60), 1.4–2 fps pacing with present stall, thermal unmeasured — failed records preserved in `docs/evidence/` |
 | Commercial-ROM boot smoke | LOCAL ONLY (2026-11-18) | Stock Emerald (`BPEE`) boots through title and intro on the desktop/headless host; one user-supplied local ROM, no ROM/BIOS redistribution, no general compatibility claim — see `docs/evidence/2026-11-18-emerald-boot.md` |
 | Android shell | Scaffold only | [`../GbaEmulatorAndroid`](../GbaEmulatorAndroid) — JNI bridge self-test; see `docs/android-integration-plan.md` |
