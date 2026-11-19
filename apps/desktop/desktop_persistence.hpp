@@ -7,6 +7,8 @@
 // derivation) can be verified headlessly by tests/desktop_persistence_test.cpp
 // without a window or audio device.
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -56,107 +58,90 @@ inline std::vector<std::uint8_t> read_binary_file(const std::string& path) {
   return bytes;
 }
 
-// Writes `bytes` by first materializing a sibling temporary file, flushing it,
-// then renaming it over `path`. On POSIX rename(2) atomically replaces the
-// destination; std::filesystem::rename does the same on Windows (it maps to a
-// replace-existing move), with an explicit fallback for filesystems that
-// refuse the replace.
-//
-// Only the rename path is atomic. The fallback (move the old file aside, put
-// the new one in place, restore the old one on failure) has a crash window in
-// which the original exists only as the `.old` sibling; the next write
-// therefore restores such an orphan BEFORE writing anything, so a failed
-// follow-up write can never consume the only surviving copy.
-//
-// The `<name>.tmp` / `<name>.old` sibling names are owned by this helper and
-// may be reclaimed between calls; they are not safe as user storage. The temp
-// name is deterministic, so two processes writing the same file concurrently
-// can collide -- single-writer per save file is assumed.
-//
-// This is crash-safe against process termination, but it is NOT a claim of
-// power-loss durability: no fsync of the file or its directory is performed.
-inline bool write_file_atomic(const std::string& path,
-                              const std::vector<std::uint8_t>& bytes) {
-  std::error_code ec;
-  const std::filesystem::path target = native_path(path);
-  const std::filesystem::path dir =
-      target.has_parent_path() ? target.parent_path() : std::filesystem::path(".");
-  // Suffixes below are ASCII, so appending them to the UTF-8 spelling of a
-  // file name is byte-safe.
-  const std::filesystem::path temp = dir / (target.filename().u8string() + ".tmp");
-
-  {
-    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-    if (!out) {
-      return false;
-    }
-    if (!bytes.empty()) {
-      out.write(reinterpret_cast<const char*>(bytes.data()),
-                static_cast<std::streamsize>(bytes.size()));
-    }
-    out.flush();
-    if (!out) {
-      std::error_code ignored;
-      std::filesystem::remove(temp, ignored);
-      return false;
-    }
+// Restore the original left by older versions' two-rename fallback.
+inline bool recover_file_orphan(const std::filesystem::path& target,
+                                std::error_code& ec) {
+  namespace fs = std::filesystem;
+  const auto target_status = fs::symlink_status(target, ec);
+  if (target_status.type() != fs::file_type::not_found) {
+    return !ec && fs::is_regular_file(target_status);
   }
 
-  // `.old` is the fallback's move-aside slot.
-  const std::filesystem::path backup =
-      dir / (target.filename().u8string() + ".old");
-
-  // A previous run may have crashed between the fallback's two renames: the
-  // original then exists only as `backup`. Put it back first -- if this write
-  // subsequently fails, the orphan must still be sitting at `target`, not
-  // consumed as garbage.
-  std::error_code probe_ec;
-  const bool target_missing = !std::filesystem::exists(target, probe_ec);
-  const bool backup_exists = std::filesystem::exists(backup, probe_ec);
-  if (target_missing && backup_exists) {
-    std::error_code recover_ec;
-    std::filesystem::rename(backup, target, recover_ec);
-    if (recover_ec) {
-      // Recovery failed: `backup` is still the only copy; fail without
-      // touching it.
-      std::error_code ignored;
-      std::filesystem::remove(temp, ignored);
-      return false;
-    }
-  }
-
-  std::filesystem::rename(temp, target, ec);
-  if (!ec) {
-    // The live file is at `target`; any `.old` left here is a stale leftover
-    // (older content of the same save) and can be reclaimed.
-    std::error_code ignored;
-    std::filesystem::remove(backup, ignored);
+  const auto backup = native_path(target.u8string() + ".old");
+  const auto backup_status = fs::symlink_status(backup, ec);
+  if (backup_status.type() == fs::file_type::not_found) {
+    ec.clear();
     return true;
   }
-  // The platform refused to replace in place (locked or read-only target).
-  // Move the old file aside, put the new one in place, and restore the old
-  // one if that fails -- the original is never destroyed before its
-  // replacement is committed.
-  std::error_code move_ec;
-  std::filesystem::remove(backup, move_ec);
-  move_ec.clear();
-  std::filesystem::rename(target, backup, move_ec);
-  if (move_ec) {
-    std::error_code ignored;
-    std::filesystem::remove(temp, ignored);
+  if (ec || !fs::is_regular_file(backup_status)) {
     return false;
   }
-  std::error_code replace_ec;
-  std::filesystem::rename(temp, target, replace_ec);
-  if (replace_ec) {
-    std::error_code ignored;
-    std::filesystem::rename(backup, target, ignored);
-    std::filesystem::remove(temp, ignored);
+  fs::rename(backup, target, ec);
+  return !ec;
+}
+
+inline std::vector<std::uint8_t> read_checkpoint(const std::string& path) {
+  std::error_code ec;
+  const auto target = native_path(path);
+  if (std::filesystem::symlink_status(target, ec).type() ==
+      std::filesystem::file_type::not_found) {
+    const auto orphan = native_path(path + ".old");
+    return std::filesystem::is_regular_file(std::filesystem::symlink_status(orphan, ec))
+               ? read_binary_file(path + ".old")
+               : std::vector<std::uint8_t>{};
+  }
+  return read_binary_file(path);
+}
+
+// Stage in a unique directory on the destination filesystem and commit with
+// one rename. An interrupted process can leave staging debris, while the live
+// file always retains a complete payload. No power-loss durability is implied.
+inline bool write_file_atomic(const std::string& path,
+                              const std::vector<std::uint8_t>& bytes) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path target = native_path(path);
+  const auto target_status = fs::symlink_status(target, ec);
+  if (target_status.type() != fs::file_type::not_found &&
+      (ec || !fs::is_regular_file(target_status))) {
     return false;
+  }
+  const fs::path dir =
+      target.has_parent_path() ? target.parent_path() : fs::path(".");
+  static std::atomic<std::uint64_t> next_id{0};
+  fs::path staging;
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    staging = dir / (".gba-save-" + std::to_string(stamp) + "-" +
+                     std::to_string(next_id.fetch_add(1, std::memory_order_relaxed)));
+    if (fs::create_directory(staging, ec)) {
+      break;
+    }
+    if (ec && ec != std::errc::file_exists) {
+      return false;
+    }
+    staging.clear();
+  }
+  if (staging.empty()) {
+    return false;
+  }
+
+  const fs::path temp = staging / "payload";
+  std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+  if (out && !bytes.empty()) {
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+  }
+  out.close();
+  bool written = false;
+  if (out) {
+    fs::rename(temp, target, ec);
+    written = !ec;
   }
   std::error_code ignored;
-  std::filesystem::remove(backup, ignored);
-  return true;
+  fs::remove(temp, ignored);
+  fs::remove(staging, ignored);
+  return written;
 }
 
 // Copies `path` to a unique sibling named `<path><suffix>` (appending
@@ -167,21 +152,17 @@ inline std::optional<std::string> backup_file(const std::string& path,
                                               const std::string& suffix) {
   std::error_code ec;
   const std::filesystem::path native = native_path(path);
-  if (!std::filesystem::exists(native, ec)) {
-    return std::nullopt;
+  const std::string base = path + suffix;
+  for (int attempt = 0; attempt < 1000; ++attempt) {
+    const std::string name = attempt == 0 ? base : base + "." + std::to_string(attempt);
+    if (std::filesystem::copy_file(native, native_path(name), ec)) {
+      return name;
+    }
+    if (ec != std::errc::file_exists) {
+      break;
+    }
   }
-  const std::filesystem::path base = native_path(path + suffix);
-  std::filesystem::path candidate = base;
-  for (int attempt = 1; std::filesystem::exists(candidate, ec) && attempt < 1000;
-       ++attempt) {
-    candidate = native_path(base.u8string() + "." + std::to_string(attempt));
-  }
-  std::filesystem::copy_file(native, candidate,
-                             std::filesystem::copy_options::overwrite_existing, ec);
-  if (ec) {
-    return std::nullopt;
-  }
-  return candidate.u8string();
+  return std::nullopt;
 }
 
 // Prefix shared by a ROM's cartridge save and save states. Lives next to the

@@ -209,6 +209,8 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
       configured != gba::core::GamePakSaveType::none &&
       runtime_.session().memory().has_game_pak_save();
   cartridge_save_snapshot_.clear();
+  cartridge_save_initialized_on_disk_ = false;
+  retry_cartridge_save_enable_ = false;
   frames_since_save_flush_ = 0;
 
   if (cartridge_save_enabled_) {
@@ -221,30 +223,26 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
                   << options_.save_directory << ": " << ec.message() << "\n";
       }
     }
-    // A crash mid-replacement can leave the save only as the `.old` sibling
-    // (see persistence::write_file_atomic). Restore it before reading so the
-    // interrupted write's progress is loaded instead of silently starting
-    // fresh over the only surviving copy.
-    std::error_code orphan_ec;
-    const std::string orphan_path = cartridge_save_path_ + ".old";
-    if (!std::filesystem::exists(persistence::native_path(cartridge_save_path_),
-                                 orphan_ec) &&
-        std::filesystem::exists(persistence::native_path(orphan_path), orphan_ec)) {
-      std::filesystem::rename(persistence::native_path(orphan_path),
-                              persistence::native_path(cartridge_save_path_),
-                              orphan_ec);
-      if (!orphan_ec) {
-        std::cerr << "gba-desktop: recovered interrupted save write from "
-                  << orphan_path << "\n";
-      } else {
-        std::cerr << "gba-desktop: warning: could not recover interrupted save "
-                  << orphan_path << ": " << orphan_ec.message() << "\n";
-      }
+    const auto save_path = persistence::native_path(cartridge_save_path_);
+    std::error_code save_ec;
+    const bool recovery_needed = !std::filesystem::exists(save_path, save_ec) &&
+        std::filesystem::exists(persistence::native_path(cartridge_save_path_ + ".old"),
+                                save_ec);
+    if (!persistence::recover_file_orphan(save_path, save_ec)) {
+      std::cerr << "gba-desktop: cannot safely read cartridge save " << save_path
+                << "; cartridge save writes are DISABLED\n";
+      cartridge_save_enabled_ = false;
+      retry_cartridge_save_enable_ = true;
+    } else if (recovery_needed) {
+      std::cerr << "gba-desktop: recovered interrupted save write from "
+                << cartridge_save_path_ << ".old\n";
     }
     const std::vector<std::uint8_t> existing =
-        persistence::read_binary_file(cartridge_save_path_);
-    if (!existing.empty()) {
+        cartridge_save_enabled_ ? persistence::read_binary_file(cartridge_save_path_)
+                                : std::vector<std::uint8_t>{};
+    if (cartridge_save_enabled_ && std::filesystem::exists(save_path, save_ec)) {
       if (runtime_.session().memory().import_game_pak_save(configured, existing)) {
+        cartridge_save_initialized_on_disk_ = true;
         stats_.cartridge_save_loaded = true;
         std::cerr << "gba-desktop: loaded cartridge save (" << stats_.cartridge_save_kind
                   << ") from " << cartridge_save_path_ << "\n";
@@ -259,14 +257,15 @@ bool DesktopApp::load_rom_from_path(const std::string& path, bool allow_rollback
           // (fresh) save later would overwrite the only on-disk copy of the
           // player's data. Keep playing, but never write cartridge saves.
           cartridge_save_enabled_ = false;
-          if (window_ != nullptr) {
-            SDL_SetWindowTitle(window_, "gba-desktop - [save writes disabled]");
-          }
+          retry_cartridge_save_enable_ = true;
           std::cerr << "; could not preserve a copy -- cartridge save writes are"
                        " DISABLED to protect the original file";
         }
         std::cerr << "; starting with a fresh save\n";
       }
+    }
+    if (!cartridge_save_enabled_) {
+      SDL_SetWindowTitle(window_, "gba-desktop - [save writes disabled]");
     }
     cartridge_save_snapshot_ = runtime_.session().memory().export_game_pak_save();
   } else {
@@ -401,11 +400,10 @@ void DesktopApp::toggle_fullscreen() {
 }
 
 void DesktopApp::reset_runtime() {
-  const std::vector<std::uint8_t> rom = persistence::read_binary_file(options_.rom_path);
-  if (rom.empty()) {
-    std::cerr << "gba-desktop: reset failed: cannot read ROM " << options_.rom_path << "\n";
+  if (!session_loaded_) {
     return;
   }
+  const auto rom = runtime_.session().memory().export_game_pak_rom();
   // A console reset clears work RAM but leaves cartridge-backed save memory
   // intact, so capture it before reloading and re-import it afterwards. This
   // is distinct from load-state, which restores a full snapshot.
@@ -416,10 +414,8 @@ void DesktopApp::reset_runtime() {
   const std::vector<std::uint8_t> rollback =
       gba::core::SaveStateCodec::encode(runtime_.session());
 
-  const auto selection = save_type_for_rom(
-      override_rom_path_, options_.rom_path, options_.save_type_override);
   if (runtime_.load_rom(rom) != gba::core::EmulatorRuntimeStatus::ok ||
-      !apply_save_type(runtime_.session().memory(), selection)) {
+      !apply_save_type(runtime_.session().memory(), save_type)) {
     const auto restored = gba::core::SaveStateCodec::decode_into(runtime_.session(), rollback);
     std::cerr << "gba-desktop: reset failed to reload ROM";
     if (restored.status == gba::core::SaveStateDecodeStatus::ok) {
@@ -433,13 +429,12 @@ void DesktopApp::reset_runtime() {
     if (!runtime_.session().memory().import_game_pak_save(save_type, cartridge_save)) {
       // Never let a blanked in-memory save overwrite the good on-disk one.
       cartridge_save_enabled_ = false;
+      retry_cartridge_save_enable_ = false;
       preserved = false;
       std::cerr << "gba-desktop: warning: could not restore cartridge save across reset;"
                    " disabling save writes to protect the on-disk save\n";
     }
   }
-  cartridge_save_snapshot_ = cartridge_save;
-  frames_since_save_flush_ = 0;
   // Re-apply the physical input masks to the freshly reset session so a key
   // held across F9 keeps working (the OS will not resend a filtered KEY_DOWN).
   sync_input_mask();
@@ -451,34 +446,50 @@ void DesktopApp::reset_runtime() {
 }
 
 bool DesktopApp::flush_cartridge_save(bool force) {
-  if (!cartridge_save_enabled_ || cartridge_save_path_.empty()) {
+  if (cartridge_save_path_.empty()) {
     return true;
   }
-  const std::vector<std::uint8_t> current =
-      runtime_.session().memory().export_game_pak_save();
-  ++frames_since_save_flush_;
-  if (!force && current == cartridge_save_snapshot_) {
+  if (!force && ++frames_since_save_flush_ < kSnapshotFlushFrames) {
     return true;
   }
-  if (!force && frames_since_save_flush_ < kSnapshotFlushFrames) {
-    return true;  // flush at most ~every 5 seconds of dirty frames
+  frames_since_save_flush_ = 0;
+  auto current = runtime_.session().memory().export_game_pak_save();
+  const auto target = persistence::native_path(cartridge_save_path_);
+  std::error_code ec;
+  if (current == cartridge_save_snapshot_) {
+    if (!force || !cartridge_save_enabled_ ||
+        (cartridge_save_initialized_on_disk_ && std::filesystem::is_regular_file(target, ec))) {
+      return true;
+    }
+  }
+  if (!cartridge_save_enabled_ && retry_cartridge_save_enable_ &&
+      persistence::recover_file_orphan(target, ec)) {
+    const bool exists = std::filesystem::exists(target, ec);
+    if (!ec && (!exists || persistence::backup_file(cartridge_save_path_, ".rejected"))) {
+      cartridge_save_enabled_ = true;
+      retry_cartridge_save_enable_ = false;
+      const std::string title =
+          "gba-desktop - " + persistence::native_path(options_.rom_path).filename().u8string();
+      SDL_SetWindowTitle(window_, title.c_str());
+      std::cerr << "gba-desktop: cartridge save destination ready again: "
+                << cartridge_save_path_ << "\n";
+    }
+  }
+  if (!cartridge_save_enabled_) {
+    return false;
   }
   if (current.empty()) {
     // A cartridge-less machine state must never replace a sized save file:
     // treat this like a failed write and keep the on-disk data.
     std::cerr << "gba-desktop: refusing to write empty cartridge save over "
               << cartridge_save_path_ << "\n";
-    frames_since_save_flush_ = 0;
     return false;
   }
   if (persistence::write_file_atomic(cartridge_save_path_, current)) {
-    cartridge_save_snapshot_ = current;
-    frames_since_save_flush_ = 0;
+    cartridge_save_initialized_on_disk_ = true;
+    cartridge_save_snapshot_ = std::move(current);
     return true;
   }
-  // Back off one full flush interval before retrying so a persistent write
-  // failure (e.g. a read-only directory) does not spam stderr every frame.
-  frames_since_save_flush_ = 0;
   std::cerr << "gba-desktop: failed to write cartridge save: " << cartridge_save_path_
             << "\n";
   return false;
@@ -543,7 +554,7 @@ bool DesktopApp::read_save_state(int slot) {
 }
 
 bool DesktopApp::read_save_state_path(const std::string& path, const std::string& label) {
-  const auto blob = persistence::read_binary_file(path);
+  const auto blob = persistence::read_checkpoint(path);
   if (blob.empty()) {
     std::cerr << "gba-desktop: cannot read " << label << " at " << path << "\n";
     return false;
@@ -571,10 +582,6 @@ bool DesktopApp::read_save_state_path(const std::string& path, const std::string
               << " uses a different save type; refusing to load\n";
     return false;
   }
-  // The restored machine owns the cartridge save again; resync the dirty
-  // snapshot so a later flush compares against the restored contents.
-  cartridge_save_snapshot_ = runtime_.session().memory().export_game_pak_save();
-  frames_since_save_flush_ = 0;
   // Keep held buttons working against the restored session.
   sync_input_mask();
   clear_queued_audio();
@@ -607,12 +614,16 @@ void DesktopApp::open_rom_dialog() {
 void DesktopApp::handle_event(const union SDL_Event& event) {
   switch (event.type) {
     case SDL_EVENT_QUIT:
-      running_ = false;
+      quit_requested_ = true;
       break;
     case SDL_EVENT_KEY_DOWN:
       if (!event.key.repeat) {
         switch (event.key.scancode) {
-          case SDL_SCANCODE_ESCAPE: running_ = false; break;
+          case SDL_SCANCODE_ESCAPE:
+            quit_requested_ = true;
+            discard_requested_ = confirm_unsaved_quit_ &&
+                                 (event.key.mod & SDL_KMOD_SHIFT) != 0;
+            break;
           case SDL_SCANCODE_P:
           case SDL_SCANCODE_SPACE:
             paused_ = !paused_;
@@ -646,7 +657,7 @@ void DesktopApp::handle_event(const union SDL_Event& event) {
       sync_input_mask();
       break;
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-      running_ = false;
+      quit_requested_ = true;
       break;
     case SDL_EVENT_GAMEPAD_ADDED:
       open_gamepad(static_cast<unsigned int>(event.gdevice.which));
@@ -806,6 +817,37 @@ int DesktopApp::run() {
     while (SDL_PollEvent(&event)) {
       handle_event(event);
     }
+    if (quit_requested_) {
+      quit_requested_ = false;
+      if (!session_loaded_ || flush_cartridge_save(true)) {
+        break;
+      }
+      if (discard_requested_) {
+        return 3;
+      }
+      const SDL_MessageBoxButtonData buttons[] = {
+          {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT,
+           0, "Keep playing"},
+          {0, 1, "Quit without saving"},
+      };
+      const SDL_MessageBoxData warning = {
+          SDL_MESSAGEBOX_WARNING, window_, "Game progress could not be saved",
+          "Keep playing to retry the save. Quitting now will lose unsaved game progress.",
+          2, buttons, nullptr,
+      };
+      int choice = 0;
+      if (SDL_ShowMessageBox(&warning, &choice)) {
+        if (choice == 1) {
+          return 3;
+        }
+      } else {
+        confirm_unsaved_quit_ = true;
+        SDL_SetWindowTitle(window_, "gba-desktop - Save failed (Esc: Retry, Shift+Esc: Quit without saving)");
+        std::cerr << "gba-desktop: cannot show save warning: " << SDL_GetError()
+                  << ". Press Esc to retry, or Shift+Esc to quit without saving.\n";
+      }
+      next_frame_deadline_ = Clock::now();
+    }
 
     if (!session_loaded_) {
       previous_present.reset();
@@ -879,8 +921,10 @@ int DesktopApp::run() {
   }
 
   const auto perf_end = Clock::now();
-  if (session_loaded_) {
-    flush_cartridge_save(true);
+  if (session_loaded_ && !flush_cartridge_save(true)) {
+    std::cerr << "gba-desktop: exiting with unsaved cartridge progress: "
+              << cartridge_save_path_ << "\n";
+    return 3;
   }
   if (options_.quit_after_frames != 0 && session_loaded_ && !capture_window_screenshot()) {
     return 3;

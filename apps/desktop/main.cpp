@@ -245,18 +245,6 @@ std::vector<std::uint8_t> read_file(const std::string& path) {
   return bytes;
 }
 
-bool write_file(const std::string& path, const std::vector<std::uint8_t>& bytes) {
-  std::ofstream file(gba::desktop::persistence::native_path(path), std::ios::binary | std::ios::trunc);
-  if (!file) {
-    return false;
-  }
-  if (!bytes.empty()) {
-    file.write(reinterpret_cast<const char*>(bytes.data()),
-               static_cast<std::streamsize>(bytes.size()));
-  }
-  return static_cast<bool>(file);
-}
-
 // ---------------------------------------------------------------------------
 // Hashing: SHA-256 for ROM identity, CRC32/FNV-1a for run evidence. These are
 // host-side artifact concerns and intentionally do not live in the core.
@@ -660,7 +648,7 @@ int run_headless(const CliOptions& opts) {
   // even though none of those intermediate hashes are consumed here.
 
   if (!opts.load_state_input.empty()) {
-    const auto blob = read_file(opts.load_state_input);
+    const auto blob = gba::desktop::persistence::read_checkpoint(opts.load_state_input);
     if (blob.empty()) {
       std::cerr << "gba-desktop: cannot read save state: " << opts.load_state_input << "\n";
       return 2;
@@ -788,7 +776,7 @@ int run_headless(const CliOptions& opts) {
 
   if (!opts.save_state_output.empty()) {
     const auto blob = gba::core::SaveStateCodec::encode(runtime.session());
-    if (!write_file(opts.save_state_output, blob)) {
+    if (!gba::desktop::persistence::write_file_atomic(opts.save_state_output, blob)) {
       std::cerr << "gba-desktop: failed to write save state: " << opts.save_state_output << "\n";
       return 3;
     }
