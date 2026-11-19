@@ -17,28 +17,49 @@ $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 $resultsDir = Join-Path $repoRoot "build\test-results"
 New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
 
-$actualProbes = @(
-    "basic-mode-3-actual",
-    "basic-mode-4-actual",
-    "degenerate-obj-actual",
-    "layer-toggle-actual",
-    "layer-toggle-2-actual",
-    "oam-update-delay-actual",
-    "window-offscreen-reset-actual"
-)
+$actualProbes = [ordered]@{
+    "basic-mode-3-actual" = "basic_mode_3_oracle"
+    "basic-mode-4-actual" = "basic_mode_4_oracle"
+    "degenerate-obj-actual" = "degenerate_obj_oracle"
+    "layer-toggle-actual" = "layer_toggle_oracle"
+    "layer-toggle-2-actual" = "layer_toggle_2_oracle"
+    "oam-update-delay-actual" = "oam_update_delay_oracle"
+    "window-offscreen-reset-actual" = "window_offscreen_reset_oracle"
+}
 
 $runScript = Join-Path $PSScriptRoot "run-mgba-suite.ps1"
 $failures = @()
 $passes = 0
 
-foreach ($probe in $actualProbes) {
+foreach ($probe in $actualProbes.Keys) {
     Write-Output "run-video-suite-all: probe=$probe"
-    & $runScript -Suite video -VideoProbe $probe -MaxSteps $MaxSteps -TraceSteps 0
-    if ($LASTEXITCODE -ne 0) {
+    try {
+        $resultPath = $null
+        & $runScript -Suite video -VideoProbe $probe -MaxSteps $MaxSteps -TraceSteps 0 |
+            ForEach-Object {
+                if ($_ -like "suite_test: json_result_path=*") {
+                    $resultPath = $_.Substring("suite_test: json_result_path=".Length)
+                }
+                Write-Output $_
+            }
+        if ([string]::IsNullOrWhiteSpace($resultPath)) {
+            throw "The probe produced no result artifact."
+        }
+        $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
+        $property = $actualProbes[$probe]
+        $oracle = $result.diagnostics.$property
+        if ($result.video_probe -ne $probe -or
+            $oracle.actual.status -ne "probe_reached" -or
+            $oracle.expected.status -ne "probe_reached" -or
+            $oracle.frame_hash_comparison -ne "match" -or
+            $oracle.scanline_frame_hash_comparison -ne "match") {
+            throw "The actual and expected probes did not produce matching frames and scanlines."
+        }
+        ++$passes
+    } catch {
         $failures += $probe
-        continue
+        Write-Output "run-video-suite-all: failed $probe ($($_.Exception.Message))"
     }
-    ++$passes
 }
 
 $summary = [PSCustomObject]@{
