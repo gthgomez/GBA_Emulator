@@ -23,8 +23,10 @@ class AndroidCoreBridge {
     if (bytes == nullptr || size == 0) {
       return AndroidBridgeStatus::invalid_argument;
     }
-    // The ROM copy can throw (bad_alloc / length_error for absurd sizes); the
-    // extern "C" wrappers contain that and map it to internal_error.
+    if (size > MemoryBus::kGamePakRomWindowSize) {
+      return AndroidBridgeStatus::rom_rejected;
+    }
+    // Allocation failures from this bounded copy are contained by the C wrapper.
     std::vector<std::uint8_t> rom(bytes, bytes + size);
     const std::lock_guard<std::mutex> lock(mutex_);
     session_.reset();

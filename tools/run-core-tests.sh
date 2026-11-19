@@ -17,11 +17,6 @@
 # Requires: bash 4+, g++, find, date (GNU date preferred; BSD date falls back
 # to second granularity for the timing summary only).
 #
-# Note: --sanitize sets ASAN_OPTIONS=allocator_may_return_null=1 so the
-# core-bridge test's deliberate impossible-size allocation can take its
-# intended bad_alloc path. Some libasan versions (e.g. GCC 13) still abort
-# on allocations above their hard maximum regardless of that option; on
-# such toolchains android_core_bridge_test cannot pass under --sanitize.
 # The default (non-sanitized) mode is the CI baseline and passes all tests.
 
 set -u
@@ -109,11 +104,6 @@ core_tests=(
 compile_tag=""
 if [[ "$sanitize" -eq 1 ]]; then
     compile_tag="sanitize:address,undefined"
-    # The core-bridge test deliberately requests an impossible ROM size to
-    # force std::bad_alloc; ASan's default allocator aborts before the exception
-    # can propagate. Let the allocator return null instead so the test exercises
-    # its intended bad_alloc -> internal_error path.
-    export ASAN_OPTIONS="${ASAN_OPTIONS:-}allocator_may_return_null=1"
 fi
 
 now_ns() {
