@@ -151,13 +151,24 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
-          .\tools\package-windows-portable.ps1
+          .\tools\package-windows-portable.ps1 -Version verified
+
+      # Test the exact ZIP from a clean temporary extraction, not the in-tree
+      # executable. The legal synthetic fixture is generated outside the ZIP.
+      - name: Clean extraction and launch smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          .\tools\run-windows-package-smoke.ps1 -ZipPath .\dist\gba-desktop-verified-windows-x64.zip
 
       - name: Upload portable Windows package
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: gba-desktop-windows-x64
-          path: dist/gba-desktop-*-windows-x64.zip
+          path: |
+            dist/gba-desktop-verified-windows-x64.zip
+            dist/gba-desktop-verified-windows-x64.zip.sha256
           if-no-files-found: error
 
