@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+. (Join-Path $PSScriptRoot "video-oracle-gate.ps1")
 
 $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 $resultsDir = Join-Path $repoRoot "build\test-results"
@@ -33,33 +34,52 @@ $passes = 0
 
 foreach ($probe in $actualProbes.Keys) {
     Write-Output "run-video-suite-all: probe=$probe"
+    $childOutput = @()
+    $childError = $null
+    $jsonResultPath = $null
     try {
-        $resultPath = $null
-        & $runScript -Suite video -VideoProbe $probe -MaxSteps $MaxSteps -TraceSteps 0 |
-            ForEach-Object {
-                if ($_ -like "suite_test: json_result_path=*") {
-                    $resultPath = $_.Substring("suite_test: json_result_path=".Length)
-                }
-                Write-Output $_
-            }
-        if ([string]::IsNullOrWhiteSpace($resultPath)) {
-            throw "The probe produced no result artifact."
-        }
-        $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
-        $property = $actualProbes[$probe]
-        $oracle = $result.diagnostics.$property
-        if ($result.video_probe -ne $probe -or
-            $oracle.actual.status -ne "probe_reached" -or
-            $oracle.expected.status -ne "probe_reached" -or
-            $oracle.frame_hash_comparison -ne "match" -or
-            $oracle.scanline_frame_hash_comparison -ne "match") {
-            throw "The actual and expected probes did not produce matching frames and scanlines."
-        }
-        ++$passes
+        $childOutput = @(& $runScript -Suite video -VideoProbe $probe -MaxSteps $MaxSteps -TraceSteps 0 -FailOnRed:$FailOnRed 2>&1)
     } catch {
-        $failures += $probe
-        Write-Output "run-video-suite-all: failed $probe ($($_.Exception.Message))"
+        $childError = $_.Exception.Message
     }
+    foreach ($line in $childOutput) {
+        $lineText = [string]$line
+        Write-Output $lineText
+        if ($lineText -match '^suite_test: json_result_path=(.+)$') {
+            $jsonResultPath = $Matches[1].Trim()
+        }
+    }
+
+    $probeFailures = @()
+    if ($childError) {
+        $probeFailures += "runner error: $childError"
+    }
+    if ($null -ne $LASTEXITCODE -and [int]$LASTEXITCODE -ne 0) {
+        $probeFailures += "runner exit code: $LASTEXITCODE"
+    }
+    if ([string]::IsNullOrWhiteSpace($jsonResultPath)) {
+        $probeFailures += "runner did not report a JSON result path"
+    } elseif (-not (Test-Path -LiteralPath $jsonResultPath -PathType Leaf)) {
+        $probeFailures += "JSON result file is missing: $jsonResultPath"
+    } else {
+        try {
+            $childResult = Get-Content -Raw -LiteralPath $jsonResultPath | ConvertFrom-Json
+            $oracleFailure = Get-VideoOracleFailure -SuiteResult $childResult -Probe $probe
+            if ($oracleFailure) {
+                $probeFailures += $oracleFailure
+            }
+        } catch {
+            $probeFailures += "could not validate JSON result: $($_.Exception.Message)"
+        }
+    }
+
+    if ($probeFailures.Count -gt 0) {
+        $failures += $probe
+        Write-Output "run-video-suite-all: $probe RED ($($probeFailures -join '; '))"
+        continue
+    }
+    Write-Output "run-video-suite-all: $probe GREEN (paired frame oracle validated)"
+    ++$passes
 }
 
 $summary = [PSCustomObject]@{
