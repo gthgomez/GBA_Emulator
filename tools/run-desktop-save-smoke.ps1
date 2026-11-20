@@ -120,7 +120,7 @@ try {
     try {
         $undumpableLog = Join-Path $labDir "undumpable.log"
         & $exe --rom $undumpableRom --save-directory $roSaves --quit-after 20 *> $undumpableLog
-        if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -ne 3) {
             Write-Host "run-desktop-save-smoke: FAIL (undumpable-save run exit $LASTEXITCODE)"
             Get-Content $undumpableLog
             exit 1
@@ -167,7 +167,7 @@ try {
         $switchLog = Join-Path $labDir "switch.log"
         & $exe --rom $switchRom --save-directory $denied --switch-after 10 `
             --switch-to $otherRom --quit-after 40 *> $switchLog
-        if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -ne 3) {
             Write-Host "run-desktop-save-smoke: FAIL (switch-refusal run exit $LASTEXITCODE)"
             Get-Content $switchLog
             exit 1
@@ -266,6 +266,8 @@ finally {
 }
 
 python (Join-Path $repoRoot "tools\check-desktop-save-type-override.py") --exe $exe
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+python (Join-Path $repoRoot "tests\desktop_save_safety_check.py") --exe $exe
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "run-desktop-save-smoke: PASS (persistence, reset, no-spurious-save, rejected-save preservation, switch refusal, defective switch, crash-orphan recovery, save-type override)"

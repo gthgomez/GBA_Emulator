@@ -76,8 +76,9 @@ so no button stays stuck.
   file; opening another ROM uses that ROM's automatic detection. `none` disables
   cartridge saving. The selection is a launch option, not a persisted preference.
 - Cartridge saves persist to `<rom>.sav` next to the ROM (or in
-  `--save-directory`), imported at boot, flushed on exit and every ~5 s of dirty
-  frames. Games with no cartridge-backed save never create a `.sav`.
+  `--save-directory`). The host imports the save at boot, checks for changes
+  about every five seconds of play, and flushes changes when you quit or
+  switch ROMs. Games with no cartridge-backed save never create a `.sav`.
 - Save states are `<rom>.state1` etc. (core `SaveStateCodec` v6 format). Because
   the codec snapshot is self-contained, the host additionally refuses a state
   that was captured from a different ROM or uses a different save type. Headless
@@ -96,18 +97,19 @@ so no button stays stuck.
   for the pending save; changing ROM or resetting does not change its captured
   contents or destination. The snapshot format and atomic file replacement are
   the same as for synchronous/headless saves.
-- All save writes are replace-in-place safe: a sibling temp file is written and
-  renamed over the destination, so a failed or interrupted write cannot truncate
-  a good save. (This is crash-safe, not a power-loss durability guarantee.)
-  A save found only as the `<rom>.sav.old` crash orphan is restored and
-  re-imported on the next launch. The `.tmp`/`.old`/`.rejected` sibling names
-  are owned by the host — do not use them for your own backups.
+- Cartridge saves and checkpoints are staged on the destination filesystem and
+  committed with one rename. An interrupted process can leave a
+  `.gba-save-*` staging directory. The existing save remains intact if the
+  rename fails. Power-loss durability has not been verified.
+  The host can recover an earlier build's regular `.old` file when the
+  corresponding cartridge save or checkpoint is missing. Loading a legacy
+  checkpoint leaves the recovery copy in place.
 - Switching ROMs (dialog or drag-and-drop) flushes the outgoing cartridge save
   first and *refuses the switch* if that write fails, so unsaved progress can
   never be discarded; a rejected replacement ROM rolls the running session back
   rather than discarding it.
-- Reset re-imports the current cartridge save, so in-game progress survives a
-  console reset (save states are separate files).
+- Reset reboots the ROM already loaded in memory and preserves cartridge data,
+  including changes that have yet to be written to disk.
 - A corrupt/incompatible `.sav` is copied to `<rom>.sav.rejected` before the
   host starts fresh, so the original bytes are never destroyed. If even the
   backup cannot be created, the host goes fail-closed: cartridge save writes
@@ -245,6 +247,9 @@ BIOS files, or private saves are used or committed.
   returns `nullopt`) are treated as having no cartridge save: the host neither
   loads nor writes a `.sav` for them in automatic mode. Resolve conflicting
   save-family markers with `--save-type` when the title's backup hardware is known.
-- A persistently failing save write is retried at most once per flush interval,
-  not continuously; if the destination stays unwritable the save is not persisted
-  and the failure is reported on stderr.
+- A failed cartridge save is retried on the next flush interval. If quitting
+  fails to save your progress, choose **Keep playing**, free disk space or
+  restore write access, and try again. Scripts using `--quit-after` exit with
+  status 3 when cartridge progress could not be saved.
+  If the system cannot show a dialog, the title bar displays the error. Esc
+  retries the save, and Shift+Esc explicitly quits without saving.

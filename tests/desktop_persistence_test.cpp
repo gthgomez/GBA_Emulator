@@ -33,6 +33,7 @@ namespace fs = std::filesystem;
 using gba::desktop::persistence::backup_file;
 using gba::desktop::persistence::cartridge_save_path;
 using gba::desktop::persistence::read_binary_file;
+using gba::desktop::persistence::recover_file_orphan;
 using gba::desktop::persistence::save_data_prefix;
 using gba::desktop::persistence::save_state_path;
 using gba::desktop::persistence::write_file_atomic;
@@ -109,11 +110,30 @@ void test_atomic_failure_leaves_previous_intact(const fs::path& dir) {
 #endif
 }
 
+void test_atomic_preserves_non_save_entries(const fs::path& dir) {
+  const auto destination = dir / "directory.sav";
+  fs::create_directory(destination);
+  expect(!write_file_atomic(destination.u8string(), bytes_of("NEW")),
+         "a directory at the destination must be refused");
+  expect(fs::is_directory(destination), "a failed save keeps the directory intact");
+
+#ifndef _WIN32
+  const auto target = dir / "safe.sav";
+  const auto other = dir / "other.sav";
+  expect(write_file_atomic(other.u8string(), bytes_of("OTHER")), "seed unrelated save");
+  const auto temp = dir / "safe.sav.tmp";
+  fs::create_symlink(other, temp);
+  expect(write_file_atomic(target.u8string(), bytes_of("NEW")),
+         "stale temporary name does not prevent a fresh save");
+  expect(contents_of(other.u8string()) == "OTHER", "staging must not overwrite another save");
+  expect(fs::is_symlink(temp), "staging must not remove an unrelated link");
+#endif
+}
+
 void test_fallback_recovers_crash_orphan(const fs::path& dir) {
   // Simulate a crash between the fallback renames: the original exists only
-  // as the `.old` sibling (target missing). The next write must restore the
-  // orphan to `target` first (so a failed write can never consume the only
-  // copy); a successful write then legitimately supersedes it.
+  // as the `.old` sibling. The cartridge loader restores the orphan before
+  // resuming with ordinary writes.
   const std::string path = (dir / "crashed.sav").string();
   expect(write_file_atomic(path, bytes_of("only-copy")), "seed crashed-save original");
   std::error_code ec;
@@ -121,12 +141,18 @@ void test_fallback_recovers_crash_orphan(const fs::path& dir) {
   expect(!ec, "crash simulation moved original to .old");
   expect(!fs::exists(path), "crash simulation removed target");
 
-  expect(write_file_atomic(path, bytes_of("replacement")),
-         "write over a crash orphan succeeds");
+  expect(recover_file_orphan(fs::u8path(path), ec), "recover crash orphan");
+  expect(contents_of(path) == "only-copy", "restore orphan content before replacement");
+  expect(write_file_atomic(path, bytes_of("replacement")), "write after recovery succeeds");
   expect(contents_of(path) == "replacement",
          "successful write installs new content over the recovered orphan");
   expect(!fs::exists(path + ".old"), "orphan copy is consumed once superseded");
   expect(!fs::exists(path + ".tmp"), "recovered write leaves no temp file");
+
+  const auto output = (dir / "custom.state").u8string();
+  expect(write_file_atomic(output + ".old", bytes_of("other file")), "seed unrelated file");
+  expect(write_file_atomic(output, bytes_of("checkpoint")), "write fresh checkpoint");
+  expect(contents_of(output + ".old") == "other file", "explicit output preserves its neighbor");
 
   // A second crash-orphan write that fails must leave the orphan untouched.
   const std::string doomed = (dir / "not-a-dir").string();
@@ -246,6 +272,7 @@ int main() {
   test_read_missing_is_empty(dir);
   test_atomic_create_and_replace(dir);
   test_atomic_failure_leaves_previous_intact(dir);
+  test_atomic_preserves_non_save_entries(dir);
   test_fallback_recovers_crash_orphan(dir);
   test_backup_preserves_rejected_save(dir);
   test_utf8_paths(dir);

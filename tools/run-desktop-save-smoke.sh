@@ -119,7 +119,7 @@ if [ "$(id -u)" -ne 0 ]; then
     undumpable_exit=$?
     set -e
     chmod 755 "$ro_saves"
-    [ "$undumpable_exit" -eq 0 ] || {
+    [ "$undumpable_exit" -eq 3 ] || {
         echo "run-desktop-save-smoke: FAIL (undumpable-save run exit $undumpable_exit)" >&2
         cat "$labDir/undumpable.log" >&2
         exit 1
@@ -166,7 +166,7 @@ if [ "$(id -u)" -ne 0 ]; then
     switch_exit=$?
     set -e
     chmod 755 "$denied"
-    [ "$switch_exit" -eq 0 ] || {
+    [ "$switch_exit" -eq 3 ] || {
         echo "run-desktop-save-smoke: FAIL (switch-refusal run exit $switch_exit)" >&2
         cat "$labDir/switch.log" >&2
         exit 1
@@ -255,6 +255,7 @@ assert_sav "$orphan_rom.sav" 32768 0x43
 echo "  assert ok: crash-orphan save restored, imported, and superseded"
 
 python3 "$repoRoot/tools/check-desktop-save-type-override.py" --exe "$exe"
+python3 "$repoRoot/tests/desktop_save_safety_check.py" --exe "$exe"
 
 echo "run-desktop-save-smoke: PASS (persistence, reset, no-spurious-save, rejected-save preservation, save-directory, switch refusal, defective switch, crash-orphan recovery, save-type override)"
 exit 0

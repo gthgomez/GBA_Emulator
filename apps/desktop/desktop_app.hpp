@@ -108,7 +108,7 @@ class DesktopApp {
   void prime_audio_queue();
   void pace_frame(bool fast_forward);
   void toggle_fullscreen();
-  // Writes the cartridge save when it is dirty (or always, when `force`).
+  // Flushes changed cartridge progress, bypassing the interval when forced.
   // Returns true when no write was needed or the write succeeded; false when
   // a required write failed (callers decide whether that is fatal).
   bool flush_cartridge_save(bool force);
@@ -140,11 +140,16 @@ class DesktopApp {
   bool paused_ = false;
   bool mute_ = false;
   bool running_ = true;
+  bool quit_requested_ = false;
+  bool confirm_unsaved_quit_ = false;
+  bool discard_requested_ = false;
   bool session_loaded_ = false;
 
   std::string save_prefix_;           // <rom path> or <save dir>/<rom filename>
   std::string cartridge_save_path_;   // empty when the game has no backup save
   bool cartridge_save_enabled_ = false;
+  bool retry_cartridge_save_enable_ = false;
+  bool cartridge_save_initialized_on_disk_ = false;
   std::vector<std::uint8_t> cartridge_save_snapshot_;
   std::uint32_t frames_since_save_flush_ = 0;
   Clock::time_point next_frame_deadline_{};
