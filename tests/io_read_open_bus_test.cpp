@@ -7,13 +7,14 @@
 // (src/io-read.c, pinned suite aac98dca785eaec3932af217aa658275737a8ed8)
 // against the in-memory core so the contract cannot silently regress.
 //
-// Layout of the synthetic Thumb routine at 0x08000000:
+// Layout relative to the synthetic Thumb routine's entry:
 //   0: LDRH R1, [R0, #0]   (0x8801)
 //   2: B +2                (0xE001)
 //   4: 0xDEAD              (low half of the open-bus word at PC+4)
-//   6: 0xDEAD              (high half of the open-bus word at PC+4)
-// At the execute cycle of the LDRH the Thumb pipeline open bus reads the word
-// at PC+4, so most registers that do not drive the data bus return 0xDEAD.
+//   6: 0xBEEF or 0xDEAD    (later halfword, used as a distinct sentinel at offset 0)
+// At the execute cycle of the LDRH the 16-bit Game Pak bus holds the halfword
+// fetched at PC+4. Test both word alignments, including the LDRH at
+// 0x0800207E in the devkitARM 15.2.0 build of the suite.
 // Not every INVALID offset does: the INVALID gaps at
 // 0x66/0x6A/0x6E/0x76/0x7A/0x7E/0x86/0x8A/0x136/0x142/0x15A/0x206/0x20A/0x302
 // and the DMA0-3CNT_LO halves read as 0x0000, and the table below encodes those
@@ -183,7 +184,7 @@ void put_rom_halfword(std::vector<std::uint8_t>& rom, std::size_t offset,
   rom.at(offset + 1) = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
 }
 
-std::uint16_t read_io_register(std::uint32_t address) {
+std::uint16_t read_io_register(std::uint32_t address, std::size_t entry_offset) {
   using gba::core::Arm7tdmi;
   using gba::core::CoreSession;
 
@@ -192,10 +193,10 @@ std::uint16_t read_io_register(std::uint32_t address) {
   session.bios().set_mode(gba::core::BiosExecutionMode::hle);
 
   std::vector<std::uint8_t> rom(64, 0);
-  put_rom_halfword(rom, 0, 0x8801U);  // LDRH R1, [R0, #0]
-  put_rom_halfword(rom, 2, 0xE001U);  // B +2 (skip the planted open-bus word)
-  put_rom_halfword(rom, 4, 0xDEADU);
-  put_rom_halfword(rom, 6, 0xDEADU);
+  put_rom_halfword(rom, entry_offset, 0x8801U);  // LDRH R1, [R0, #0]
+  put_rom_halfword(rom, entry_offset + 2, 0xE001U);  // B past two halfwords
+  put_rom_halfword(rom, entry_offset + 4, 0xDEADU);
+  put_rom_halfword(rom, entry_offset + 6, entry_offset == 0 ? 0xBEEFU : 0xDEADU);
   expect(session.memory().load_game_pak_rom(rom), "open-bus ROM loads");
 
   // runIOReadSuite() turns the master sound circuit on before the table so the
@@ -207,7 +208,8 @@ std::uint16_t read_io_register(std::uint32_t address) {
 
   session.cpu().set_register(0, address);
   session.cpu().set_register(1, 0);
-  session.cpu().set_register(Arm7tdmi::kPc, 0x08000000U);
+  session.cpu().set_register(Arm7tdmi::kPc, 0x08000000U +
+                                           static_cast<std::uint32_t>(entry_offset));
   expect(session.cpu().set_cpsr(0x00000030U), "Thumb user mode");
   static_cast<void>(session.run(1));
 
@@ -218,22 +220,26 @@ std::uint16_t read_io_register(std::uint32_t address) {
 
 int main() {
   std::size_t failures = 0;
-  for (const IoReadCase& test : kIoReadCases) {
-    const std::uint16_t value = read_io_register(test.address);
-    if (value != test.expected) {
-      ++failures;
-      std::cerr << "FAIL: " << test.name << " got 0x" << std::hex << value
-                << " expected 0x" << test.expected << std::dec << '\n';
+  for (const std::size_t offset : {0U, 2U}) {
+    for (const IoReadCase& test : kIoReadCases) {
+      const std::uint16_t value = read_io_register(test.address, offset);
+      if (value != test.expected) {
+        ++failures;
+        std::cerr << "FAIL: " << test.name << " at Thumb entry offset " << offset
+                  << " got 0x" << std::hex << value << " expected 0x"
+                  << test.expected << std::dec << '\n';
+      }
     }
   }
 
+  const std::size_t case_count = 2 * kIoReadCases.size();
   if (failures != 0) {
     std::cerr << "io_read_open_bus_test: FAIL (" << failures << " of "
-              << kIoReadCases.size() << ")\n";
+              << case_count << ")\n";
     return 1;
   }
 
-  std::cout << "io_read_open_bus_test: PASS (" << kIoReadCases.size()
+  std::cout << "io_read_open_bus_test: PASS (" << case_count
             << " cases)\n";
   return 0;
 }

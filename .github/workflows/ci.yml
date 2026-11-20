@@ -18,6 +18,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Check incremental test-header tracking
+        run: python tests/core_runner_dependency_check.py
+
+      - name: Check video oracle gate (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\tests\video_oracle_gate_test.ps1
+
       # Portable bash runner: same tests, sources, and flags as the PowerShell
       # script (g++ -std=c++17 -Wall -Wextra -Werror), no .exe suffixes.
       - name: Run core verifiers (Linux)

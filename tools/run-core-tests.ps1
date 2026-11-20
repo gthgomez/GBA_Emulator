@@ -16,7 +16,7 @@ $scriptPath = $PSCommandPath
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
 $includeHeaders = @()
-foreach ($headerDir in @($includeDir, (Join-Path $repoRoot "apps\desktop"))) {
+foreach ($headerDir in @($includeDir, (Join-Path $repoRoot "tests"), (Join-Path $repoRoot "apps\desktop"))) {
     if (Test-Path -LiteralPath $headerDir) {
         $includeHeaders += @(Get-ChildItem -LiteralPath $headerDir -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Extension -in @(".hpp", ".h", ".hh", ".hxx") })

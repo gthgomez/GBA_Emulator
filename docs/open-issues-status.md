@@ -1,12 +1,35 @@
 # Open Issues Status
 
-Status: 2026-09-29 reconciliation — post-#6 timer/timing state marked UNKNOWN (open PR #8); dimension statuses separated  
-Date: 2026-06-03 (updated 2026-09-29; prior updates 2026-08-15, 2026-09-12)
+The latest measured results are below. The dated entries that follow preserve
+historical results and branch discussions.
 
-This document summarizes what is **closed** (verified with reproducible evidence) versus
-what **remains** for production and controlled beta. It does not replace per-suite logs in
-`docs/mgba-suite-test-results.md` or the live matrix in
-`build/test-results/credibility-matrix-latest.json`.
+## 2026-11-19 rerun
+
+- Baseline engine `e92389fbe8c1` passed 36/36 local verifiers. The branch-to-self
+  correction is already merged ([PR #20](https://github.com/gthgomez/GBA_Emulator/pull/20)).
+- The pinned [MIT suite source](https://github.com/mgba-emu/suite/tree/aac98dca785eaec3932af217aa658275737a8ed8)
+  was built unmodified with devkitARM 15.2.0 from the documented toolchain image.
+  This build's ROM SHA-256 is `f2b5c28b4a98df8a31c68bf9c77c2170d89649e77ea38766627834479a1e7ef7`.
+  The build differs from the older ROM hash in the external fixture notes.
+- `io-read` reproduced **51/130** on baseline. The ROM's LDRH is at
+  `0x0800207E` with a branch immediately following it. The open bus returned that
+  branch for 79 reads. With the Thumb halfword fix the same ROM gives **130/130**,
+  and the native regression covers both instruction alignments.
+- `misc-edge` gives **4/12**. The eight failures are DMA Prefetch Break and Read,
+  H-blank bit start Hblank, and Flips 1, 3, 4, 5, and 6. The fixture source's
+  pass/fail comparison is sound, but it passes values to its diagnostic printer
+  in reverse order.
+- `timing` gives **1956/2020**. Its 64 failures are the Trivial and Short DMA
+  groups across 16/32-bit transfers, cartridge source/destination combinations,
+  and four ARM/Thumb execution modes. Both remaining numeric gaps are open.
+- `memory`, `timers`, `timer-irq`, `shifter`, `carry`, `multiply-long`,
+  `bios-math`, `dma`, `sio-read`, and `sio-timing` pass. The separate video runner
+  reports **7/7** named oracles. The generic `-Suite all` invocation returns a
+  red default video row. Run the dedicated video command for the named probes.
+
+Rebuild the fixture with `tools/build-mgba-suite.ps1` and run
+`tools/run-mgba-suite.ps1 -Suite io-read` or the named numeric suites. Run
+`tools/run-video-suite-all.ps1` for the seven dedicated comparisons.
 
 ## Claims Policy
 
@@ -137,7 +160,7 @@ artifacts exist — not merely synthetic self-test PASS.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Branch-to-self (`B #-8`, `0xEAFFFFFE`) | **OPEN — root-caused (2026-10-08)** | A branch whose target is the branch's own address (PC+8-8) runs away instead of looping; a branch-to-previous-instruction loop (`0xEAFFFFFD`) loops correctly. Reproduced deterministically on `main` for both ARM (`0xEAFFFFFE` — the scheduler forces the PC to fetch+4 each step) and Thumb (`0xE7FE`). Root cause: `CoreScheduler` decides "the instruction did not advance the PC" by comparing the PC to the fetch address, which a *taken* branch-to-self also satisfies, so the taken branch is rewritten into a fallthrough; the same comparison exists on both the ARM and Thumb step paths. Fix (routing a taken branch-to-self through the existing taken-branch/pipeline-refill machinery) is prepared as a separate core PR with a regression test. Real games use `b .` for idle loops, so this is a genuine CPU/scheduler correctness gap. The fixture avoids it for now. |
+| Branch-to-self (`B #-8`, `0xEAFFFFFE`) | **FIXED in PR #20** | A branch whose target is the branch's own address (PC+8-8) runs away instead of looping; a branch-to-previous-instruction loop (`0xEAFFFFFD`) loops correctly. Reproduced deterministically on `main` for both ARM (`0xEAFFFFFE` — the scheduler forces the PC to fetch+4 each step) and Thumb (`0xE7FE`). Root cause: `CoreScheduler` decides "the instruction did not advance the PC" by comparing the PC to the fetch address, which a *taken* branch-to-self also satisfies, so the taken branch is rewritten into a fallthrough; the same comparison exists on both the ARM and Thumb step paths. Fix (routing a taken branch-to-self through the existing taken-branch/pipeline-refill machinery) is prepared as a separate core PR with a regression test. Real games use `b .` for idle loops, so this is a genuine CPU/scheduler correctness gap. The fixture avoids it for now. |
 | Save-type detection with conflicting markers | **RESOLVED on desktop via explicit override (2026-10-10)** | Automatic detection remains conservative: conflicting save families return `nullopt`. Desktop play and lab modes accept `--save-type auto\|none\|sram32k\|flash64k\|flash128k\|eeprom512\|eeprom8k` for the starting ROM file. Persistence uses the configured type; reset preserves it, another ROM does not inherit it, and save-state type mismatches are refused. The synthetic save-lifecycle smoke covers restart, reset, incompatible-save preservation, and switching. Override selection is provided by the desktop host. |
 | Upstream `video` suite | Absent from matrix **by design** (reconciled 2026-09-12) | the default `-Suites` list in `tools/run-credibility-matrix.ps1` omits it (interactive video emits no `END pass=total`); the 7 oracle aliases are verified separately via `tools/run-video-suite-all.ps1` (last run 2026-06-05; no newer rerun on record) |
 | Additional video tests | Open | Beyond the seven oracle aliases |

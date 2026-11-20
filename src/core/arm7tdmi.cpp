@@ -952,6 +952,12 @@ mirrored_oam_cross_rom_block_load_elapsed_cycles(
   if (value.has_value()) {
     return value;
   }
+  const std::uint32_t prefetch_address = pc + 4U;
+  if (MemoryBus::classify(prefetch_address).region == Region::game_pak_rom) {
+    // The Game Pak fetches one Thumb halfword at a time. A rotated 32-bit
+    // memory read can put the earlier instruction in the selected lane.
+    return memory.read16(prefetch_address);
+  }
   const std::optional<std::uint32_t> open_bus =
       read_thumb_pipeline_open_bus_word(memory, pc);
   if (!open_bus.has_value()) {

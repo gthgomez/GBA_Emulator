@@ -1,8 +1,9 @@
 # GBA_Emulator Status
 
-**Last verified:** 2026-10-08 (core verifiers 32/32 PASS on native Windows via `run-core-tests.ps1`; both runners register the same 32 verifiers, Linux parity verified by CI — desktop MVP data-safety fixes verified locally on native Windows, see PR #18)
+**Last verified:** 2026-11-19 (Linux C++ verifiers and public fixture rerun)
 **Status:** active development
-**Confidence:** high (core verifiers + desktop automation + manual Windows qualification); medium (accuracy — `misc-edge` RED and `timing` short of `pass=total`, see below)
+
+[Current conformance results and reproduction](docs/open-issues-status.md#2026-11-19-rerun).
 
 ## Purpose
 
@@ -24,23 +25,14 @@ Portable Game Boy Advance (GBA) emulator core written in C++17 with mGBA test-su
   uniform black from ~frame 30 since core commit `6785fcc`; bisected in PR #14 and
   fixed in PR #17 (PPU windowing bypass when no window is enabled), merged on
   `main` at `ed73298`. This is historical, not current behavior.
-- **Newly found engine defect (branch-to-self):** a bare `B #-8` (branch to its
-  own address) runs away instead of looping, while a branch-to-previous-
-  instruction loop works. Found while building the interactive video fixture;
-  recorded in `docs/open-issues-status.md`. Not a desktop-MVP blocker (the
-  fixtures and ordinary game idle loops use the working idiom), but a real
-  correctness issue to fix in the core.
-
-- **Core verifiers: 32/32 PASS.** Re-verified 2026-10-08 on native Windows via
-  `tools/run-core-tests.ps1` (clean `g++ -Werror` rebuild, all 32 binaries run
-  and pass). The Windows-only stack overflow in `desktop_save_state_guard_test`
-  (0xC00000FD: six ~405 KB `CoreSession` objects plus codec snapshots against
-  the executable's 2 MiB stack reservation) was fixed by heap-allocating the
-  snapshot objects in `save_state_codec.cpp` and the guard test. The Linux
-  runner now registers `intr_wait_serial_horizon_test` too, so both runners
-  carry the same 32 verifiers (previously 31 on Linux).
-- **mGBA public suites: 11/13 GREEN, 2 below `pass=total`.** `io-read` is **GREEN 130/130** (re-verified 2026-09-12; the recorded `51/130` RED was disproven by PR #7). `misc-edge` (6/12) is RED and `timing` is 1956/2020 (64 failures pre-existing on `main`), so neither meets the `pass=total` bar. The other 11 (`memory`, `bios-math`, `dma`, `shifter`, `carry`, `multiply-long`, `timer-irq`, `timers`, `sio-read`, `sio-timing`, plus `io-read`) are GREEN.
-- **Video oracle aliases: 7/7 GREEN** via the separate `tools/run-video-suite-all.ps1` runner (the upstream interactive `video` suite is intentionally excluded from the credibility matrix baseline and absent from the matrix by design — it does not emit `END pass=total`).
+- **Branch to self is fixed by PR #20.** The verifier checks ARM and Thumb self-branches
+  and an untaken conditional ARM branch.
+- **Core verifiers: 36/36 PASS.** The Linux C++ build and both script inventories include
+  the desktop save guards, branch-to-self, and the current HLE and timing regressions.
+- **Public conformance: 11/13 numeric suites pass.** The current source build of the pinned
+  fixture reproduced `io-read` 51/130 on baseline `e92389fbe8c1` and reached 130/130 with
+  the Thumb open-bus fix. `misc-edge` is 4/12 and `timing` is 1956/2020. The seven
+  named video oracles pass separately. [Reproduction and remaining failures](docs/open-issues-status.md#2026-11-19-rerun).
 - **Physical device soak: still failing/blocked.** The 2026-08-14 P1 soak evidence records audible-but-choppy audio (2,787 underruns @ frame 60; 710,778 after restart) and 1.4–2 fps pacing with a full present stall; thermal soak unmeasured. These FAIL records are preserved in `docs/evidence/` and are not superseded.
 - **Commercial-ROM boot smoke: local only (2026-11-18).** Stock Emerald (`BPEE`) boots through title and intro on the rebuilt desktop/headless host. The public test matrix still uses only the legal mGBA suite ROM; no general retail compatibility is claimed. See `docs/evidence/2026-11-18-emerald-boot.md`.
 - **Controlled external beta remains blocked** without target-device soak evidence.

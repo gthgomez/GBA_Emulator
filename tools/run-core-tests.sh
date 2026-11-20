@@ -51,11 +51,11 @@ script_path=$(cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 
 mkdir -p "$build_dir"
 
-# Headers under include/ and the desktop host sources participate in staleness
-# checks, matching the PowerShell runner (any header newer than a binary forces
-# a rebuild).
+# Headers under include/, tests/, and the desktop host sources participate in
+# staleness checks, matching the PowerShell runner (any header newer than a
+# binary forces a rebuild).
 include_headers=()
-for header_dir in "$include_dir" "$repo_root/apps/desktop"; do
+for header_dir in "$include_dir" "$repo_root/tests" "$repo_root/apps/desktop"; do
     if [[ -d "$header_dir" ]]; then
         while IFS= read -r -d '' hdr; do
             include_headers+=("$hdr")
