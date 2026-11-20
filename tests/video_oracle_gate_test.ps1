@@ -6,13 +6,13 @@ $ErrorActionPreference = "Stop"
 function Assert-GatePass {
     param([object]$Result, [string]$Probe, [string]$Name)
     $failure = Get-VideoOracleFailure -SuiteResult $Result -Probe $Probe
-    if ($null -ne $failure) { throw "$Name: expected pass, got $failure" }
+    if ($null -ne $failure) { throw "${Name}: expected pass, got $failure" }
 }
 
 function Assert-GateFails {
     param([object]$Result, [string]$Probe, [string]$Name)
     $failure = Get-VideoOracleFailure -SuiteResult $Result -Probe $Probe
-    if ([string]::IsNullOrWhiteSpace($failure)) { throw "$Name: expected a gate failure" }
+    if ([string]::IsNullOrWhiteSpace($failure)) { throw "${Name}: expected a gate failure" }
 }
 
 function New-Snapshot {
