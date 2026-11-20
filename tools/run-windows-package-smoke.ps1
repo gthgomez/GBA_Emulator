@@ -52,11 +52,20 @@ try {
     if ($first.run.unsupported_instructions -ne 0 -or $first.run.fetch_failures -ne 0) {
         throw "Packaged run reported CPU or fetch failures: $($first.run | ConvertTo-Json -Compress)"
     }
+    $frameMismatch = -1
+    $frameCount = [Math]::Min($first.video.frame_hashes.Count, $second.video.frame_hashes.Count)
+    for ($i = 0; $i -lt $frameCount; ++$i) {
+        if ($first.video.frame_hashes[$i] -ne $second.video.frame_hashes[$i]) {
+            $frameMismatch = $i
+            break
+        }
+    }
+    $stateMatches = $first.state.final_hash -eq $second.state.final_hash
+    $audioMatches = $first.audio.hash -eq $second.audio.hash
     if ($first.video.frame_hashes.Count -ne $Frames -or
-        ($first.video.frame_hashes -join ",") -ne ($second.video.frame_hashes -join ",") -or
-        $first.state.final_hash -ne $second.state.final_hash -or
-        $first.audio.hash -ne $second.audio.hash) {
-        throw "Packaged executable replay was not deterministic"
+        $first.video.frame_hashes.Count -ne $second.video.frame_hashes.Count -or
+        $frameMismatch -ge 0 -or -not $stateMatches -or -not $audioMatches) {
+        throw "Packaged replay mismatch: frameCounts=$($first.video.frame_hashes.Count)/$($second.video.frame_hashes.Count) firstFrameMismatch=$frameMismatch state=$stateMatches ($($first.state.final_hash)/$($second.state.final_hash)) audio=$audioMatches ($($first.audio.hash)/$($second.audio.hash))"
     }
 
     $framePng = Join-Path $pngDir "frame-0029.png"
