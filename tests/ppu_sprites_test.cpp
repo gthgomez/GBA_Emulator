@@ -95,6 +95,17 @@ int main() {
   expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, obj1.value(), 3, 2, true), 0x55,
                0x03E0, "OBJ1 8bpp pixel fetches color");
 
+  expect(memory.write16(0x0700000C, 13), "select odd 8bpp tile ID");
+  const auto odd_obj = PpuSpriteFetcher::read_sprite(memory, 1);
+  expect(odd_obj.has_value(), "odd 8bpp OBJ decodes");
+  expect(write_obj_vram_byte(memory, 0x06010000 + 13U * 32U + 2U * 8U + 3U, 0x01),
+         "seed odd tile's distinct texel");
+  expect(memory.write16(0x05000202, 0x001F), "seed odd tile color");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, *odd_obj, 3, 2, false),
+               0x55, 0x03E0, "8bpp 2D mapping ignores bit zero of the base tile ID");
+  expect_pixel(PpuSpriteFetcher::fetch_sprite_pixel(memory, *odd_obj, 3, 2, true),
+               0x01, 0x001F, "1D mapping preserves the tile base half-step");
+
   expect(memory.write16(0x07000010, 50), "seed OBJ2 attr0");
   expect(memory.write16(0x07000012,
                         static_cast<std::uint16_t>(0x010U | 0x1000U | 0x2000U)),
