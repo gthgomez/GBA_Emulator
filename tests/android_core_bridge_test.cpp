@@ -1,4 +1,5 @@
 #include "gba/core/android_core_bridge.hpp"
+#include "gba/core/memory_bus.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -37,20 +38,6 @@ int main() {
              AndroidBridgeStatus::invalid_argument,
          "null ROM bytes reject");
 
-  // T5: a forced exception path (ROM size beyond any allocatable buffer ->
-  // bad_alloc inside the bridge's ROM copy) must map to internal_error
-  // instead of escaping the C boundary and terminating the process.
-  const std::size_t kImpossibleSize =
-      static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)());
-  {
-    alignas(16) static const std::uint8_t kSentinel[1] = {0};
-    expect(gba::core::gba_android_core_load_rom(handle, kSentinel, kImpossibleSize) ==
-               AndroidBridgeStatus::internal_error,
-           "forced bad_alloc maps to internal_error");
-    expect(gba::core::gba_android_core_reset(handle) == AndroidBridgeStatus::ok,
-           "bridge stays usable after contained exception");
-  }
-
   constexpr std::uint32_t kAddR0R0Imm1 = 0xE2800001U;
   std::vector<std::uint8_t> rom(12);
   write_word(rom, 0, kAddR0R0Imm1);
@@ -63,6 +50,23 @@ int main() {
   expect(gba::core::gba_android_core_state_hash(handle, &loaded_hash) ==
              AndroidBridgeStatus::ok,
          "state hash succeeds on live handle");
+  {
+    const std::vector<std::uint8_t> oversized(gba::core::MemoryBus::kGamePakRomWindowSize + 1);
+    expect(gba::core::gba_android_core_load_rom(handle, oversized.data(), oversized.size()) ==
+               AndroidBridgeStatus::rom_rejected,
+           "oversized ROM rejects");
+    std::uint64_t hash_after_rejection = 0;
+    expect(gba::core::gba_android_core_state_hash(handle, &hash_after_rejection) ==
+               AndroidBridgeStatus::ok && hash_after_rejection == loaded_hash,
+           "oversized ROM preserves the active session");
+
+    // An impossible size must be rejected before forming the input range.
+    const std::uint8_t sentinel = 0;
+    expect(gba::core::gba_android_core_load_rom(
+               handle, &sentinel, std::numeric_limits<std::size_t>::max()) ==
+               AndroidBridgeStatus::rom_rejected,
+           "unrepresentable ROM length is rejected before access");
+  }
   gba::core::AndroidBridgeRunResult run;
   expect(gba::core::gba_android_core_run(handle, 3, &run) == AndroidBridgeStatus::ok,
          "bridge run returns ok status");
