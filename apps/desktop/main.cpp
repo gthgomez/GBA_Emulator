@@ -13,6 +13,7 @@
 
 #include "desktop_app.hpp"
 #include "desktop_persistence.hpp"
+#include "desktop_rom_file.hpp"
 #include "save_type_selection.hpp"
 #include "gba/core/save_state_codec.hpp"
 
@@ -224,25 +225,6 @@ CliOptions parse_cli(int argc, char** argv) {
   }
   std::sort(opts.screenshot_frames.begin(), opts.screenshot_frames.end());
   return opts;
-}
-
-std::vector<std::uint8_t> read_file(const std::string& path) {
-  // Path strings are UTF-8 (see the argv conversion in parse_cli); a plain
-  // narrow-string constructor would decode with the ANSI code page.
-  std::ifstream file(gba::desktop::persistence::native_path(path), std::ios::binary | std::ios::ate);
-  if (!file) {
-    return {};
-  }
-  const std::streamsize size = file.tellg();
-  file.seekg(0, std::ios::beg);
-  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-  if (!bytes.empty()) {
-    file.read(reinterpret_cast<char*>(bytes.data()), size);
-  }
-  if (!file || static_cast<std::streamsize>(file.gcount()) != size) {
-    return {};
-  }
-  return bytes;
 }
 
 // ---------------------------------------------------------------------------
@@ -619,15 +601,21 @@ std::string json_escape(const std::string& in) {
 // ---------------------------------------------------------------------------
 
 int run_headless(const CliOptions& opts) {
-  const auto rom = read_file(opts.rom_path);
+  const auto rom = gba::desktop::read_gba_rom(opts.rom_path);
   if (rom.empty()) {
-    std::cerr << "gba-desktop: cannot read ROM: " << opts.rom_path << "\n";
+    std::cerr << "gba-desktop: cannot read ROM (expected a file up to 32 MiB): "
+              << opts.rom_path << "\n";
+    return 2;
+  }
+  if (!gba::desktop::has_gba_cartridge_header(rom)) {
+    std::cerr << "gba-desktop: missing or invalid GBA cartridge header: "
+              << opts.rom_path << "\n";
     return 2;
   }
 
   std::vector<InputEvent> events;
   if (!opts.input_script_path.empty()) {
-    const auto script = read_file(opts.input_script_path);
+    const auto script = gba::desktop::persistence::read_binary_file(opts.input_script_path);
     if (script.empty()) {
       std::cerr << "gba-desktop: cannot read input script: " << opts.input_script_path << "\n";
       return 2;

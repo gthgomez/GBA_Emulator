@@ -105,8 +105,11 @@ def main():
         oversized = root / "oversized.gba"
         with oversized.open("wb") as output:
             output.truncate(32 * 1024 * 1024 + 1)
-        run("--rom", flash_auto, "--switch-after", 2, "--switch-to", oversized,
-            "--quit-after", 4, message="previous session restored")
+        # The host rejects oversized files before touching the active machine.
+        # It must still finish the requested frames on the original ROM.
+        refused = run("--rom", flash_auto, "--switch-after", 2, "--switch-to", oversized,
+                      "--quit-after", 4, message="up to 32 MiB")
+        assert "session ended (4 frames," in refused.stderr, refused.stderr
         assert save(flash_auto).read_bytes() == flash_seed, (
             "failed ROM switch damaged the Flash128K save")
 

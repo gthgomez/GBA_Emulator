@@ -53,6 +53,8 @@ if [ "$badExit" -eq 0 ]; then
     exit 1
 fi
 
+python3 "$repoRoot/tests/desktop_rom_open_check.py" --exe "$exe"
+
 echo "run-desktop-interactive-smoke: PASS (interactive window rendered nonuniform frames; interactive error exit=$badExit)"
 # Explicit success exit: the negative-assertion run above intentionally left a
 # nonzero status, and the script's own exit status must not inherit it.
