@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <string_view>
+#include <utility>
 
 #include "test_helpers.hpp"
 
@@ -289,9 +290,236 @@ void mixed_background_test() {
          "equal-priority affine backgrounds favor BG2 over BG3");
 }
 
+gba::core::PpuRenderControl bitmap_control(unsigned mode) {
+  auto c = control(static_cast<std::uint16_t>(0x0400U | mode), 0);
+  c.bg_affine_pa[2] = 0x0100;
+  c.bg_affine_pd[2] = 0x0100;
+  return c;
+}
+
+void bitmap_composition_test() {
+  auto memory = std::make_unique<gba::core::MemoryBus>();
+  gba::core::PpuRenderer renderer;
+  constexpr std::uint16_t backdrop = 0x3DEF, bg = 0x0210, obj = 0x7010;
+  expect(memory->write16(0x05000000, backdrop), "seed bitmap backdrop");
+  expect(memory->write16(0x05000002, bg), "seed indexed bitmap palette");
+  expect(memory->write16(0x05000202, obj), "seed bitmap OBJ palette");
+  expect(memory->write16(0x06014000, 0x0001), "seed OBJ opaque and transparent texels");
+  for (unsigned mode : {3, 4, 5}) {
+    expect(memory->write16(0x06000000, mode == 4 ? 0x0101 : bg), "seed BG2 pixels");
+    expect(memory->write16(0x06000002, mode == 4 ? 0 : bg), "seed next BG2 pixels");
+    auto c = bitmap_control(mode);
+    (void)renderer.render_scanline(*memory, c, 0);
+    expect(renderer.pixel(0, 0) == bg, "bitmap BG2 enabled");
+    c.dispcnt = mode;
+    const auto hidden = renderer.render_scanline(*memory, c, 0);
+    expect(renderer.pixel(0, 0) == backdrop && hidden.bitmap_pixels == 0,
+           "disabled bitmap BG2 shows backdrop and contributes no pixels");
+    c.dispcnt |= 0x0400;
+    (void)renderer.render_scanline(*memory, c, 0);
+    expect(renderer.pixel(0, 0) == bg, "bitmap BG2 re-enabled");
+
+    c.dispcnt |= 0x1000;
+    for (unsigned bg_priority = 0; bg_priority < 4; ++bg_priority) {
+      c.bg_control[2] = bg_priority;
+      for (unsigned obj_priority = 0; obj_priority < 4; ++obj_priority) {
+        expect(memory->write16(0x07000004, 512U | (obj_priority << 10)), "set OBJ priority");
+        (void)renderer.render_scanline(*memory, c, 0);
+        expect(renderer.pixel(0, 0) == (obj_priority <= bg_priority ? obj : bg),
+               "bitmap and OBJ resolve by priority with OBJ winning ties");
+        expect(renderer.pixel(1, 0) == bg, "transparent OBJ exposes bitmap BG2");
+      }
+    }
+    c.dispcnt |= 0x2000;
+    c.win0h = c.win0v = 1;
+    c.winin = 4;  // BG2 only inside the one-pixel window.
+    c.winout = 0x10;
+    (void)renderer.render_scanline(*memory, c, 0);
+    expect(renderer.pixel(0, 0) == bg && renderer.pixel(1, 0) == backdrop,
+           "WIN0 can mask OBJ and bitmap BG2 independently");
+
+    // Palette index zero is transparent. Direct-color black is opaque.
+    c.dispcnt &= ~0x2000U;
+    c.bg_control[2] = 0;
+    expect(memory->write16(0x06000000, 0), "seed zero bitmap sample");
+    (void)renderer.render_scanline(*memory, c, 0);
+    expect(renderer.pixel(0, 0) == (mode == 4 ? obj : 0),
+           "only indexed bitmap zero reveals lower-priority OBJ");
+  }
+}
+
+void bitmap_affine_test() {
+  auto memory = std::make_unique<gba::core::MemoryBus>();
+  gba::core::PpuRenderer renderer;
+  constexpr std::uint16_t backdrop = 0x5555;
+  expect(memory->write16(0x05000000, backdrop), "seed affine backdrop");
+  for (unsigned mode : {3, 4, 5}) {
+    const unsigned width = mode == 5 ? 160 : 240;
+    const unsigned height = mode == 5 ? 128 : 160;
+    // At (x,y), store color 1 + x + 8*y for this small patch. Place it
+    // exclusively on frame 1 in double-buffered modes.
+    const unsigned base = mode == 3 ? 0x06000000 : 0x0600A000;
+    for (unsigned y = 0; y < 8; ++y) {
+      for (unsigned x = 0; x < 8; x += 2) {
+        const unsigned offset = y * width + x;
+        const unsigned color = 1 + x + 8 * y;
+        if (mode == 4) {
+          expect(memory->write16(base + offset, color | ((color + 1) << 8)), "seed index pair");
+          expect(memory->write16(0x05000000 + color * 2, color), "seed first index color");
+          expect(memory->write16(0x05000002 + color * 2, color + 1), "seed second index color");
+        } else {
+          expect(memory->write16(base + 2 * offset, color), "seed first direct pixel");
+          expect(memory->write16(base + 2 * offset + 2, color + 1), "seed second direct pixel");
+        }
+      }
+    }
+    auto c = bitmap_control(mode);
+    c.dispcnt |= 0x10;  // Mode 3 ignores frame select.
+    c.bg_reference_x[2] = 0x0180;
+    c.bg_reference_y[2] = 0x0200;
+    c.bg_affine_pa[2] = 0x0180;
+    (void)renderer.render_scanline(*memory, c, 2);
+    expect(renderer.pixel(1, 2) == 36 && renderer.pixel(2, 2) == 37,
+           "affine translation and fractional scale select (3,4) and (4,4)");
+    c.bg_reference_x[2] = 0x0500;
+    c.bg_reference_y[2] = 0x0100;
+    c.bg_affine_pa[2] = c.bg_affine_pd[2] = 0;
+    c.bg_affine_pb[2] = 0xFF00;
+    c.bg_affine_pc[2] = 0x0100;
+    (void)renderer.render_scanline(*memory, c, 3);
+    expect(renderer.pixel(2, 3) == 27, "signed rotation maps screen (2,3) to (2,3)");
+    expect(renderer.pixel(0, 3) == 11, "signed rotation maps screen (0,3) to (2,1)");
+
+    c = bitmap_control(mode);
+    c.dispcnt |= 0x10;
+    c.bg_control[2] = 0x40;
+    c.bg_reference_x[2] = 0x0100;
+    c.bg_affine_pa[2] = 0x0200;
+    for (auto row : {std::pair<unsigned, unsigned>{0x02, 26}, {0x30, 6}, {0x32, 2}}) {
+      c.mosaic = row.first;
+      (void)renderer.render_scanline(*memory, c, 3);
+      expect(renderer.pixel(2, 3) == row.second, "mosaic repeats block origin before affine transform");
+    }
+    c.bg_control[2] = 0;
+    (void)renderer.render_scanline(*memory, c, 3);
+    expect(renderer.pixel(2, 3) == 30, "disabling BG2 mosaic restores the transformed pixel");
+
+    c = bitmap_control(mode);
+    c.dispcnt |= 0x10;
+    c.bg_reference_x[2] = 0x00000080U;  // +0.5 in 8.8 fixed point
+    c.bg_affine_pa[2] = 0xFF80U;        // -0.5 per screen pixel
+    c.bg_reference_y[2] = 0;
+    c.bg_affine_pc[2] = 0;
+    c.bg_affine_pb[2] = 0;
+    c.bg_affine_pd[2] = 0;
+    (void)renderer.render_scanline(*memory, c, 0);
+    expect(renderer.pixel(0, 0) == 1, "positive half-pixel maps to bitmap pixel zero");
+    expect(renderer.pixel(2, 0) == backdrop,
+           "negative half-pixel floors outside the bitmap instead of truncating to zero");
+
+    // Nonzero sentinels also distinguish an illegal linear read from
+    // transparent overflow (x=width would alias the next row's first pixel).
+    expect(memory->write16(base + width * height * (mode == 4 ? 1 : 2), 0x0101),
+           "seed adjacent VRAM after the bitmap");
+    c.bg_affine_pa[2] = 0x0100;
+    for (unsigned overflow : {0U, 0x2000U}) {
+      c.bg_control[2] = overflow;
+      c.bg_reference_x[2] = 0x0FFFFFFFU;  // -1/256
+      (void)renderer.render_scanline(*memory, c, 0);
+      expect(renderer.pixel(0, 0) == backdrop && renderer.pixel(1, 0) == 1,
+             "negative fractional X clips before the first bitmap pixel");
+      c.bg_reference_x[2] = width << 8;
+      (void)renderer.render_scanline(*memory, c, 0);
+      expect(renderer.pixel(0, 0) == backdrop, "bitmap width clips for either overflow bit setting");
+      c.bg_reference_x[2] = 0;
+      c.bg_reference_y[2] = height << 8;
+      (void)renderer.render_scanline(*memory, c, 0);
+      expect(renderer.pixel(0, 0) == backdrop, "bitmap height clips for either overflow bit setting");
+      c.bg_reference_y[2] = 0x0FFFFF00U;
+      (void)renderer.render_scanline(*memory, c, 0);
+      expect(renderer.pixel(0, 0) == backdrop, "negative bitmap Y is transparent");
+      c.bg_reference_y[2] = 0;
+    }
+  }
+}
+
+void bitmap_obj_tile_range_test() {
+  auto memory = std::make_unique<gba::core::MemoryBus>();
+  gba::core::PpuRenderer renderer;
+  expect(memory->write16(0x05000202, 0x7010), "seed lower tile OBJ color");
+  expect(memory->write16(0x05000204, 0x03F0), "seed upper tile OBJ color");
+  expect(memory->write16(0x06013FE0, 0x1111), "seed tile 511");
+  expect(memory->write16(0x06014000, 0x2222), "seed tile 512");
+  expect(memory->write16(0x07000004, 511), "select OBJ0 tile 511");
+  expect(memory->write16(0x0700000A, 1), "place OBJ1 at x=1");
+  expect(memory->write16(0x0700000C, 512), "select OBJ1 tile 512");
+  for (unsigned mode : {0, 3, 4, 5, 2}) {
+    (void)renderer.render_scanline(*memory, control(0x1000U | mode, 0), 0);
+    expect(renderer.pixel(0, 0) == (mode < 3 ? 0x7010 : 0),
+           "tile 511 becomes unavailable only in bitmap modes");
+    expect(renderer.pixel(1, 0) == (mode < 3 ? 0x7010 : 0x03F0),
+           "hidden tile 511 OBJ allows an overlapping tile 512 OBJ to draw");
+    expect(renderer.pixel(4, 0) == 0x03F0, "tile 512 stays available across display mode changes");
+  }
+}
+
+void color_effect_coefficients_test() {
+  auto memory = std::make_unique<gba::core::MemoryBus>();
+  gba::core::PpuRenderer renderer;
+  constexpr std::uint16_t obj = 0x3098;  // R=24 G=4 B=12
+  constexpr std::uint16_t bg = 0x0AB2;   // R=18 G=21 B=2
+  expect(memory->write16(0x06000000, bg), "seed second alpha target");
+  expect(memory->write16(0x06014000, 0x1111), "seed first alpha target");
+  expect(memory->write16(0x05000202, obj), "seed first target color");
+  expect(memory->write16(0x07000004, 512), "select OBJ tile 512");
+  auto c = bitmap_control(3);
+  c.dispcnt |= 0x1000;
+  const auto pixel = [&]() {
+    (void)renderer.render_scanline(*memory, c, 0);
+    return renderer.pixel(0, 0);
+  };
+  struct Case { unsigned weight, first_only, second_only, both, brighter, darker; };
+  // GBATEK channel equations use sixteenths, truncate fractions, saturate
+  // alpha sums at 31, and interpret register values above 16 as exactly 16.
+  constexpr Case cases[] = {
+      {0, 0, 0, 0, obj, obj}, {1, 0x0001, 0x0021, 0x0022, 0x34B8, 0x3097},
+      {15, 0x2C76, 0x0670, 0x36FF, 0x77BE, 0x0422},
+      {16, obj, bg, 0x3B3F, 0x7FFF, 0}, {17, obj, bg, 0x3B3F, 0x7FFF, 0},
+      {31, obj, bg, 0x3B3F, 0x7FFF, 0},
+  };
+  for (const auto& row : cases) {
+    c.bldcnt = 0x0450;
+    c.bldalpha = row.weight;
+    expect(pixel() == row.first_only, "EVA weights the first target");
+    c.bldalpha = row.weight << 8;
+    expect(pixel() == row.second_only, "EVB weights the second target");
+    c.bldalpha |= row.weight;
+    expect(pixel() == row.both, "combined EVA and EVB saturate each channel");
+    c.bldy = row.weight;
+    c.bldcnt = 0x0090;
+    expect(pixel() == row.brighter, "EVY brightens each channel");
+    c.bldcnt = 0x00D0;
+    expect(pixel() == row.darker, "EVY darkens each channel");
+  }
+  expect(memory->write16(0x07000000, 0x0400), "enable semi-transparent OBJ");
+  c.bldcnt = 0x0400;  // Semi-transparent OBJ forces alpha with BG2 as target 2.
+  c.bldalpha = 0x1F11;
+  expect(pixel() == 0x3B3F, "semi-transparent OBJ uses clamped EVA and EVB");
+  c.dispcnt |= 0x2000;
+  c.win0h = c.win0v = 1;
+  c.winin = 0x14;
+  expect(pixel() == obj, "WIN0 masks the color effect while retaining both layers");
+  c.winin |= 0x20;
+  expect(pixel() == 0x3B3F, "WIN0 permits the clamped forced-alpha result");
+}
+
 }  // namespace
 
 int main() {
+  bitmap_composition_test();
+  bitmap_affine_test();
+  bitmap_obj_tile_range_test();
+  color_effect_coefficients_test();
   mixed_background_test();
   obj_line_budget_test();
   obj_window_texel_test();
@@ -454,7 +682,7 @@ int main() {
 
   expect(memory.write16(0x06000000, 0xFFFF), "seed mode 3 high-bit bitmap pixel");
   const gba::core::PpuRenderStats mode3_stats =
-      renderer.render_scanline(memory, control(3, 0), 0);
+      renderer.render_scanline(memory, bitmap_control(3), 0);
   expect(mode3_stats.supported_mode, "mode 3 is supported");
   expect(mode3_stats.bitmap_pixels == PpuRenderer::kScreenWidth,
          "mode 3 renders one bitmap scanline");
@@ -464,19 +692,23 @@ int main() {
   expect(memory.write16(0x05000000 + 7U * 2U, 0xA345),
          "seed mode 4 high-bit palette color");
   const gba::core::PpuRenderStats mode4_stats =
-      renderer.render_scanline(memory, control(4, 0), 0);
+      renderer.render_scanline(memory, bitmap_control(4), 0);
   expect(mode4_stats.bitmap_pixels >= 1, "mode 4 renders indexed bitmap pixels");
   expect(renderer.pixel(0, 0) == 0x2345,
          "mode 4 masks palette-indexed framebuffer color bit 15");
 
   expect(memory.write16(0x06000000 + 159U * 2U, 0xB456),
          "seed mode 5 high-bit edge pixel");
+  expect(memory.write16(0x06000140, 0x73DE), "seed first pixel of next mode 5 row");
+  expect(memory.write16(0x0600A000, 0x4321), "seed mode 5 adjacent page");
   const gba::core::PpuRenderStats mode5_stats =
-      renderer.render_scanline(memory, control(5, 0), 0);
+      renderer.render_scanline(memory, bitmap_control(5), 0);
   expect(mode5_stats.supported_mode, "mode 5 is supported");
   expect(renderer.pixel(159, 0) == 0x3456, "mode 5 masks 160-wide bitmap color bit 15");
-  expect(renderer.pixel(160, 0) == 0x0000,
-         "mode 5 outside the buffer scans adjacent VRAM instead of backdrop");
+  expect(renderer.pixel(160, 0) == kBackdrop,
+         "mode 5 ends at column 159");
+  (void)renderer.render_scanline(memory, bitmap_control(5), 128);
+  expect(renderer.pixel(0, 128) == kBackdrop, "mode 5 ends at row 127");
 
   const gba::core::PpuRenderStats forced_blank =
       renderer.render_scanline(memory, control(0x0080, 0), 0);

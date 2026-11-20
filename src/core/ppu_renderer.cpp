@@ -1,5 +1,6 @@
 #include "gba/core/ppu_renderer.hpp"
 
+#include <algorithm>
 #include <array>
 
 namespace gba::core {
@@ -68,17 +69,6 @@ constexpr std::uint16_t kColorMask = 0x7FFF;
   }
   if (mode == 1) {
     return bg_index < 2;
-  }
-  return false;
-}
-
-[[nodiscard]] bool affine_bg_available_in_mode(std::uint8_t mode,
-                                               std::uint8_t bg_index) {
-  if (mode == 1) {
-    return bg_index == 2;
-  }
-  if (mode == 2) {
-    return bg_index == 2 || bg_index == 3;
   }
   return false;
 }
@@ -170,28 +160,26 @@ constexpr std::uint16_t kColorMask = 0x7FFF;
 
 [[nodiscard]] std::optional<std::uint16_t> fetch_bitmap_pixel(
     const MemoryBus& memory, const PpuRenderControl& control, std::uint8_t mode,
-    std::uint16_t x, std::uint16_t y) {
+    std::int32_t x, std::int32_t y) {
+  const auto width = mode == 5 ? kMode5Width : PpuRenderer::kScreenWidth;
+  const auto height = mode == 5 ? kMode5Height : PpuRenderer::kScreenHeight;
+  // GBATEK, Area Overflow: bitmap backgrounds always clip, including
+  // when the affine tile-map wraparound bit (BG2CNT.13) is set.
+  if (x < 0 || y < 0 || x >= width || y >= height) {
+    return std::nullopt;
+  }
+  const std::uint32_t offset = static_cast<std::uint32_t>(y * width + x);
   const std::uint32_t page =
       (control.dispcnt & kDisplayFrameSelect) != 0 ? kBitmapPageSize : 0;
-  if (mode == 3) {
-    return memory.read16(kBitmapBaseAddress + (static_cast<std::uint32_t>(y) * 240U + x) * 2U);
-  }
   if (mode == 4) {
     const std::optional<std::uint8_t> color_index =
-        memory.read8(kBitmapBaseAddress + page + static_cast<std::uint32_t>(y) * 240U + x);
+        memory.read8(kBitmapBaseAddress + page + offset);
     if (!color_index.has_value() || color_index.value() == 0) {
       return std::nullopt;
     }
     return memory.read16(kBackdropColorAddress + static_cast<std::uint32_t>(color_index.value()) * 2U);
   }
-  if (mode == 5) {
-    // Hardware scans VRAM linearly past the 160x128 mode-5 buffer, so pixels
-    // outside the buffer show whatever adjacent VRAM holds; reproduce that by
-    // reading the equivalent unclamped offset instead of falling back.
-    return memory.read16(kBitmapBaseAddress + page +
-                         (static_cast<std::uint32_t>(y) * kMode5Width + x) * 2U);
-  }
-  return std::nullopt;
+  return memory.read16(kBitmapBaseAddress + (mode == 5 ? page : 0U) + offset * 2U);
 }
 
 struct PixelCandidate {
@@ -212,22 +200,32 @@ struct PixelCandidate {
 }
 
 struct AffineParams {
-  bool present = false;
   std::int32_t pa = 0;
-  std::int32_t pb = 0;
   std::int32_t pc = 0;
-  std::int32_t pd = 0;
-  std::int32_t reference_x = 0;
-  std::int32_t reference_y = 0;
+  std::int32_t line_x = 0;
+  std::int32_t line_y = 0;
 };
 
 [[nodiscard]] std::int32_t sign_extend_reference(std::uint32_t raw28) {
-  // BGxX/Y are 28-bit signed 8.8 accumulators.
-  return static_cast<std::int32_t>(raw28 << 4) >> 4;
+  // BGxX/Y are signed 28-bit values with eight fractional bits.
+  const std::uint32_t value = raw28 & 0x0FFFFFFFU;
+  if ((value & 0x08000000U) == 0) {
+    return static_cast<std::int32_t>(value);
+  }
+  return static_cast<std::int32_t>(value) - 0x10000000;
 }
 
 [[nodiscard]] std::int32_t sign_extend_affine_param(std::uint16_t raw) {
-  return static_cast<std::int16_t>(raw);
+  const std::int32_t value = raw;
+  return (raw & 0x8000U) != 0 ? value - 0x10000 : value;
+}
+
+[[nodiscard]] std::int32_t fixed_8_8_to_integer_floor(std::int32_t value) {
+  if (value >= 0) {
+    return value / 256;
+  }
+  const std::int64_t magnitude = -static_cast<std::int64_t>(value);
+  return -static_cast<std::int32_t>((magnitude + 255) / 256);
 }
 
 }  // namespace
@@ -352,21 +350,19 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   }
 
   std::array<AffineParams, 4> affine_params{};
-  if (mode == 1 || mode == 2) {
-    for (std::uint8_t bg_index = 2; bg_index < 4; ++bg_index) {
-      if (mode == 1 && bg_index != 2) {
-        continue;
-      }
-      AffineParams params;
-      params.present = true;
-      params.pa = sign_extend_affine_param(control.bg_affine_pa.at(bg_index));
-      params.pb = sign_extend_affine_param(control.bg_affine_pb.at(bg_index));
-      params.pc = sign_extend_affine_param(control.bg_affine_pc.at(bg_index));
-      params.pd = sign_extend_affine_param(control.bg_affine_pd.at(bg_index));
-      params.reference_x = sign_extend_reference(control.bg_reference_x.at(bg_index));
-      params.reference_y = sign_extend_reference(control.bg_reference_y.at(bg_index));
-      affine_params.at(bg_index) = params;
-    }
+  const unsigned affine_bg_end = mode == 0 ? 2 : (mode == 2 ? 4 : 3);
+  for (unsigned index = 2; index < affine_bg_end; ++index) {
+    auto& params = affine_params[index];
+    params.pa = sign_extend_affine_param(control.bg_affine_pa[index]);
+    params.pc = sign_extend_affine_param(control.bg_affine_pc[index]);
+    // PpuTiming supplies programmed reference registers, not per-line
+    // accumulators. Advance once from the frame origin to the sampled row.
+    const auto y = (decoded_bg[index].raw & kBgMosaicEnable) != 0
+                       ? mosaic_block(scanline, bg_mosaic_h) : scanline;
+    params.line_x = sign_extend_reference(control.bg_reference_x[index]) +
+                    sign_extend_affine_param(control.bg_affine_pb[index]) * y;
+    params.line_y = sign_extend_reference(control.bg_reference_y[index]) +
+                    sign_extend_affine_param(control.bg_affine_pd[index]) * y;
   }
 
   // Resolve each OBJ row once, in OAM order, before background composition.
@@ -377,6 +373,7 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
   for (std::size_t index = 0; index < active_sprite_count; ++index) {
     const auto& sprite = active_sprites.at(index);
     if (sprite.obj_window && !obj_window_enabled) continue;
+    if (mode >= 3 && sprite.tile_id < 512) continue;
     const int start_x = sprite.x < 0 ? 0 : sprite.x;
     const int right = sprite.x + active_sprite_ends.at(index);
     const int end_x = right < kScreenWidth ? right : kScreenWidth;
@@ -405,6 +402,10 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
     }
   }
 
+  // BLDALPHA and BLDY weights are unsigned sixteenths, with 0x10..0x1F all equal to 1.
+  const auto eva = std::min(16U, control.bldalpha & 0x1FU);
+  const auto evb = std::min(16U, (control.bldalpha >> 8) & 0x1FU);
+  const auto evy = std::min(16U, control.bldy & 0x1FU);
   for (std::uint16_t x = 0; x < kScreenWidth; ++x) {
     const bool obj_window_hit = obj_window_row[x];
     const std::uint16_t layer_mask =
@@ -456,50 +457,28 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
           }
         }
       }
-      if (mode == 1 || mode == 2) {
-        for (std::uint8_t bg_index = 2; bg_index < 4; ++bg_index) {
-          const AffineParams& params = affine_params.at(bg_index);
-          if (!params.present ||
-              !affine_bg_available_in_mode(mode, bg_index) ||
-              !bg_enabled(control.dispcnt, bg_index) ||
-              (layer_mask & static_cast<std::uint16_t>(1U << bg_index)) == 0) {
-            continue;
+      for (std::uint8_t bg_index = 2; bg_index < affine_bg_end; ++bg_index) {
+        if (!bg_enabled(control.dispcnt, bg_index) ||
+            (layer_mask & static_cast<std::uint16_t>(1U << bg_index)) == 0) {
+          continue;
+        }
+        const auto& bg = decoded_bg[bg_index];
+        const auto& params = affine_params[bg_index];
+        const auto dx = (bg.raw & kBgMosaicEnable) != 0 ? mosaic_block(x, bg_mosaic_w) : x;
+        const auto tex_x = fixed_8_8_to_integer_floor(params.line_x + params.pa * dx);
+        const auto tex_y = fixed_8_8_to_integer_floor(params.line_y + params.pc * dx);
+        if (mode >= 3) {
+          const auto pixel = fetch_bitmap_pixel(memory, control, mode, tex_x, tex_y);
+          if (pixel.has_value()) {
+            ++bitmap_pixels;
+            consider(PixelCandidate{normalize_color(*pixel), bg_index, bg.priority});
           }
-          const BgControl& bg = decoded_bg.at(bg_index);
-          // GBATEK rot/scale model (8.8 fixed point): reference point plus
-          // matrix rows scaled by screen position, shifted back to integer.
-          std::int64_t dx = x;
-          std::int64_t dy = scanline;
-          if ((bg.raw & kBgMosaicEnable) != 0) {
-            dx = mosaic_block(static_cast<std::uint16_t>(dx), bg_mosaic_w);
-            dy = mosaic_block(static_cast<std::uint16_t>(dy), bg_mosaic_h);
-          }
-          const std::int64_t tex_x_raw = static_cast<std::int64_t>(params.reference_x) +
-                                         params.pa * dx + params.pb * dy;
-          const std::int64_t tex_y_raw = static_cast<std::int64_t>(params.reference_y) +
-                                         params.pc * dx + params.pd * dy;
-          const std::optional<AffinePixel> affine_pixel =
-              PpuBackgroundFetcher::fetch_affine_pixel(
-                  memory, bg, static_cast<std::int32_t>(tex_x_raw >> 8),
-                  static_cast<std::int32_t>(tex_y_raw >> 8));
-          if (!affine_pixel.has_value() || affine_pixel->transparent) {
-            continue;
-          }
-          const PixelCandidate candidate{
-              normalize_color(affine_pixel->color), bg_index, bg.priority};
-          if (consider(candidate)) {
+        } else {
+          const auto pixel = PpuBackgroundFetcher::fetch_affine_pixel(memory, bg, tex_x, tex_y);
+          if (pixel.has_value() && !pixel->transparent &&
+              consider(PixelCandidate{normalize_color(pixel->color), bg_index, bg.priority})) {
             ++bg_pixels;
           }
-        }
-      }
-
-      if (mode >= 3 &&
-          (layer_mask & static_cast<std::uint16_t>(1U << 2)) != 0) {
-        const std::optional<std::uint16_t> bitmap =
-            fetch_bitmap_pixel(memory, control, mode, x, scanline);
-        if (bitmap.has_value()) {
-          ++bitmap_pixels;
-          consider(PixelCandidate{normalize_color(bitmap.value()), 2, 0});
         }
       }
 
@@ -536,17 +515,11 @@ PpuRenderStats PpuRenderer::render_scanline(const MemoryBus& memory,
          effect == kEffectBrightnessDecrease) &&
         first_target;
     if (do_alpha) {
-      const std::uint16_t eva = static_cast<std::uint16_t>(control.bldalpha & 0x1FU);
-      const std::uint16_t evb =
-          static_cast<std::uint16_t>((control.bldalpha >> 8) & 0x1FU);
       color = alpha_blend(best.color, second.color, eva, evb);
       blended = true;
-    } else if (do_brightness) {
-      const std::uint16_t amount = static_cast<std::uint16_t>(control.bldy & 0x1FU);
-      if (amount != 0) {
-        color = brightness_blend(color, amount, effect == kEffectBrightnessIncrease);
-        blended = true;
-      }
+    } else if (do_brightness && evy != 0) {
+      color = brightness_blend(color, evy, effect == kEffectBrightnessIncrease);
+      blended = true;
     }
     if (blended) {
       ++blend_pixels;

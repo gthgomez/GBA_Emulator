@@ -24,6 +24,13 @@ int main() {
   expect(session.memory().configure_game_pak_save(GamePakSaveType::none),
          "game boot test configures save backing");
   session.configure_for_game_boot();
+  const auto boot_control = session.ppu().render_control();
+  for (unsigned index : {2, 3}) {
+    expect(boot_control.bg_affine_pa[index] == 0x0100 &&
+               boot_control.bg_affine_pd[index] == 0x0100 &&
+               boot_control.bg_affine_pb[index] == 0 && boot_control.bg_affine_pc[index] == 0,
+           "post-BIOS BG affine matrices start at identity");
+  }
   expect(session.bios().mode() == BiosExecutionMode::hle,
          "configure_for_game_boot enables BIOS HLE");
   expect(session.cpu().register_value(Arm7tdmi::kPc) == 0x08000000U,

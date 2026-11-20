@@ -175,8 +175,9 @@ std::optional<SpritePixel> PpuSpriteFetcher::fetch_sprite_pixel(
   const std::uint16_t tile_y = pixel_y / 8U;
   const std::uint8_t in_tile_x = static_cast<std::uint8_t>(pixel_x % 8U);
   const std::uint8_t in_tile_y = static_cast<std::uint8_t>(pixel_y % 8U);
+  const auto base_tile = bpp8 && !character_mapping_1d ? sprite.tile_id & ~1U : sprite.tile_id;
   const std::uint16_t tile_number = static_cast<std::uint16_t>(
-      sprite.tile_id +
+      base_tile +
       tile_y * obj_tile_row_stride(sprite, bpp8, character_mapping_1d) +
       tile_x * (bpp8 ? 2U : 1U));
   const std::uint32_t tile_address =
