@@ -166,9 +166,14 @@ Set-Content -LiteralPath (Join-Path $stage "README.txt") -Value $readme -Encodin
 $zipPath = Join-Path $repoRoot $OutputDir "$stageName.zip"
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -Force
+$sha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$shaPath = "$zipPath.sha256"
+Set-Content -LiteralPath $shaPath -Value "$sha256  $(Split-Path -Leaf $zipPath)" -Encoding ascii
 
 Write-Host "package-windows-portable: packaged $stageName"
 Write-Host "  executable: gba-desktop.exe"
 Write-Host "  runtime DLLs: $($copied -join ', ')"
 Write-Host "  zip: $zipPath"
+Write-Host "  sha256: $sha256"
+Write-Host "  checksum: $shaPath"
 Get-ChildItem -LiteralPath $stage | Select-Object -ExpandProperty Name | ForEach-Object { Write-Host "  - $_" }
