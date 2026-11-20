@@ -62,7 +62,9 @@ try {
     }
     $stateMatches = $first.state.final_hash -eq $second.state.final_hash
     $audioMatches = $first.audio.hash -eq $second.audio.hash
-    if ($first.video.frame_hashes.Count -ne $Frames -or
+    $expectedHashCount = [Math]::Floor(($Frames - 1) / 30) + 1
+    if ((($Frames - 1) % 30) -ne 0) { ++$expectedHashCount }
+    if ($first.video.frame_hashes.Count -ne $expectedHashCount -or
         $first.video.frame_hashes.Count -ne $second.video.frame_hashes.Count -or
         $frameMismatch -ge 0 -or -not $stateMatches -or -not $audioMatches) {
         throw "Packaged replay mismatch: frameCounts=$($first.video.frame_hashes.Count)/$($second.video.frame_hashes.Count) firstFrameMismatch=$frameMismatch state=$stateMatches ($($first.state.final_hash)/$($second.state.final_hash)) audio=$audioMatches ($($first.audio.hash)/$($second.audio.hash))"
